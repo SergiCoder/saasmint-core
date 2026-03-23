@@ -13,6 +13,8 @@ permissions:
 jobs:
   review:
     runs-on: ubuntu-latest
+    outputs:
+      no_issues: ${{ steps.check-result.outputs.no_issues }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -63,13 +65,36 @@ jobs:
 
             Do not auto-fix anything — report only.
 
-  auto-approve:
-    needs: review
-    if: github.event.pull_request.user.login == 'SergiCoder'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Approve PR
-        run: gh pr review ${{ github.event.pull_request.number }} --approve --body "Maintainer PR — auto-approved."
+      - name: Check review result
+        id: check-result
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          LAST_COMMENT=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+            --jq '.[-1].body')
+          if echo "$LAST_COMMENT" | grep -q "No issues found"; then
+            echo "no_issues=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no_issues=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  auto-approve:
+    needs: review
+    if: >-
+      github.event.pull_request.user.login == 'SergiCoder' &&
+      needs.review.outputs.no_issues == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.REVIEWER_APP_ID }}
+          private-key: ${{ secrets.REVIEWER_APP_PRIVATE_KEY }}
+
+      - name: Approve PR
+        run: gh pr review ${{ github.event.pull_request.number }} --approve --body "Claude review passed — auto-approved."
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
