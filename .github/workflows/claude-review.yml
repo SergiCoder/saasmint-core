@@ -25,7 +25,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: --model claude-opus-4-6 --max-turns 15
           prompt: |
-            Review the changes in this pull request.
+            Review the changes in this pull request. Do not use any tools to post comments — just output your review as text. The action will post it automatically.
 
             Focus on:
             - Security: authentication, authorization, injection vulnerabilities, secrets in code, exposed sensitive data
@@ -34,9 +34,8 @@ jobs:
             - Stripe integration: webhook signature verification, idempotency, error handling
             - Test coverage: missing tests for critical paths, edge cases, error scenarios
 
-            Post a single structured review comment with this format:
+            Output your review in this format:
 
-            ```
             # Code Review
 
             **Files changed:** <count>
@@ -59,9 +58,8 @@ jobs:
             |---|---|---|---|---|
             | ... | ... | ... | ... | ... |
             | **Total** | **X** | **X** | **X** | **X** |
-            ```
 
-            If there are no findings, post: "No issues found. Ready to merge."
+            If there are no findings, just output: "No issues found. Ready to merge."
 
             Do not auto-fix anything — report only.
 
