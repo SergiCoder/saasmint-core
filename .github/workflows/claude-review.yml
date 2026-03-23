@@ -14,19 +14,19 @@ jobs:
   review:
     runs-on: ubuntu-latest
     outputs:
-      no_issues: ${{ steps.post-review.outputs.no_issues }}
+      no_issues: ${{ steps.check-result.outputs.no_issues }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - uses: anthropics/claude-code-action@v1
-        id: claude-review
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: --model claude-opus-4-6 --max-turns 10
-          direct_prompt: |
-            Review the changes in this pull request.
+          prompt: |
+            Review the changes in this pull request for code quality, correctness, and security.
+            Analyze the diff, then post your findings as a single review comment on the PR.
 
             Focus on:
             - Security: authentication, authorization, injection vulnerabilities, secrets in code, exposed sensitive data
@@ -35,7 +35,7 @@ jobs:
             - Stripe integration: webhook signature verification, idempotency, error handling
             - Test coverage: missing tests for critical paths, edge cases, error scenarios
 
-            Use this format:
+            Use this format for your review comment:
 
             # Code Review
 
@@ -61,40 +61,19 @@ jobs:
             | Testing | ... | ... | ... | ... |
             | **Total** | **X** | **X** | **X** | **X** |
 
-            If there are no findings, output exactly: "No issues found. Ready to merge."
+            If there are no findings, post: "No issues found. Ready to merge."
 
             Do not auto-fix anything — report only.
 
-      - name: Post review comment
-        id: post-review
-        if: always()
+      - name: Check review result
+        id: check-result
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          LOG_FILE="/home/runner/work/_temp/claude-execution-output.json"
-          if [ ! -f "$LOG_FILE" ]; then
-            echo "no_issues=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Extract assistant text messages from the execution log
-          REVIEW=$(jq -r '
-            [.[] | select(.type == "assistant" and .message != null)
-                 | .message
-                 | if type == "array" then
-                     [.[] | select(.type == "text") | .text] | join("\n")
-                   elif type == "string" then .
-                   else empty
-                   end
-            ] | last // "Review produced no output."
-          ' "$LOG_FILE")
-
-          # Post as PR comment
-          gh pr comment ${{ github.event.pull_request.number }} --body "$REVIEW"
-
-          # Check if clean review
-          if echo "$REVIEW" | grep -q "No issues found"; then
+          LAST_COMMENT=$(gh api repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments \
+            --jq '.[-1].body')
+          if echo "$LAST_COMMENT" | grep -q "No issues found"; then
             echo "no_issues=true" >> "$GITHUB_OUTPUT"
           else
             echo "no_issues=false" >> "$GITHUB_OUTPUT"
