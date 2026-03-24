@@ -52,7 +52,7 @@ stripe-django/
 │   ├── stripe_saas_core/
 │   │   ├── domain/      # Pydantic domain models (User, Org, Subscription, …)
 │   │   ├── services/    # Business logic (billing, webhooks, GDPR, …)
-│   │   ├── repositories/# Repository protocols (async, framework-agnostic)
+│   │   ├── repositories/ # Repository protocols (async, framework-agnostic)
 │   │   └── exceptions/  # Domain exceptions
 │   └── tests/           # Core unit tests
 ├── config/              # Django settings, URLs, WSGI/ASGI

@@ -29,11 +29,13 @@ async def delete_user_data(
     3. Delete our StripeCustomer record.
     4. Soft-delete the user (sets deleted_at).
     """
-    user = await user_repo.get_by_id(user_id)
+    user, customer = await asyncio.gather(
+        user_repo.get_by_id(user_id),
+        customer_repo.get_by_user_id(user_id),
+    )
     if user is None:
         raise UserNotFoundError(f"User {user_id} not found")
 
-    customer = await customer_repo.get_by_user_id(user_id)
     if customer:
         active_sub = await subscription_repo.get_active_for_customer(customer.id)
         if active_sub:
@@ -64,13 +66,14 @@ async def export_user_data(
 
     The response is suitable for sending directly to the user as a file download.
     """
-    user = await user_repo.get_by_id(user_id)
+    user, customer = await asyncio.gather(
+        user_repo.get_by_id(user_id),
+        customer_repo.get_by_user_id(user_id),
+    )
     if user is None:
         raise UserNotFoundError(f"User {user_id} not found")
 
     result: dict[str, object] = {"user": user.model_dump(mode="json")}
-
-    customer = await customer_repo.get_by_user_id(user_id)
     if customer:
         result["stripe_customer"] = {
             "stripe_id": customer.stripe_id,
