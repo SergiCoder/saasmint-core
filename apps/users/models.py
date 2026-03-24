@@ -43,6 +43,13 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     class Meta:
         db_table = "users"
+        indexes: ClassVar[list[models.Index]] = [
+            models.Index(
+                fields=["supabase_uid"],
+                condition=models.Q(deleted_at__isnull=True),
+                name="ix_users_supabase_active",
+            ),
+        ]
 
     def save(self, *args: object, **kwargs: object) -> None:
         super().save(*args, **kwargs)

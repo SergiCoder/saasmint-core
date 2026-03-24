@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from asgiref.sync import async_to_sync
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from stripe_saas_core.services.gdpr import delete_user_data, export_user_data
 
@@ -18,6 +21,9 @@ _user_repo = DjangoUserRepository()
 
 class AccountView(APIView):
     """GET /api/v1/account — return the current user's profile."""
+
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]
+    throttle_scope = "account"
 
     def get(self, request: Request) -> Response:
         return Response(UserSerializer(get_user(request)).data)
@@ -53,6 +59,9 @@ class AccountView(APIView):
 
 class AccountExportView(APIView):
     """GET /api/v1/account/export — GDPR right of access."""
+
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]
+    throttle_scope = "account"
 
     def get(self, request: Request) -> Response:
         from apps.billing.repositories import (

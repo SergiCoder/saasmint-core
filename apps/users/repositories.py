@@ -59,7 +59,7 @@ class DjangoUserRepository:
     async def delete(self, user_id: UUID) -> None:
         await UserModel.objects.filter(id=user_id).aupdate(deleted_at=datetime.now(UTC))
 
-    async def list_by_org(self, org_id: UUID) -> list[User]:
+    async def list_by_org(self, org_id: UUID, *, limit: int = 100, offset: int = 0) -> list[User]:
         from apps.orgs.models import OrgMember  # lazy import — avoids circular
 
         member_user_ids = OrgMember.objects.filter(org_id=org_id).values("user_id")
@@ -67,5 +67,5 @@ class DjangoUserRepository:
             self._to_domain(obj)
             async for obj in UserModel.objects.filter(
                 id__in=member_user_ids, deleted_at__isnull=True
-            )
+            )[offset : offset + limit]
         ]

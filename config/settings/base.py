@@ -152,6 +152,7 @@ REST_FRAMEWORK = {
         "user": "1000/hour",
         "auth": "10/minute",
         "billing": "30/hour",
+        "account": "10/hour",
     },
     # "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",  # TODO: PR 4
 }
