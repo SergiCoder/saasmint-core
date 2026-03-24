@@ -23,4 +23,5 @@ class User(BaseModel):
     preferred_currency: str = "usd"
     is_verified: bool = False
     created_at: datetime
+    updated_at: datetime | None = None
     deleted_at: datetime | None = None

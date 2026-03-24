@@ -25,6 +25,7 @@ class DjangoUserRepository:
             preferred_currency=obj.preferred_currency,
             is_verified=obj.is_verified,
             created_at=obj.created_at,
+            updated_at=obj.updated_at,
             deleted_at=obj.deleted_at,
         )
 
@@ -63,7 +64,12 @@ class DjangoUserRepository:
             await obj.asave(update_fields=["deleted_at"])
 
     async def list_by_org(self, org_id: UUID, *, limit: int = 100, offset: int = 0) -> list[User]:
-        from apps.orgs.models import OrgMember  # lazy import — avoids circular
+        try:
+            from apps.orgs.models import OrgMember  # lazy import — avoids circular
+        except ImportError:
+            raise NotImplementedError(
+                "Orgs app is not installed. list_by_org requires apps.orgs (PR 5)."
+            ) from None
 
         member_user_ids = OrgMember.objects.filter(org_id=org_id).values("user_id")
         return [
