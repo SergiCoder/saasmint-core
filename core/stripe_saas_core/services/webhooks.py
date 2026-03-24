@@ -87,7 +87,7 @@ async def _dispatch(event: stripe.Event, repos: WebhookRepos) -> None:
             logger.debug("Unhandled Stripe event type: %s", event["type"])
 
 
-def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, int | None, datetime | None]:
+def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, float | None, datetime | None]:
     """Extract promotion code, discount percent, and discount end from raw sub data."""
     discount: Any = sub_data.get("discount")
     if not discount:
@@ -97,7 +97,7 @@ def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, int | None,
     promotion_code_id = str(raw_promo) if raw_promo else None
 
     coupon: dict[str, Any] = cast(dict[str, Any], discount.get("coupon") or {})
-    discount_percent = int(coupon["percent_off"]) if coupon.get("percent_off") else None
+    discount_percent = float(coupon["percent_off"]) if coupon.get("percent_off") else None
 
     raw_end = discount.get("end")
     discount_end_at = datetime.fromtimestamp(int(raw_end), tz=UTC) if raw_end is not None else None
@@ -120,7 +120,14 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
     from stripe_saas_core.exceptions import WebhookDataError
 
     stripe_customer_str = str(sub_data["customer"])
-    first_item: dict[str, Any] = sub_data["items"]["data"][0]
+    items = sub_data["items"]["data"]
+    if len(items) > 1:
+        logger.warning(
+            "Subscription %s has %d line items; only the first is synced",
+            sub_data["id"],
+            len(items),
+        )
+    first_item: dict[str, Any] = items[0]
     price_id = str(first_item["price"]["id"])
     stripe_sub_id = str(sub_data["id"])
 

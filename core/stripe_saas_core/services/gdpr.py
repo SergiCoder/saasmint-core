@@ -53,13 +53,15 @@ async def delete_user_data(
         if active_sub:
             try:
                 await asyncio.to_thread(stripe.Subscription.cancel, active_sub.stripe_id)
-            except stripe.InvalidRequestError:
-                pass  # already canceled in Stripe
+            except stripe.InvalidRequestError as exc:
+                if exc.code != "resource_missing":
+                    raise
 
         try:
             await asyncio.to_thread(stripe.Customer.delete, customer.stripe_id)
-        except stripe.InvalidRequestError:
-            pass  # already deleted in Stripe
+        except stripe.InvalidRequestError as exc:
+            if exc.code != "resource_missing":
+                raise
 
         await customer_repo.delete(customer.id)
 
