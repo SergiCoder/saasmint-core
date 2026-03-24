@@ -4,15 +4,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('auth', '0012_alter_user_first_name_max_length'),
-        ('users', '0002_alter_user_deleted_at_alter_user_supabase_uid'),
+        ("auth", "0012_alter_user_first_name_max_length"),
+        ("users", "0002_alter_user_deleted_at_alter_user_supabase_uid"),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='user',
-            index=models.Index(condition=models.Q(('deleted_at__isnull', True)), fields=['supabase_uid'], name='ix_users_supabase_active'),
+            model_name="user",
+            index=models.Index(
+                condition=models.Q(("deleted_at__isnull", True)),
+                fields=["supabase_uid"],
+                name="ix_users_supabase_active",
+            ),
         ),
     ]

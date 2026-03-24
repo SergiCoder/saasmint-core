@@ -124,7 +124,9 @@ async def test_delete_user_data_subscription_already_canceled_in_stripe() -> Non
     with (
         patch(
             "stripe.Subscription.cancel",
-            side_effect=stripe.InvalidRequestError("already canceled", param="id", code="resource_missing"),  # type: ignore[no-untyped-call]
+            side_effect=stripe.InvalidRequestError(
+                "already canceled", param="id", code="resource_missing"
+            ),  # type: ignore[no-untyped-call]
         ),
         patch("stripe.Customer.delete"),
     ):
@@ -151,7 +153,9 @@ async def test_delete_user_data_customer_already_deleted_in_stripe() -> None:
 
     with patch(
         "stripe.Customer.delete",
-        side_effect=stripe.InvalidRequestError("no such customer", param="id", code="resource_missing"),  # type: ignore[no-untyped-call]
+        side_effect=stripe.InvalidRequestError(
+            "no such customer", param="id", code="resource_missing"
+        ),  # type: ignore[no-untyped-call]
     ):
         # Should not raise
         await delete_user_data(
