@@ -61,6 +61,7 @@ class SupabaseJWTAuthentication(BaseAuthentication):
                 try:
                     user, _ = User.objects.get_or_create(
                         supabase_uid=supabase_uid,
+                        deleted_at__isnull=True,
                         defaults={"email": email, "is_verified": True},
                     )
                 except IntegrityError:
