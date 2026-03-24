@@ -54,11 +54,11 @@ def describe_discount(promotion_code: stripe.PromotionCode) -> str:
     percent_off: float | None = c["percent_off"]
     amount_off: int | None = c["amount_off"]
     currency: str | None = c["currency"]
-    duration_str: str = c.get("duration", "")
+    duration_str: str = c["duration"]
 
-    if percent_off:
+    if percent_off is not None:
         amount = f"{int(percent_off)}% off"
-    elif amount_off and currency:
+    elif amount_off is not None and currency is not None:
         if currency.lower() in ZERO_DECIMAL_CURRENCIES:
             amount = f"{amount_off} {currency.upper()} off"
         else:

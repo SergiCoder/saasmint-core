@@ -36,9 +36,9 @@ async def get_or_create_customer(
         return existing
 
     metadata: dict[str, str] = {}
-    if user_id:
+    if user_id is not None:
         metadata["user_id"] = str(user_id)
-    if org_id:
+    if org_id is not None:
         metadata["org_id"] = str(org_id)
 
     stripe_customer = await asyncio.to_thread(
@@ -78,7 +78,7 @@ async def create_checkout_session(
     subscription_data: dict[str, object] = {}
     if trial_period_days is not None:
         subscription_data["trial_period_days"] = trial_period_days
-    if metadata:
+    if metadata is not None:
         subscription_data["metadata"] = metadata
 
     params: dict[str, object] = {
@@ -91,7 +91,7 @@ async def create_checkout_session(
         "cancel_url": cancel_url,
     }
 
-    if promo_code:
+    if promo_code is not None:
         promo = await validate_promo_code(promo_code)
         params["discounts"] = [{"promotion_code": promo.id}]
         params["allow_promotion_codes"] = False
