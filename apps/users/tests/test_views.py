@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rest_framework.test import APIClient
 
 from apps.users.models import User
 
-# Disable throttling in tests
-_NO_THROTTLE = {
+# Relax throttling in tests — keep scoped rates so ScopedRateThrottle can resolve them
+_TEST_DRF = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
     ],
@@ -18,7 +18,10 @@ _NO_THROTTLE = {
         "rest_framework.permissions.IsAuthenticated",
     ],
     "DEFAULT_THROTTLE_CLASSES": [],
-    "DEFAULT_THROTTLE_RATES": {},
+    "DEFAULT_THROTTLE_RATES": {
+        "account": "1000/hour",
+        "account_export": "1000/hour",
+    },
 }
 
 
@@ -40,7 +43,7 @@ def authed_client(user):
 
 @pytest.fixture(autouse=True)
 def _disable_throttle(settings):
-    settings.REST_FRAMEWORK = _NO_THROTTLE
+    settings.REST_FRAMEWORK = _TEST_DRF
 
 
 @pytest.mark.django_db
@@ -139,8 +142,9 @@ class TestAccountViewPATCHEdgeCases:
 
 @pytest.mark.django_db
 class TestAccountViewDELETE:
+    @patch("apps.users.views._billing_repos", return_value=(MagicMock(), MagicMock()))
     @patch("apps.users.views.delete_user_data", new_callable=AsyncMock)
-    def test_delete_calls_gdpr_service(self, mock_delete, authed_client, user):
+    def test_delete_calls_gdpr_service(self, mock_delete, _mock_repos, authed_client, user):
         resp = authed_client.delete("/api/v1/account/")
         assert resp.status_code == 204
         mock_delete.assert_called_once()
@@ -155,8 +159,9 @@ class TestAccountViewDELETE:
 
 @pytest.mark.django_db
 class TestAccountExportView:
+    @patch("apps.users.views._billing_repos", return_value=(MagicMock(), MagicMock()))
     @patch("apps.users.views.export_user_data", new_callable=AsyncMock)
-    def test_export_returns_data(self, mock_export, authed_client, user):
+    def test_export_returns_data(self, mock_export, _mock_repos, authed_client, user):
         mock_export.return_value = {"user": {"email": user.email}}
         resp = authed_client.get("/api/v1/account/export/")
         assert resp.status_code == 200
