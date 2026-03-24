@@ -1730,9 +1730,9 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.7" },
     { name = "pydantic", extras = ["email"], marker = "extra == 'dev'", specifier = ">=2.12.5" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-anyio", marker = "extra == 'dev'", specifier = ">=0.0.0" },
     { name = "pytest-html", marker = "extra == 'dev'", specifier = ">=4.2.0" },

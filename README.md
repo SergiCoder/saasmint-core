@@ -20,6 +20,7 @@ gh repo fork SergiCoder/stripe-django --clone
 uv sync
 
 # 3. Set up environment variables
+cp .env.base .env.local
 # Edit .env.local with your Stripe keys, Supabase JWT secret, and database URL
 
 # 4. Run migrations
@@ -33,6 +34,7 @@ uv run python manage.py runserver
 
 | Variable | Description |
 |---|---|
+| `ENVIRONMENT` | Environment name (`local`, `development`, `production`) — selects which env file to load |
 | `DJANGO_SECRET_KEY` | Django secret key |
 | `DATABASE_URL` | PostgreSQL connection string |
 | `STRIPE_SECRET_KEY` | Stripe API secret key |
@@ -42,8 +44,8 @@ uv run python manage.py runserver
 | `SUPABASE_JWT_SECRET` | Supabase JWT signing secret (used for auth) |
 | `REDIS_URL` | Redis connection string (defaults to `redis://localhost:6379/0`) |
 | `DEBUG` | Set to `True` for local development |
-| `ALLOWED_HOSTS` | Comma-separated list of allowed hosts |
-| `CORS_ALLOWED_ORIGINS` | Comma-separated list of allowed CORS origins |
+| `ALLOWED_HOSTS` | JSON array of allowed hosts (e.g. `["localhost","127.0.0.1"]`) |
+| `CORS_ALLOWED_ORIGINS` | JSON array of allowed CORS origins |
 | `CORS_ALLOW_ALL_ORIGINS` | Set to `True` to allow all CORS origins (dev only) |
 | `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only) |
 
@@ -72,8 +74,7 @@ stripe-django/
 - **Stripe** for payments and billing
 - **uv** for dependency management
 - **Ruff** for linting
-- **mypy** for type checking (Django layer)
-- **pyright** for type checking (core package)
+- **mypy** for type checking
 - **pytest** for testing
 
 ## Development
@@ -88,11 +89,8 @@ cd core && uv run pytest -v
 # Lint
 uv run ruff check .
 
-# Typecheck (Django layer)
-uv run mypy .
-
-# Typecheck (core package)
-cd core && uv run pyright
+# Typecheck
+make typecheck
 
 # Format
 uv run ruff format .

@@ -58,8 +58,9 @@ format: ## Format with Ruff
 	uv run ruff format .
 
 .PHONY: typecheck
-typecheck: ## Run mypy
+typecheck: ## Run mypy (django + core)
 	uv run mypy .
+	cd core && uv run mypy .
 
 # ─── Setup ────────────────────────────────────────────────────────────────────
 

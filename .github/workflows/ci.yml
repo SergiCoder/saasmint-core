@@ -30,8 +30,8 @@ jobs:
         run: uv sync --extra dev --no-install-project && uv run ruff check .
 
   # ─── Typecheck ─────────────────────────────────────────────────────────────────
-  typecheck-core:
-    name: Typecheck (pyright) — core
+  typecheck:
+    name: Typecheck (mypy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,22 +40,12 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Typecheck
-        working-directory: core
-        run: uv sync --extra dev && uv run pyright .
-
-  typecheck-django:
-    name: Typecheck (mypy) — django
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Typecheck
+      - name: Typecheck django
         run: uv sync --extra dev --no-install-project && uv run mypy .
+
+      - name: Typecheck core
+        working-directory: core
+        run: uv sync --extra dev && uv run mypy .
 
   # ─── Test (core) ───────────────────────────────────────────────────────────────
   test-core:
