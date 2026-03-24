@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 import jwt
 import pytest
 from django.conf import settings
-from django.core.cache import cache
 from rest_framework.exceptions import AuthenticationFailed
 
 from apps.users.authentication import SupabaseJWTAuthentication
@@ -42,13 +41,6 @@ def _make_request(token: str | None = None) -> MagicMock:
     else:
         request.META = {}
     return request
-
-
-@pytest.fixture(autouse=True)
-def _clear_cache():
-    cache.clear()
-    yield
-    cache.clear()
 
 
 class TestSupabaseJWTAuthentication:
@@ -151,6 +143,17 @@ class TestSupabaseJWTAuthentication:
         token = _make_token(sub="sup_deleted", email="deleted@example.com")
         request = _make_request(token)
         with pytest.raises(AuthenticationFailed, match="deactivated"):
+            self.auth.authenticate(request)
+
+    @pytest.mark.django_db
+    def test_integrity_error_on_duplicate_email(self):
+        """When get_or_create races and hits an IntegrityError (e.g. duplicate email),
+        the authentication should raise a clear error."""
+        # Pre-create a user with the same email but a different supabase_uid
+        User.objects.create_user(email="conflict@example.com", supabase_uid="sup_other_uid")
+        token = _make_token(sub="sup_brand_new", email="conflict@example.com")
+        request = _make_request(token)
+        with pytest.raises(AuthenticationFailed, match="already associated"):
             self.auth.authenticate(request)
 
     def test_authenticate_header_returns_bearer(self):

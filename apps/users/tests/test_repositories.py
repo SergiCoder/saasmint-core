@@ -106,3 +106,17 @@ def test_delete_soft_deletes(repo, orm_user):
     # ORM record should still exist with deleted_at set
     obj = User.objects.get(id=orm_user.id)
     assert obj.deleted_at is not None
+
+
+def test_get_by_email_excludes_soft_deleted(repo, orm_user):
+    orm_user.deleted_at = datetime.now(UTC)
+    orm_user.save()
+    result = async_to_sync(repo.get_by_email)(orm_user.email)
+    assert result is None
+
+
+def test_get_by_supabase_uid_excludes_soft_deleted(repo, orm_user):
+    orm_user.deleted_at = datetime.now(UTC)
+    orm_user.save()
+    result = async_to_sync(repo.get_by_supabase_uid)(orm_user.supabase_uid)
+    assert result is None

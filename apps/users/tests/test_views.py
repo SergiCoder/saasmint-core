@@ -97,6 +97,47 @@ class TestAccountViewPATCH:
 
 
 @pytest.mark.django_db
+class TestAccountViewPATCHEdgeCases:
+    def test_update_multiple_fields_at_once(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"full_name": "Multi Update", "preferred_locale": "en", "preferred_currency": "eur"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["full_name"] == "Multi Update"
+        assert resp.data["preferred_locale"] == "en"
+        assert resp.data["preferred_currency"] == "eur"
+        user.refresh_from_db()
+        assert user.preferred_currency == "eur"
+
+    def test_update_avatar_url(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"avatar_url": "https://cdn.example.com/img.png"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["avatar_url"] == "https://cdn.example.com/img.png"
+
+    def test_update_empty_body_is_noop(self, authed_client, user):
+        original_name = user.full_name
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {},
+            format="json",
+        )
+        assert resp.status_code == 200
+        user.refresh_from_db()
+        assert user.full_name == original_name
+
+    def test_unauthenticated_patch_rejected(self):
+        client = APIClient()
+        resp = client.patch("/api/v1/account/", {"full_name": "Hacker"}, format="json")
+        assert resp.status_code in (401, 403)
+
+
+@pytest.mark.django_db
 class TestAccountViewDELETE:
     @patch("apps.users.views.delete_user_data", new_callable=AsyncMock)
     def test_delete_calls_gdpr_service(self, mock_delete, authed_client, user):
@@ -105,6 +146,11 @@ class TestAccountViewDELETE:
         mock_delete.assert_called_once()
         call_kwargs = mock_delete.call_args.kwargs
         assert call_kwargs["user_id"] == user.id
+
+    def test_unauthenticated_delete_rejected(self):
+        client = APIClient()
+        resp = client.delete("/api/v1/account/")
+        assert resp.status_code in (401, 403)
 
 
 @pytest.mark.django_db
@@ -116,3 +162,8 @@ class TestAccountExportView:
         assert resp.status_code == 200
         assert resp.data["user"]["email"] == user.email
         mock_export.assert_called_once()
+
+    def test_unauthenticated_export_rejected(self):
+        client = APIClient()
+        resp = client.get("/api/v1/account/export/")
+        assert resp.status_code in (401, 403)

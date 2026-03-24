@@ -10,13 +10,6 @@ from django.core.cache import cache
 from apps.users.models import AccountType, User
 
 
-@pytest.fixture(autouse=True)
-def _clear_cache():
-    cache.clear()
-    yield
-    cache.clear()
-
-
 @pytest.mark.django_db
 class TestUserManager:
     def test_create_user_sets_fields(self):

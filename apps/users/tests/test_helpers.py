@@ -37,3 +37,18 @@ class TestAgetOrNone:
     def test_returns_none_when_not_found(self):
         result = async_to_sync(aget_or_none)(User, lambda obj: obj, pk=uuid.uuid4())
         assert result is None
+
+    def test_raises_on_multiple_objects_returned(self):
+        """aget_or_none should propagate MultipleObjectsReturned (data integrity bug)."""
+        User.objects.create(
+            email="dup1@example.com",
+            supabase_uid="sup_dup1",
+            full_name="Duplicate",
+        )
+        User.objects.create(
+            email="dup2@example.com",
+            supabase_uid="sup_dup2",
+            full_name="Duplicate",
+        )
+        with pytest.raises(User.MultipleObjectsReturned):
+            async_to_sync(aget_or_none)(User, lambda obj: obj, full_name="Duplicate")
