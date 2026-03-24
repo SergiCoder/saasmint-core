@@ -48,6 +48,13 @@ uv run python manage.py runserver
 
 ```
 stripe-django/
+├── core/                # Framework-agnostic shared business logic (stripe-saas-core)
+│   ├── stripe_saas_core/
+│   │   ├── domain/      # Pydantic domain models (User, Org, Subscription, …)
+│   │   ├── services/    # Business logic (billing, webhooks, GDPR, …)
+│   │   ├── repositories/# Repository protocols (async, framework-agnostic)
+│   │   └── exceptions/  # Domain exceptions
+│   └── tests/           # Core unit tests
 ├── config/              # Django settings, URLs, WSGI/ASGI
 ├── accounts/            # User auth and profile management
 ├── billing/             # Stripe integration and webhook handling
@@ -66,7 +73,8 @@ stripe-django/
 - **Stripe** for payments and billing
 - **uv** for dependency management
 - **Ruff** for linting
-- **mypy** for type checking
+- **mypy** for type checking (Django layer)
+- **pyright** for type checking (core package)
 - **pytest** for testing
 
 ## Development

@@ -106,7 +106,7 @@ def _currency_from_accept_language(accept_language: str) -> str | None:
 
 
 def format_amount(amount: int, currency: str) -> float:
-    """Convert minor units to display amount. JPY/KRW are zero-decimal."""
+    """Convert minor units to display amount. JPY/KRW/IDR are zero-decimal."""
     if currency.lower() in ZERO_DECIMAL_CURRENCIES:
         return float(amount)
     return amount / 100
