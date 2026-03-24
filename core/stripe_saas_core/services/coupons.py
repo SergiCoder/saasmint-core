@@ -73,7 +73,10 @@ def describe_discount(promotion_code: stripe.PromotionCode) -> str:
             duration = "once"
         case "repeating":
             months: int | None = c["duration_in_months"]
-            duration = f"for {months} month{'s' if months != 1 else ''}"
+            if months is not None:
+                duration = f"for {months} month{'s' if months != 1 else ''}"
+            else:
+                duration = "repeating"
         case _:
             duration = ""
 

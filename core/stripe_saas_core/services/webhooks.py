@@ -110,6 +110,11 @@ def _ts_to_dt(value: int | float | None) -> datetime | None:
     return datetime.fromtimestamp(int(value), tz=UTC) if value is not None else None
 
 
+def _ts_to_dt_required(value: int | float) -> datetime:
+    """Convert a Unix timestamp to a UTC datetime (required field)."""
+    return datetime.fromtimestamp(int(value), tz=UTC)
+
+
 async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
     """Upsert a Stripe subscription into the local DB from raw event data."""
     from stripe_saas_core.exceptions import WebhookDataError
@@ -145,8 +150,8 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         discount_percent=discount_percent,
         discount_end_at=discount_end_at,
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
-        current_period_start=_ts_to_dt(sub_data["current_period_start"]),  # type: ignore[arg-type]
-        current_period_end=_ts_to_dt(sub_data["current_period_end"]),  # type: ignore[arg-type]
+        current_period_start=_ts_to_dt_required(sub_data["current_period_start"]),
+        current_period_end=_ts_to_dt_required(sub_data["current_period_end"]),
         canceled_at=_ts_to_dt(sub_data.get("canceled_at")),
         created_at=existing.created_at if existing else datetime.now(UTC),
     )

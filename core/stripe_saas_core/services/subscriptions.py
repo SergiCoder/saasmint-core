@@ -9,6 +9,12 @@ import stripe
 from stripe_saas_core.services.coupons import validate_promo_code
 
 
+async def _get_first_item_id(stripe_subscription_id: str) -> str:
+    """Retrieve a subscription and return its first line-item ID."""
+    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
+    return sub["items"]["data"][0]["id"]
+
+
 async def change_plan(
     *,
     stripe_subscription_id: str,
@@ -24,8 +30,7 @@ async def change_plan(
 
     DB state is synced via customer.subscription.updated webhook.
     """
-    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
-    item_id = sub["items"]["data"][0]["id"]
+    item_id = await _get_first_item_id(stripe_subscription_id)
 
     await asyncio.to_thread(
         stripe.Subscription.modify,
@@ -49,8 +54,7 @@ async def update_seat_count(
     if quantity < 1:
         raise ValueError("Seat count must be at least 1")
 
-    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
-    item_id = sub["items"]["data"][0]["id"]
+    item_id = await _get_first_item_id(stripe_subscription_id)
 
     await asyncio.to_thread(
         stripe.Subscription.modify,
