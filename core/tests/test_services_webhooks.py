@@ -392,7 +392,7 @@ async def test_sync_subscription_with_full_discount_and_trial() -> None:
 
     sub = next(iter(subscription_repo._store.values()))
     assert sub.promotion_code_id == "promo_abc"
-    assert sub.discount_percent == 20
+    assert sub.discount_percent == 20.0
     assert sub.discount_end_at is not None
     assert sub.trial_ends_at is not None
 

@@ -25,7 +25,7 @@ SUPPORTED_CURRENCIES: frozenset[str] = frozenset(
     }
 )
 
-ZERO_DECIMAL_CURRENCIES: frozenset[str] = frozenset({"jpy", "krw", "idr"})
+ZERO_DECIMAL_CURRENCIES: frozenset[str] = frozenset({"jpy", "krw", "idr", "twd"})
 
 # Maps ISO 3166-1 alpha-2 country codes to currency codes
 COUNTRY_CURRENCY_MAP: dict[str, str] = {
