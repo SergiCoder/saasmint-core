@@ -57,7 +57,10 @@ class DjangoUserRepository:
         return user
 
     async def delete(self, user_id: UUID) -> None:
-        await UserModel.objects.filter(id=user_id).aupdate(deleted_at=datetime.now(UTC))
+        obj = await UserModel.objects.filter(id=user_id, deleted_at__isnull=True).afirst()
+        if obj is not None:
+            obj.deleted_at = datetime.now(UTC)
+            await obj.asave(update_fields=["deleted_at"])
 
     async def list_by_org(self, org_id: UUID, *, limit: int = 100, offset: int = 0) -> list[User]:
         from apps.orgs.models import OrgMember  # lazy import — avoids circular

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
+
+if TYPE_CHECKING:
+    from apps.billing.repositories import (
+        DjangoStripeCustomerRepository,
+        DjangoSubscriptionRepository,
+    )
 
 from asgiref.sync import async_to_sync
 from rest_framework import status
@@ -19,7 +25,7 @@ from helpers import get_user
 _user_repo = DjangoUserRepository()
 
 
-def _billing_repos() -> tuple:
+def _billing_repos() -> tuple[DjangoStripeCustomerRepository, DjangoSubscriptionRepository]:
     """Lazy-import and instantiate billing repositories."""
     from apps.billing.repositories import (
         DjangoStripeCustomerRepository,
@@ -44,9 +50,10 @@ class AccountView(APIView):
         ser = UpdateUserSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
-        for field, value in ser.validated_data.items():
-            setattr(user, field, value)
-        user.save(update_fields=list(ser.validated_data.keys()))
+        if ser.validated_data:
+            for field, value in ser.validated_data.items():
+                setattr(user, field, value)
+            user.save(update_fields=list(ser.validated_data.keys()))
 
         return Response(UserSerializer(user).data)
 
