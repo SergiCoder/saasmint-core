@@ -19,6 +19,7 @@ build/
 .pytest_cache/
 htmlcov/
 .coverage
+reports/
 
 # Docker
 *.log
