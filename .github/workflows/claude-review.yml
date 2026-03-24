@@ -98,4 +98,8 @@ jobs:
 
             If there are no findings, post: "No issues found. Ready to merge."
 
-            Do not auto-fix anything — report only.
+            **Important:** This is a CI review — report only, do not write or edit files.
+            Profiles that normally write code (testing, documentation) must fall back to
+            inline comment and reporting mode: post findings as inline comments on the
+            relevant lines (using mcp__github_inline_comment__create_inline_comment) with
+            file paths, suggested content, and severity — just like reporting profiles do.
