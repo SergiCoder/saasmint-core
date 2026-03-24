@@ -19,6 +19,7 @@ dev = [
     "mypy>=1.14",
     "ruff>=0.14",
     "pytest-html>=4.2.0",
+    "pip-audit>=2.7",
 ]
 
 [tool.hatch.build.targets.wheel]

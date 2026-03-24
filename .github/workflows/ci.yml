@@ -98,6 +98,33 @@ jobs:
             exit $code
           }
 
+  # ─── Vulnerability audit ──────────────────────────────────────────────────────
+  audit:
+    name: Audit — ${{ matrix.pkg }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: django
+            dir: .
+          - pkg: core
+            dir: core
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.dir }}
+        run: uv sync --extra dev --no-install-project 2>/dev/null || uv sync --extra dev
+
+      - name: Run pip-audit
+        working-directory: ${{ matrix.dir }}
+        run: uv run pip-audit --desc --skip-editable
+
   # ─── Dependency freshness ──────────────────────────────────────────────────────
   check-deps:
     name: Check deps — ${{ matrix.pkg }}
@@ -123,14 +150,81 @@ jobs:
         run: |
           if [ ! -f uv.lock ]; then
             echo "⚠ Skipped — no uv.lock yet"
+            echo "up-to-date" > /tmp/deps-report.txt
             exit 0
           fi
-          cp uv.lock uv.lock.current
+          # Extract name=version pairs from a uv.lock file
+          extract() {
+            awk '/^\[\[package\]\]/{p=1;name=""} p && /^name = /{name=$3} p && /^version = / && name{print name "=" $3; p=0}' "$1" | tr -d '"' | sort
+          }
+          extract uv.lock > /tmp/current.txt
           uv lock --upgrade -q
-          if diff -q uv.lock.current uv.lock > /dev/null 2>&1; then
+          extract uv.lock > /tmp/latest.txt
+          # Join on package name and keep rows where version changed
+          join -t= /tmp/current.txt /tmp/latest.txt \
+            | awk -F= '$2 != $3 { printf "| %s | %s | %s |\n", $1, $2, $3 }' \
+            > /tmp/changed.txt || true
+          if [ ! -s /tmp/changed.txt ]; then
             echo "All dependencies up to date."
+            echo "up-to-date" > /tmp/deps-report.txt
           else
             echo "::warning::Outdated dependencies found in ${{ matrix.pkg }}"
-            diff --old-line-format='- %L' --new-line-format='+ %L' --unchanged-line-format='' \
-              uv.lock.current uv.lock | grep -E 'version\s*=' | head -40
+            {
+              echo "| Package | Current | Latest |"
+              echo "|---|---|---|"
+              head -40 /tmp/changed.txt
+            } | tee /tmp/deps-report.txt
           fi
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deps-report-${{ matrix.pkg }}
+          path: /tmp/deps-report.txt
+          retention-days: 1
+
+  # ─── Post dependency comment ────────────────────────────────────────────────
+  deps-comment:
+    name: Post deps comment
+    if: github.event_name == 'pull_request'
+    needs: check-deps
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deps-report-*
+          path: reports
+
+      - name: Build and post comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          body=""
+          has_updates=false
+
+          for dir in reports/deps-report-*/; do
+            pkg=$(basename "$dir" | sed 's/deps-report-//')
+            report=$(cat "$dir/deps-report.txt")
+
+            if echo "$report" | grep -q "^|"; then
+              has_updates=true
+              body="${body}### ${pkg}\n\n${report}\n\n"
+            fi
+          done
+
+          if [ "$has_updates" = false ]; then
+            echo "All deps up to date — no comment needed."
+            exit 0
+          fi
+
+          comment="## Outdated Dependencies\n\n${body}> Run \`uv lock --upgrade\` to update."
+          # Delete previous bot comment on this topic if present
+          gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Outdated Dependencies"))) | .id' \
+            | xargs -I{} gh api -X DELETE "repos/${GH_REPO}/issues/comments/{}" 2>/dev/null || true
+          printf "%b" "$comment" | gh pr comment "$PR_NUMBER" --body-file -
