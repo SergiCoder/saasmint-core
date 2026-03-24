@@ -112,3 +112,8 @@ def test_describe_discount_amount_off_no_currency_falls_to_discount() -> None:
     # amount_off set but currency is falsy → "discount" label
     promo = _make_promo(percent_off=None, amount_off=500, currency=None, duration="once")
     assert describe_discount(promo) == "discount once"
+
+
+def test_describe_discount_repeating_no_months() -> None:
+    promo = _make_promo(percent_off=10.0, duration="repeating", duration_in_months=None)
+    assert describe_discount(promo) == "10% off repeating"
