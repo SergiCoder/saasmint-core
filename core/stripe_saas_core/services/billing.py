@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -40,7 +41,8 @@ async def get_or_create_customer(
     if org_id:
         metadata["org_id"] = str(org_id)
 
-    stripe_customer = stripe.Customer.create(
+    stripe_customer = await asyncio.to_thread(
+        stripe.Customer.create,
         email=email,
         name=name,  # type: ignore[arg-type]  # Stripe stub declares str, API accepts str | None
         preferred_locales=[locale],
@@ -99,7 +101,7 @@ async def create_checkout_session(
     if subscription_data:
         params["subscription_data"] = subscription_data
 
-    session = stripe.checkout.Session.create(**params)  # type: ignore[arg-type]  # Stripe stub can't validate **kwargs shape
+    session = await asyncio.to_thread(stripe.checkout.Session.create, **params)  # type: ignore[arg-type]  # Stripe stub can't validate **kwargs shape
     return session.url  # type: ignore[return-value]  # Stripe stub types url as str | None but hosted checkout always returns str
 
 
@@ -110,7 +112,8 @@ async def create_billing_portal_session(
     return_url: str,
 ) -> str:
     """Create a Stripe Customer Portal session and return the URL."""
-    session = stripe.billing_portal.Session.create(
+    session = await asyncio.to_thread(
+        stripe.billing_portal.Session.create,
         customer=stripe_customer_id,
         locale=locale,  # type: ignore[arg-type]  # Stripe stub overload doesn't match str argument
         return_url=return_url,
@@ -137,6 +140,8 @@ async def cancel_subscription(
         raise SubscriptionNotFoundError("No active subscription found to cancel.")
 
     if at_period_end:
-        stripe.Subscription.modify(active.stripe_id, cancel_at_period_end=True)
+        await asyncio.to_thread(
+            stripe.Subscription.modify, active.stripe_id, cancel_at_period_end=True
+        )
     else:
-        stripe.Subscription.cancel(active.stripe_id)
+        await asyncio.to_thread(stripe.Subscription.cancel, active.stripe_id)

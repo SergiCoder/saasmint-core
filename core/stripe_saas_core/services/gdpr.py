@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 import stripe
@@ -37,12 +38,12 @@ async def delete_user_data(
         active_sub = await subscription_repo.get_active_for_customer(customer.id)
         if active_sub:
             try:
-                stripe.Subscription.cancel(active_sub.stripe_id)
+                await asyncio.to_thread(stripe.Subscription.cancel, active_sub.stripe_id)
             except stripe.InvalidRequestError:
                 pass  # already canceled in Stripe
 
         try:
-            stripe.Customer.delete(customer.stripe_id)
+            await asyncio.to_thread(stripe.Customer.delete, customer.stripe_id)
         except stripe.InvalidRequestError:
             pass  # already deleted in Stripe
 

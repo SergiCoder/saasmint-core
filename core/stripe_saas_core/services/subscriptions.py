@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import stripe
 
 from stripe_saas_core.services.coupons import validate_promo_code
@@ -22,10 +24,11 @@ async def change_plan(
 
     DB state is synced via customer.subscription.updated webhook.
     """
-    sub = stripe.Subscription.retrieve(stripe_subscription_id)
+    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
     item_id = sub["items"]["data"][0]["id"]
 
-    stripe.Subscription.modify(
+    await asyncio.to_thread(
+        stripe.Subscription.modify,
         stripe_subscription_id,
         items=[{"id": item_id, "price": new_stripe_price_id}],
         proration_behavior="create_prorations" if prorate else "none",
@@ -46,10 +49,11 @@ async def update_seat_count(
     if quantity < 1:
         raise ValueError("Seat count must be at least 1")
 
-    sub = stripe.Subscription.retrieve(stripe_subscription_id)
+    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
     item_id = sub["items"]["data"][0]["id"]
 
-    stripe.Subscription.modify(
+    await asyncio.to_thread(
+        stripe.Subscription.modify,
         stripe_subscription_id,
         items=[{"id": item_id, "quantity": quantity}],
         proration_behavior="create_prorations",
@@ -69,7 +73,8 @@ async def apply_promo_code(
     via customer.subscription.updated webhook.
     """
     promo = await validate_promo_code(promo_code)
-    stripe.Subscription.modify(
+    await asyncio.to_thread(
+        stripe.Subscription.modify,
         stripe_subscription_id,
         discounts=[{"promotion_code": promo.id}],
     )

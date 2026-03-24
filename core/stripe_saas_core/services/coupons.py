@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import stripe
@@ -19,7 +20,9 @@ async def validate_promo_code(promo_code: str) -> stripe.PromotionCode:
     - Code is inactive or expired
     - Code has exceeded its max_redemptions
     """
-    results = stripe.PromotionCode.list(code=promo_code, active=True, limit=1)
+    results = await asyncio.to_thread(
+        stripe.PromotionCode.list, code=promo_code, active=True, limit=1
+    )
 
     if not results.data:
         raise InvalidPromoCodeError(f"Promo code '{promo_code}' is invalid or expired.")
