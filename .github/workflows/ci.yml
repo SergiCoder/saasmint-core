@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── Lint (Ruff) ──────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (Ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Lint core
+        working-directory: core
+        run: uv sync --extra dev && uv run ruff check .
+
+      - name: Lint django
+        run: uv sync --extra dev --no-install-project && uv run ruff check .
+
+  # ─── Typecheck ─────────────────────────────────────────────────────────────────
+  typecheck-core:
+    name: Typecheck (pyright) — core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Typecheck
+        working-directory: core
+        run: uv sync --extra dev && uv run pyright .
+
+  typecheck-django:
+    name: Typecheck (mypy) — django
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Typecheck
+        run: uv sync --extra dev --no-install-project && uv run mypy .
+
+  # ─── Test (core) ───────────────────────────────────────────────────────────────
+  test-core:
+    name: Test (core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Run tests
+        working-directory: core
+        run: uv sync --extra dev && uv run pytest -v
+
+  # ─── Test (django) ─────────────────────────────────────────────────────────────
+  test-django:
+    name: Test (django)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: stripe_saas_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/stripe_saas_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Run tests
+        run: |
+          uv sync --extra dev --no-install-project
+          uv run pytest -v || {
+            code=$?
+            if [ $code -eq 5 ]; then echo "⚠ Skipped — no tests found yet"; exit 0; fi
+            exit $code
+          }
+
+  # ─── Dependency freshness ──────────────────────────────────────────────────────
+  check-deps:
+    name: Check deps — ${{ matrix.pkg }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: django
+            dir: .
+          - pkg: core
+            dir: core
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Check for outdated dependencies
+        working-directory: ${{ matrix.dir }}
+        run: |
+          if [ ! -f uv.lock ]; then
+            echo "⚠ Skipped — no uv.lock yet"
+            exit 0
+          fi
+          cp uv.lock uv.lock.current
+          uv lock --upgrade -q
+          if diff -q uv.lock.current uv.lock > /dev/null 2>&1; then
+            echo "All dependencies up to date."
+          else
+            echo "::warning::Outdated dependencies found in ${{ matrix.pkg }}"
+            diff --old-line-format='- %L' --new-line-format='+ %L' --unchanged-line-format='' \
+              uv.lock.current uv.lock | grep -E 'version\s*=' | head -40
+          fi
