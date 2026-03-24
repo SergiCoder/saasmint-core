@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from django.db import models
 from rest_framework.request import Request
@@ -21,11 +21,11 @@ def get_user(request: Request) -> User:
 async def aget_or_none[T](
     model_class: type[models.Model],
     to_domain: Callable[..., T],
-    **kwargs: object,
+    **kwargs: Any,  # noqa: ANN401
 ) -> T | None:
     """Fetch a single ORM object and convert to domain, or return None."""
     try:
-        obj = await model_class.objects.aget(**kwargs)
+        obj = await model_class.objects.aget(**kwargs)  # type: ignore[attr-defined]
         return to_domain(obj)
-    except model_class.DoesNotExist:
+    except model_class.DoesNotExist:  # type: ignore[attr-defined]
         return None

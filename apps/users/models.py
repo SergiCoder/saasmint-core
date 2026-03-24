@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.core.cache import cache
@@ -53,7 +53,7 @@ class User(AbstractBaseUser, PermissionsMixin):
             ),
         ]
 
-    def save(self, *args: object, **kwargs: object) -> None:
+    def save(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
         super().save(*args, **kwargs)
         cache.delete(AUTH_USER_CACHE_KEY.format(self.supabase_uid))
 

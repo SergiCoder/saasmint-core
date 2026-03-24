@@ -46,7 +46,7 @@ class _Env(BaseSettings):
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
-env = _Env()
+env = _Env()  # type: ignore[call-arg]
 
 
 def _parse_db_url(url: str) -> dict[str, object]:

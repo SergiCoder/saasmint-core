@@ -12,7 +12,7 @@ from stripe_saas_core.services.coupons import validate_promo_code
 async def _get_first_item_id(stripe_subscription_id: str) -> str:
     """Retrieve a subscription and return its first line-item ID."""
     sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
-    return sub["items"]["data"][0]["id"]
+    return str(sub["items"]["data"][0]["id"])
 
 
 async def change_plan(

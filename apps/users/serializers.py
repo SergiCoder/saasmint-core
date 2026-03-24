@@ -41,7 +41,7 @@ class UpdateUserSerializer(serializers.Serializer[User]):
         return self._validate_in_set(value, SUPPORTED_CURRENCIES, "currency")
 
     @staticmethod
-    def _validate_in_set(value: str, allowed: set[str], label: str) -> str:
+    def _validate_in_set(value: str, allowed: frozenset[str], label: str) -> str:
         if value not in allowed:
             raise serializers.ValidationError(
                 f"Unsupported {label}. Must be one of: {', '.join(sorted(allowed))}"

@@ -54,6 +54,15 @@ plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
 strict = true
 exclude = [".venv", "node_modules", "__pycache__", "tests", "migrations", "apps/users/management"]
 
+[[tool.mypy.overrides]]
+module = ["apps.orgs.*", "apps.billing.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+follow_untyped_imports = false
+
 [tool.django-stubs]
 django_settings_module = "config.settings.test"
 

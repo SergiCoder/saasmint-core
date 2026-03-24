@@ -677,7 +677,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "mypy" },
-    { name = "pydantic", extra = ["email"] },
     { name = "pytest" },
     { name = "pytest-anyio" },
     { name = "pytest-html" },
@@ -691,14 +690,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
-    { name = "pydantic", extras = ["email"], specifier = ">=2.7" },
-    { name = "pydantic", extras = ["email"], marker = "extra == 'dev'", specifier = ">=2.12.5" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
+    { name = "pydantic", extras = ["email"], specifier = ">=2.12.5" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-anyio", marker = "extra == 'dev'", specifier = ">=0.0.0" },
     { name = "pytest-html", marker = "extra == 'dev'", specifier = ">=4.2.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
-    { name = "stripe", specifier = ">=10.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14" },
+    { name = "stripe", specifier = ">=14.0" },
 ]
 provides-extras = ["dev"]
 
