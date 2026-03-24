@@ -1,0 +1,70 @@
+"""User account API views."""
+
+from __future__ import annotations
+
+from asgiref.sync import async_to_sync
+from rest_framework import status
+from rest_framework.request import Request
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from stripe_saas_core.services.gdpr import delete_user_data, export_user_data
+
+from apps.users.repositories import DjangoUserRepository
+from apps.users.serializers import UpdateUserSerializer, UserSerializer
+from helpers import get_user
+
+_user_repo = DjangoUserRepository()
+
+
+class AccountView(APIView):
+    """GET /api/v1/account — return the current user's profile."""
+
+    def get(self, request: Request) -> Response:
+        return Response(UserSerializer(get_user(request)).data)
+
+    def patch(self, request: Request) -> Response:
+        """PATCH /api/v1/account — update profile fields."""
+        user = get_user(request)
+        ser = UpdateUserSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        for field, value in ser.validated_data.items():
+            setattr(user, field, value)
+        user.save(update_fields=list(ser.validated_data.keys()))
+
+        return Response(UserSerializer(user).data)
+
+    def delete(self, request: Request) -> Response:
+        """DELETE /api/v1/account — GDPR right to erasure."""
+        from apps.billing.repositories import (
+            DjangoStripeCustomerRepository,
+            DjangoSubscriptionRepository,
+        )
+
+        user = get_user(request)
+        async_to_sync(delete_user_data)(
+            user_id=user.id,
+            user_repo=_user_repo,
+            customer_repo=DjangoStripeCustomerRepository(),
+            subscription_repo=DjangoSubscriptionRepository(),
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class AccountExportView(APIView):
+    """GET /api/v1/account/export — GDPR right of access."""
+
+    def get(self, request: Request) -> Response:
+        from apps.billing.repositories import (
+            DjangoStripeCustomerRepository,
+            DjangoSubscriptionRepository,
+        )
+
+        user = get_user(request)
+        data = async_to_sync(export_user_data)(
+            user_id=user.id,
+            user_repo=_user_repo,
+            customer_repo=DjangoStripeCustomerRepository(),
+            subscription_repo=DjangoSubscriptionRepository(),
+        )
+        return Response(data)
