@@ -1,0 +1,96 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stripe-saas-django"
+version = "0.2.0"
+description = "Django backend for Stripe SaaS"
+requires-python = ">=3.12"
+dependencies = [
+    "stripe-saas-core",
+    "django>=6.0",
+    "djangorestframework>=3.15",
+    "django-cors-headers>=4.3",
+    "psycopg[binary]>=3.1",
+    "celery[redis]>=5.4",
+    "pydantic-settings>=2.3",
+    "django-hijack>=3.4",       # user impersonation in admin
+    "whitenoise>=6.7",
+    "pyjwt>=2.8",
+    "uvicorn[standard]>=0.40",
+    "pydantic[email]>=2.12.5",
+    "supabase>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-django>=4.8",
+    "testcontainers[postgres]>=4.0",
+    "mypy>=1.14",
+    "django-stubs>=6.0",
+    "djangorestframework-stubs>=3.15",
+    "ruff>=0.14",
+    "pip-audit>=2.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["config", "apps", "middleware"]
+
+[tool.uv.sources]
+stripe-saas-core = { path = "core", editable = true }
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests"]
+filterwarnings = [
+    "ignore:No directory at.*staticfiles:UserWarning",
+]
+addopts = "--cov-config=pyproject.toml"
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
+strict = true
+exclude = [".venv", "node_modules", "__pycache__", "tests", "migrations", "apps/users/management"]
+
+[[tool.mypy.overrides]]
+module = ["apps.orgs.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+follow_untyped_imports = false
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "ANN", "S", "B", "A", "C4", "RUF", "DJ"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "ANN"]
+"apps/*/tests/**" = ["S101", "ANN"]
+"*/migrations/**" = ["ANN", "RUF", "E501"]
+
+[tool.coverage.run]
+omit = [
+    "config/settings/dev.py",
+    "config/settings/prod.py",
+    "config/asgi.py",
+    "config/wsgi.py",
+    "config/urls.py",
+]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.0.0",
+    "pytest-django>=4.12.0",
+]

@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stripe-saas-core"
+version = "0.2.0"
+description = "Shared business logic for Stripe SaaS — framework-agnostic"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic[email]>=2.12.5",
+    "stripe>=14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-anyio>=0.0.0",
+    "mypy>=1.14",
+    "ruff>=0.14",
+    "pytest-html>=4.2.0",
+    "pip-audit>=2.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["stripe_saas_core"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--html=reports/test-report.html --self-contained-html"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+exclude = [".venv", "__pycache__", "tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "ANN", "S", "B", "A", "C4", "RUF"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "ANN"]
+
+[tool.coverage.run]
+omit = ["stripe_saas_core/repositories/org.py"]
+
+[dependency-groups]
+dev = [
+    "pytest-cov>=7.0.0",
+]

@@ -1,3 +1,24 @@
+##############################################################################
+# Prism — Claude Code Review (installable template)
+#
+# Copy this file into your repo at: .github/workflows/claude-review.yml
+#
+# Prerequisites:
+#   1. Add ANTHROPIC_API_KEY as a repository secret
+#      (Settings → Secrets and variables → Actions → New repository secret)
+#
+# How it works:
+#   - Checks out your repo + the prism plugin (skills & detection rules)
+#   - Auto-detects your stack from config files (package.json, pyproject.toml, etc.)
+#   - Runs the matching review profiles from prism's skills/
+#   - Posts inline comments on the PR and a summary table
+#
+# Triggers:
+#   - Automatically on PRs opened/reopened by the repo owner
+#   - On "@prism review" in PR comments by collaborators
+#   - Manually via workflow_dispatch
+##############################################################################
+
 name: Claude Code Review
 
 on:
@@ -5,6 +26,7 @@ on:
     types: [opened, reopened]
   issue_comment:
     types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,36 +36,45 @@ permissions:
 
 jobs:
   review:
-    runs-on: ubuntu-latest
     if: >-
       (github.event_name == 'pull_request' && github.event.pull_request.user.login == github.repository_owner) ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@claude') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '@prism review') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - uses: actions/checkout@v4
+        with:
+          repository: SergiCoder/prism
+          path: .prism
+          sparse-checkout: |
+            skills
+            commands
 
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: --model claude-opus-4-6 --max-turns 30 --allowedTools "Bash(git diff*),Bash(git log*),Bash(git show*),Bash(gh api*),Read,Glob,Grep,mcp__github__*,mcp__github_inline_comment__*"
           prompt: |
-            Review the changes in this pull request for code quality, correctness, and security.
+            Review the changes in this pull request using the review profiles in `.prism/skills/`.
+            Follow the detection rules defined in `.prism/commands/review.md`, but replace
+            all references to `skills/` with `.prism/skills/` and `commands/` with `.prism/commands/`.
 
-            Focus on:
-            - Security: authentication, authorization, injection vulnerabilities, secrets in code, exposed sensitive data
-            - Django best practices: ORM usage, settings configuration, URL patterns, middleware, signals
-            - Model and query performance: N+1 queries, missing indexes, inefficient querysets
-            - Stripe integration: webhook signature verification, idempotency, error handling
-            - Test coverage: missing tests for critical paths, edge cases, error scenarios
+            ## Instructions
 
-            Instructions:
-            1. First, fetch existing review comments to avoid duplicates:
+            1. Determine the base branch (use `dev` if it exists, otherwise `main`)
+            2. Get the list of changed files: `git diff origin/$BASE...HEAD --name-only`
+            3. Detect the stack by reading `package.json`, `pyproject.toml`, `requirements.txt`, `go.mod`, `pom.xml`, `build.gradle`, `composer.json`, `Gemfile`, and any `*.csproj` files if they exist
+            4. Auto-detect which profiles to run following the rules in `.prism/commands/review.md` (Step 3)
+            5. Read each selected profile from `.prism/skills/<profile>/SKILL.md`
+            6. Run all profiles in parallel and collect findings
+            7. Fetch existing review comments to avoid duplicates:
                gh api repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments \
                  --jq '.[] | select(.user.login == "github-actions[bot]" or .user.type == "Bot") | {path, line, body}'
-               Keep this list to check against before posting new comments.
-            2. Analyze the diff to identify all findings.
-            3. For EACH finding, check if a comment already exists on the same file and line
+            8. For EACH finding, check if a comment already exists on the same file and line
                with the same issue title. If it does, SKIP it. Only post NEW findings using
                mcp__github_inline_comment__create_inline_comment with confirmed=true.
                IMPORTANT: You can only comment on lines that appear in the PR diff.
@@ -51,11 +82,13 @@ jobs:
                Format each inline comment as:
                **<SEVERITY>** — <Category>: <Short title>
                <Explanation and recommendation>
-            4. After posting all inline comments, update the main comment with a summary table:
+            9. After posting all inline comments, update the main comment with a summary:
 
             # Code Review
 
             **Files changed:** <count>
+            **Stack detected:** <languages and frameworks>
+            **Profiles run:** <list>
             **New inline comments:** <count>
             **Previously posted:** <count> (skipped)
 
@@ -70,4 +103,8 @@ jobs:
 
             If there are no findings, post: "No issues found. Ready to merge."
 
-            Do not auto-fix anything — report only.
+            **Important:** This is a CI review — report only, do not write or edit files.
+            Profiles that normally write code (testing, documentation) must fall back to
+            inline comment and reporting mode: post findings as inline comments on the
+            relevant lines (using mcp__github_inline_comment__create_inline_comment) with
+            file paths, suggested content, and severity — just like reporting profiles do.
