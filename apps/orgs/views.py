@@ -66,7 +66,7 @@ class OrgListCreateView(APIView):
         orgs = Org.objects.filter(
             id__in=OrgMember.objects.filter(user=user).values("org_id"),
             deleted_at__isnull=True,
-        )[:100]
+        ).order_by("name")[:100]
         return Response(OrgSerializer(orgs, many=True).data)
 
     def post(self, request: Request) -> Response:
@@ -134,7 +134,7 @@ class OrgMemberListView(APIView):
     def get(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         org, _ = _get_org_and_member(user.id, org_id)
-        queryset = OrgMember.objects.filter(org=org).select_related("user")
+        queryset = OrgMember.objects.filter(org=org).select_related("user").order_by("joined_at")
         paginator = LimitOffsetPagination()
         paginator.default_limit = 50
         paginator.max_limit = 200
@@ -192,7 +192,7 @@ class OrgMemberDetailView(APIView):
 
         # Prevent escalation: new role cannot exceed caller's own role
         new_role = ser.validated_data.get("role")
-        if new_role:
+        if new_role is not None:
             check_can_assign_role(
                 caller_role=CoreOrgRole(caller.role),
                 new_role=CoreOrgRole(new_role),
