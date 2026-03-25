@@ -2,13 +2,17 @@
 
 import uuid
 
+import django.db.models.deletion
+from django.conf import settings
 from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
     initial = True
 
-    dependencies = []
+    dependencies = [
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+    ]
 
     operations = [
         migrations.CreateModel(
@@ -23,8 +27,16 @@ class Migration(migrations.Migration):
                 ("name", models.CharField(max_length=255)),
                 ("slug", models.SlugField(max_length=255, unique=True)),
                 ("logo_url", models.TextField(blank=True, null=True)),
+                (
+                    "created_by",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        related_name="created_orgs",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
-                ("deleted_at", models.DateTimeField(blank=True, null=True)),
+                ("deleted_at", models.DateTimeField(blank=True, db_index=True, null=True)),
             ],
             options={
                 "db_table": "orgs",
@@ -37,6 +49,22 @@ class Migration(migrations.Migration):
                     "id",
                     models.UUIDField(
                         default=uuid.uuid4, editable=False, primary_key=True, serialize=False
+                    ),
+                ),
+                (
+                    "org",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="members",
+                        to="orgs.org",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="org_memberships",
+                        to=settings.AUTH_USER_MODEL,
                     ),
                 ),
                 (
@@ -53,5 +81,19 @@ class Migration(migrations.Migration):
             options={
                 "db_table": "org_members",
             },
+        ),
+        migrations.AddIndex(
+            model_name="org",
+            index=models.Index(
+                condition=models.Q(("deleted_at__isnull", True)),
+                fields=["slug"],
+                name="idx_orgs_slug_active",
+            ),
+        ),
+        migrations.AddConstraint(
+            model_name="orgmember",
+            constraint=models.UniqueConstraint(
+                fields=("org", "user"), name="org_members_org_user_uniq"
+            ),
         ),
     ]

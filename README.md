@@ -7,6 +7,7 @@ A production-ready Django template for building SaaS applications with Stripe bi
 - **Stripe integration** — subscriptions, one-time payments, customer portal, and webhook handling
 - **Django backend** — authentication, user management, and admin panel
 - **Webhook processing** — idempotent event handling with database-backed deduplication
+- **Organisations** — multi-tenant orgs with role-based membership (owner, admin, member)
 - **Multi-plan support** — free, pro, enterprise (or define your own)
 - **CI/CD** — GitHub Actions for lint, typecheck, and tests out of the box
 
@@ -63,6 +64,7 @@ stripe-django/
 ├── config/              # Django settings, URLs, WSGI/ASGI
 ├── apps/                # Django apps
 │   ├── billing/         # Stripe billing, subscriptions, and webhook processing
+│   ├── orgs/            # Organisation management and membership
 │   └── users/           # User auth, Supabase JWT authentication, and profile management
 ├── middleware/           # Django middleware (exception handling, security headers)
 ├── .github/             # CI workflows and PR template

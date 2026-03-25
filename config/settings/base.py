@@ -156,6 +156,7 @@ REST_FRAMEWORK = {
         "billing": "30/hour",
         "account": "10/hour",
         "account_export": "3/hour",
+        "orgs": "60/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
 }
