@@ -1,0 +1,58 @@
+"""Django ORM models for organisations and memberships."""
+
+from __future__ import annotations
+
+import uuid
+
+from django.db import models
+
+
+class OrgRole(models.TextChoices):
+    OWNER = "owner", "Owner"
+    ADMIN = "admin", "Admin"
+    MEMBER = "member", "Member"
+
+
+class Org(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(max_length=255)
+    logo_url = models.TextField(null=True, blank=True)  # noqa: DJ001
+    created_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.PROTECT,
+        related_name="created_orgs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        db_table = "orgs"
+        constraints = [  # noqa: RUF012
+            models.UniqueConstraint(
+                fields=["slug"],
+                condition=models.Q(deleted_at__isnull=True),
+                name="idx_orgs_slug_active",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class OrgMember(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    org = models.ForeignKey(Org, on_delete=models.CASCADE, related_name="members")
+    user = models.ForeignKey("users.User", on_delete=models.CASCADE, related_name="org_memberships")
+    role = models.CharField(max_length=20, choices=OrgRole.choices, default=OrgRole.MEMBER)
+    is_billing = models.BooleanField(default=False)
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "org_members"
+        constraints = [  # noqa: RUF012
+            models.UniqueConstraint(fields=["org", "user"], name="org_members_org_user_uniq"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user} @ {self.org} ({self.role})"

@@ -10,6 +10,7 @@ urlpatterns = [
     path("hijack/", include("hijack.urls")),
     path("api/v1/account/", include("apps.users.urls")),
     path("api/v1/billing/", include("apps.billing.urls")),
+    path("api/v1/orgs/", include("apps.orgs.urls")),
     path("api/v1/webhooks/", include("apps.billing.webhook_urls")),
 ]
 

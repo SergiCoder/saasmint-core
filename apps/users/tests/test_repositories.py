@@ -120,3 +120,52 @@ def test_get_by_supabase_uid_excludes_soft_deleted(repo, orm_user):
     orm_user.save()
     result = async_to_sync(repo.get_by_supabase_uid)(orm_user.supabase_uid)
     assert result is None
+
+
+class TestListByOrg:
+    @pytest.fixture
+    def org(self, orm_user):
+        from apps.orgs.models import Org
+
+        return Org.objects.create(name="Test Org", slug="test-org", created_by=orm_user)
+
+    @pytest.fixture
+    def members(self, org, orm_user):
+        from apps.orgs.models import OrgMember, OrgRole
+
+        OrgMember.objects.create(org=org, user=orm_user, role=OrgRole.OWNER)
+        extras = []
+        for i in range(3):
+            u = User.objects.create_user(
+                email=f"member{i}@example.com",
+                supabase_uid=f"sup_member{i}",
+                full_name=f"Member {i}",
+            )
+            OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)
+            extras.append(u)
+        return [orm_user, *extras]
+
+    def test_returns_org_members(self, repo, org, members):
+        result = async_to_sync(repo.list_by_org)(org.id)
+        assert len(result) == 4
+        returned_emails = {u.email for u in result}
+        assert all(m.email in returned_emails for m in members)
+
+    def test_empty_org(self, repo, org):
+        result = async_to_sync(repo.list_by_org)(org.id)
+        assert result == []
+
+    def test_limit_and_offset(self, repo, org, members):
+        result = async_to_sync(repo.list_by_org)(org.id, limit=2, offset=0)
+        assert len(result) == 2
+
+        result_offset = async_to_sync(repo.list_by_org)(org.id, limit=2, offset=2)
+        assert len(result_offset) == 2
+
+    def test_excludes_soft_deleted_users(self, repo, org, members):
+        members[1].deleted_at = datetime.now(UTC)
+        members[1].save()
+        result = async_to_sync(repo.list_by_org)(org.id)
+        assert len(result) == 3
+        returned_emails = {u.email for u in result}
+        assert members[1].email not in returned_emails

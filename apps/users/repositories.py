@@ -64,12 +64,7 @@ class DjangoUserRepository:
             await obj.asave(update_fields=["deleted_at"])
 
     async def list_by_org(self, org_id: UUID, *, limit: int = 100, offset: int = 0) -> list[User]:
-        try:
-            from apps.orgs.models import OrgMember  # lazy import — avoids circular
-        except ImportError:
-            raise NotImplementedError(
-                "Orgs app is not installed. list_by_org requires apps.orgs (PR 5)."
-            ) from None
+        from apps.orgs.models import OrgMember  # lazy import — avoids circular
 
         member_user_ids = OrgMember.objects.filter(org_id=org_id).values("user_id")
         return [
