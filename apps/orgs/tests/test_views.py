@@ -616,3 +616,151 @@ class TestUnauthenticatedMemberEndpoints:
         client = APIClient()
         resp = client.delete(f"/api/v1/orgs/{org.id}/members/{user.id}/")
         assert resp.status_code in (401, 403)
+
+
+@pytest.mark.django_db
+class TestSoftDeletedOrgMemberOperations:
+    """Operations on members of a soft-deleted org should fail."""
+
+    def test_patch_member_on_soft_deleted_org_returns_404(
+        self, authed_client, org, owner_membership, member_user, member_membership
+    ):
+        from datetime import UTC, datetime
+
+        org.deleted_at = datetime.now(UTC)
+        org.save(update_fields=["deleted_at"])
+        resp = authed_client.patch(
+            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
+            {"role": "admin"},
+            format="json",
+        )
+        assert resp.status_code == 404
+
+    def test_delete_member_on_soft_deleted_org_returns_404(
+        self, authed_client, org, owner_membership, member_user, member_membership
+    ):
+        from datetime import UTC, datetime
+
+        org.deleted_at = datetime.now(UTC)
+        org.save(update_fields=["deleted_at"])
+        resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{member_user.id}/")
+        assert resp.status_code == 404
+
+    def test_add_member_to_soft_deleted_org_returns_404(
+        self, authed_client, org, owner_membership, other_user
+    ):
+        from datetime import UTC, datetime
+
+        org.deleted_at = datetime.now(UTC)
+        org.save(update_fields=["deleted_at"])
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/members/",
+            {"user_id": str(other_user.id), "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 404
+
+    def test_list_members_on_soft_deleted_org_returns_404(
+        self, authed_client, org, owner_membership
+    ):
+        from datetime import UTC, datetime
+
+        org.deleted_at = datetime.now(UTC)
+        org.save(update_fields=["deleted_at"])
+        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/")
+        assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestOrgDetailViewPATCHNullLogoUrl:
+    def test_owner_can_set_logo_url_to_null(self, authed_client, org, owner_membership):
+        # First set a logo_url
+        org.logo_url = "https://example.com/logo.png"
+        org.save(update_fields=["logo_url"])
+        # Now null it out
+        resp = authed_client.patch(
+            f"/api/v1/orgs/{org.id}/",
+            {"logo_url": None},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["logo_url"] is None
+
+
+@pytest.mark.django_db
+class TestOrgMemberListPagination:
+    def test_limit_offset_params(self, authed_client, org, owner_membership, user):
+        from apps.users.models import User
+
+        # Create extra members to paginate
+        for i in range(5):
+            u = User.objects.create_user(
+                email=f"pag{i}@example.com",
+                supabase_uid=f"sup_pag{i}",
+                full_name=f"Pag{i}",
+            )
+            OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)
+        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/?limit=2&offset=0")
+        assert resp.status_code == 200
+        assert resp.data["count"] == 6  # owner + 5 members
+        assert len(resp.data["results"]) == 2
+
+    def test_offset_skips_results(self, authed_client, org, owner_membership, user):
+        from apps.users.models import User
+
+        for i in range(3):
+            u = User.objects.create_user(
+                email=f"off{i}@example.com",
+                supabase_uid=f"sup_off{i}",
+                full_name=f"Off{i}",
+            )
+            OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)
+        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/?limit=10&offset=2")
+        assert resp.status_code == 200
+        assert len(resp.data["results"]) == 2  # 4 total, skip 2
+
+
+@pytest.mark.django_db
+class TestCreateOrgIntegrityErrorRace:
+    """Test the IntegrityError fallback in OrgListCreateView.post for race conditions."""
+
+    def test_concurrent_slug_creation_returns_400(self, authed_client, user):
+        from unittest.mock import patch
+
+        # The serializer validation passes, but the DB insert hits a unique violation
+        original_create = Org.objects.create
+
+        call_count = 0
+
+        def create_then_raise(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            # First, create the org normally from a "concurrent" request
+            if call_count == 1:
+                from django.db import IntegrityError
+
+                raise IntegrityError("duplicate key value violates unique constraint")
+            return original_create(**kwargs)
+
+        with patch.object(Org.objects, "create", side_effect=create_then_raise):
+            resp = authed_client.post(
+                "/api/v1/orgs/",
+                {"name": "Race Org", "slug": "race-org"},
+                format="json",
+            )
+        assert resp.status_code == 400
+        assert "slug" in resp.data
+
+
+@pytest.mark.django_db
+class TestOrgListMaxResults:
+    """The list endpoint caps at 100 orgs."""
+
+    def test_max_100_orgs_returned(self, authed_client, user):
+
+        for i in range(105):
+            o = Org.objects.create(name=f"Org{i:03d}", slug=f"org-{i:03d}", created_by=user)
+            OrgMember.objects.create(org=o, user=user, role=OrgRole.OWNER)
+        resp = authed_client.get("/api/v1/orgs/")
+        assert resp.status_code == 200
+        assert len(resp.data) == 100

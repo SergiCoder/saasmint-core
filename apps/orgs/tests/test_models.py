@@ -68,6 +68,17 @@ class TestOrgMember:
         other_user.delete()
         assert not OrgMember.objects.filter(id=member_id).exists()
 
+    def test_slug_reusable_after_soft_delete(self, user):
+        """Conditional unique allows reusing a slug once the original org is soft-deleted."""
+        from datetime import UTC, datetime
+
+        org1 = Org.objects.create(name="First", slug="reuse-slug", created_by=user)
+        org1.deleted_at = datetime.now(UTC)
+        org1.save(update_fields=["deleted_at"])
+        # Should not raise — the slug is free for active orgs
+        org2 = Org.objects.create(name="Second", slug="reuse-slug", created_by=user)
+        assert org2.slug == "reuse-slug"
+
 
 class TestOrgRole:
     def test_choices(self):
