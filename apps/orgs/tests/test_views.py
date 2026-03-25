@@ -504,3 +504,115 @@ class TestOrgMemberDetailViewDELETEEdgeCases:
     ):
         resp = member_client.delete(f"/api/v1/orgs/{org.id}/members/{member_user.id}/")
         assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+class TestOrgListCreateViewGETEdgeCases:
+    def test_returns_orgs_ordered_by_name(self, authed_client, user):
+        org_b = Org.objects.create(name="Bravo", slug="bravo", created_by=user)
+        org_a = Org.objects.create(name="Alpha", slug="alpha", created_by=user)
+        OrgMember.objects.create(org=org_b, user=user, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org_a, user=user, role=OrgRole.OWNER)
+        resp = authed_client.get("/api/v1/orgs/")
+        assert resp.status_code == 200
+        names = [o["name"] for o in resp.data]
+        assert names == ["Alpha", "Bravo"]
+
+    def test_returns_multiple_orgs(self, authed_client, user):
+        for i in range(3):
+            o = Org.objects.create(name=f"Org{i}", slug=f"org-{i}", created_by=user)
+            OrgMember.objects.create(org=o, user=user, role=OrgRole.OWNER)
+        resp = authed_client.get("/api/v1/orgs/")
+        assert resp.status_code == 200
+        assert len(resp.data) == 3
+
+
+@pytest.mark.django_db
+class TestOrgMemberListViewPOSTEdgeCases:
+    def test_admin_cannot_add_owner(
+        self, admin_client, org, owner_membership, admin_membership, other_user
+    ):
+        resp = admin_client.post(
+            f"/api/v1/orgs/{org.id}/members/",
+            {"user_id": str(other_user.id), "role": "owner"},
+            format="json",
+        )
+        assert resp.status_code == 403
+
+    def test_invalid_role_returns_400(self, authed_client, org, owner_membership, other_user):
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/members/",
+            {"user_id": str(other_user.id), "role": "superadmin"},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_unauthenticated_rejected(self, org, owner_membership, other_user):
+        client = APIClient()
+        resp = client.post(
+            f"/api/v1/orgs/{org.id}/members/",
+            {"user_id": str(other_user.id), "role": "member"},
+            format="json",
+        )
+        assert resp.status_code in (401, 403)
+
+    def test_added_member_has_default_is_billing_false(
+        self, authed_client, org, owner_membership, other_user
+    ):
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/members/",
+            {"user_id": str(other_user.id), "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 201
+        assert resp.data["is_billing"] is False
+
+
+@pytest.mark.django_db
+class TestOrgMemberDetailViewPATCHOnNonexistentOrg:
+    def test_patch_member_nonexistent_org_returns_404(self, authed_client, other_user):
+        resp = authed_client.patch(
+            f"/api/v1/orgs/{uuid4()}/members/{other_user.id}/",
+            {"role": "admin"},
+            format="json",
+        )
+        assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestOrgMemberDetailViewDELETEOnNonexistentOrg:
+    def test_delete_member_nonexistent_org_returns_404(self, authed_client, other_user):
+        resp = authed_client.delete(f"/api/v1/orgs/{uuid4()}/members/{other_user.id}/")
+        assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestOwnerRemovesAdmin:
+    def test_owner_can_remove_admin(
+        self, authed_client, org, owner_membership, admin_user, admin_membership
+    ):
+        resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{admin_user.id}/")
+        assert resp.status_code == 204
+        assert not OrgMember.objects.filter(org=org, user=admin_user).exists()
+
+
+@pytest.mark.django_db
+class TestUnauthenticatedMemberEndpoints:
+    def test_list_members_unauthenticated(self, org, owner_membership):
+        client = APIClient()
+        resp = client.get(f"/api/v1/orgs/{org.id}/members/")
+        assert resp.status_code in (401, 403)
+
+    def test_patch_member_unauthenticated(self, org, owner_membership, user):
+        client = APIClient()
+        resp = client.patch(
+            f"/api/v1/orgs/{org.id}/members/{user.id}/",
+            {"role": "admin"},
+            format="json",
+        )
+        assert resp.status_code in (401, 403)
+
+    def test_delete_member_unauthenticated(self, org, owner_membership, user):
+        client = APIClient()
+        resp = client.delete(f"/api/v1/orgs/{org.id}/members/{user.id}/")
+        assert resp.status_code in (401, 403)

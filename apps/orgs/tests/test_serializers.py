@@ -155,3 +155,53 @@ class TestUpdateMemberSerializer:
         ser = UpdateMemberSerializer(data={"role": "superadmin"})
         assert not ser.is_valid()
         assert "role" in ser.errors
+
+
+class TestCreateOrgSerializerEdgeCases:
+    def test_invalid_logo_url_rejected(self):
+        ser = CreateOrgSerializer(data={"name": "Org", "slug": "org-slug", "logo_url": "not-a-url"})
+        assert not ser.is_valid()
+        assert "logo_url" in ser.errors
+
+    def test_name_max_length_exceeded(self):
+        ser = CreateOrgSerializer(data={"name": "X" * 256, "slug": "long-name"})
+        assert not ser.is_valid()
+        assert "name" in ser.errors
+
+    def test_slug_max_length_exceeded(self):
+        ser = CreateOrgSerializer(data={"name": "Org", "slug": "x" * 256})
+        assert not ser.is_valid()
+        assert "slug" in ser.errors
+
+    def test_logo_url_null_is_valid(self):
+        ser = CreateOrgSerializer(data={"name": "Org", "slug": "org-slug", "logo_url": None})
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["logo_url"] is None
+
+
+class TestUpdateOrgSerializerEdgeCases:
+    def test_invalid_logo_url_rejected(self):
+        ser = UpdateOrgSerializer(data={"logo_url": "not-a-url"})
+        assert not ser.is_valid()
+        assert "logo_url" in ser.errors
+
+    def test_name_max_length_exceeded(self):
+        ser = UpdateOrgSerializer(data={"name": "X" * 256})
+        assert not ser.is_valid()
+        assert "name" in ser.errors
+
+
+class TestAddMemberSerializerEdgeCases:
+    def test_invalid_uuid_rejected(self):
+        ser = AddMemberSerializer(data={"user_id": "not-a-uuid", "role": "member"})
+        assert not ser.is_valid()
+        assert "user_id" in ser.errors
+
+    def test_is_billing_true(self):
+        from uuid import uuid4
+
+        ser = AddMemberSerializer(
+            data={"user_id": str(uuid4()), "role": "member", "is_billing": True}
+        )
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["is_billing"] is True
