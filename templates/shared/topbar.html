@@ -1,0 +1,41 @@
+{% load static %}
+<div class="topbar">
+  <div class="topbar-inner">
+
+    <div class="topbar-left">
+      {% if topbar_back_url %}
+        <a href="{{ topbar_back_url }}" class="topbar-brand">← {{ topbar_title }}</a>
+      {% else %}
+        <strong class="topbar-brand">{{ topbar_title }}</strong>
+      {% endif %}
+      {% if request.user.is_hijacked %}
+        <span class="topbar-tag">Impersonating</span>
+      {% endif %}
+    </div>
+
+    <div class="topbar-links">
+      {% if topbar_show_user or request.user.is_hijacked %}
+        <span class="topbar-user">
+          <span class="topbar-user-id">{{ request.user.id }}</span>
+          &nbsp;·&nbsp;{{ request.user.email }}
+          &nbsp;·&nbsp;<span class="user-name">{{ request.user.full_name|default:"—" }}</span>
+        </span>
+      {% elif not request.user.is_hijacked %}
+        <a href="{% url 'admin:index' %}">Admin</a>
+      {% endif %}
+      {% if request.user.is_hijacked %}
+        <form method="post" action="{% url 'hijack-release' %}" class="topbar-release-form">
+          {% csrf_token %}
+          <input type="hidden" name="next" value="{% url 'admin:users_user_changelist' %}">
+          <button type="submit" class="topbar-release">Stop impersonating</button>
+        </form>
+      {% else %}
+        <form method="post" action="{% url 'admin:logout' %}" class="topbar-release-form">
+          {% csrf_token %}
+          <button type="submit" class="topbar-release">Log out</button>
+        </form>
+      {% endif %}
+    </div>
+
+  </div>
+</div>
