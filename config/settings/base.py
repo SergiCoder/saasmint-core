@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     "hijack",
     "hijack.contrib.admin",
     "apps.users",
+    "apps.billing",
 ]
 
 MIDDLEWARE = [
@@ -155,7 +156,7 @@ REST_FRAMEWORK = {
         "account": "10/hour",
         "account_export": "3/hour",
     },
-    # "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",  # TODO: PR 4
+    "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
 }
 
 CORS_ALLOWED_ORIGINS = env.cors_allowed_origins

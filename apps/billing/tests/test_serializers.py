@@ -1,0 +1,211 @@
+"""Tests for billing serializers."""
+
+from __future__ import annotations
+
+import pytest
+
+from apps.billing.serializers import (
+    ChangePlanSerializer,
+    CheckoutRequestSerializer,
+    PlanPriceSerializer,
+    PlanSerializer,
+    PortalRequestSerializer,
+    PromoCodeSerializer,
+    SubscriptionSerializer,
+    UpdateSeatCountSerializer,
+)
+
+
+@pytest.mark.django_db
+class TestPlanPriceSerializer:
+    def test_serializes_fields(self, plan_price):
+        data = PlanPriceSerializer(plan_price).data
+        assert data["id"] == str(plan_price.id)
+        assert data["currency"] == "usd"
+        assert data["amount"] == 999
+
+    def test_all_fields_read_only(self):
+        assert set(PlanPriceSerializer.Meta.read_only_fields) == set(
+            PlanPriceSerializer.Meta.fields
+        )
+
+
+@pytest.mark.django_db
+class TestPlanSerializer:
+    def test_serializes_with_prices(self, plan, plan_price):
+        data = PlanSerializer(plan).data
+        assert data["name"] == "Personal Monthly"
+        assert data["context"] == "personal"
+        assert data["interval"] == "month"
+        assert len(data["prices"]) == 1
+        assert data["prices"][0]["currency"] == "usd"
+
+    def test_all_fields_read_only(self):
+        assert set(PlanSerializer.Meta.read_only_fields) == set(PlanSerializer.Meta.fields)
+
+
+@pytest.mark.django_db
+class TestSubscriptionSerializer:
+    def test_serializes_fields(self, subscription):
+        data = SubscriptionSerializer(subscription).data
+        assert data["status"] == "active"
+        assert data["quantity"] == 1
+        assert "current_period_start" in data
+        assert "current_period_end" in data
+        assert "created_at" in data
+
+
+class TestCheckoutRequestSerializer:
+    def test_valid_data(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = CheckoutRequestSerializer(
+            data={
+                "plan_price_id": "price_123",
+                "success_url": "https://example.com/success",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert ser.is_valid(), ser.errors
+
+    def test_missing_required_fields(self):
+        ser = CheckoutRequestSerializer(data={})
+        assert not ser.is_valid()
+        assert "plan_price_id" in ser.errors
+        assert "success_url" in ser.errors
+        assert "cancel_url" in ser.errors
+
+    def test_invalid_redirect_url_rejected(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        settings.ALLOWED_HOSTS = ["example.com"]
+        ser = CheckoutRequestSerializer(
+            data={
+                "plan_price_id": "price_123",
+                "success_url": "https://evil.com/phish",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert not ser.is_valid()
+        assert "success_url" in ser.errors
+
+    def test_non_http_scheme_rejected(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = CheckoutRequestSerializer(
+            data={
+                "plan_price_id": "price_123",
+                "success_url": "javascript://example.com/xss",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert not ser.is_valid()
+
+    def test_quantity_defaults_to_1(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = CheckoutRequestSerializer(
+            data={
+                "plan_price_id": "price_123",
+                "success_url": "https://example.com/success",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        ser.is_valid()
+        assert ser.validated_data["quantity"] == 1
+
+    def test_quantity_min_value(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = CheckoutRequestSerializer(
+            data={
+                "plan_price_id": "price_123",
+                "quantity": 0,
+                "success_url": "https://example.com/success",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert not ser.is_valid()
+        assert "quantity" in ser.errors
+
+    def test_promo_code_optional(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = CheckoutRequestSerializer(
+            data={
+                "plan_price_id": "price_123",
+                "success_url": "https://example.com/success",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        ser.is_valid()
+        assert ser.validated_data["promo_code"] is None
+
+    def test_allowed_host_wildcard_excluded(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = []
+        settings.ALLOWED_HOSTS = ["*"]
+        ser = CheckoutRequestSerializer(
+            data={
+                "plan_price_id": "price_123",
+                "success_url": "https://evil.com/phish",
+                "cancel_url": "https://evil.com/cancel",
+            }
+        )
+        assert not ser.is_valid()
+
+    def test_allowed_host_subdomain_match(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = []
+        settings.ALLOWED_HOSTS = [".example.com"]
+        ser = CheckoutRequestSerializer(
+            data={
+                "plan_price_id": "price_123",
+                "success_url": "https://app.example.com/success",
+                "cancel_url": "https://app.example.com/cancel",
+            }
+        )
+        assert ser.is_valid(), ser.errors
+
+
+class TestPortalRequestSerializer:
+    def test_valid_data(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = PortalRequestSerializer(data={"return_url": "https://example.com/dashboard"})
+        assert ser.is_valid(), ser.errors
+
+    def test_missing_return_url(self):
+        ser = PortalRequestSerializer(data={})
+        assert not ser.is_valid()
+        assert "return_url" in ser.errors
+
+    def test_invalid_domain_rejected(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        settings.ALLOWED_HOSTS = ["example.com"]
+        ser = PortalRequestSerializer(data={"return_url": "https://evil.com/portal"})
+        assert not ser.is_valid()
+
+
+class TestChangePlanSerializer:
+    def test_valid_data(self):
+        ser = ChangePlanSerializer(data={"plan_price_id": "price_new"})
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["prorate"] is True
+
+    def test_prorate_false(self):
+        ser = ChangePlanSerializer(data={"plan_price_id": "price_new", "prorate": False})
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["prorate"] is False
+
+
+class TestPromoCodeSerializer:
+    def test_valid(self):
+        ser = PromoCodeSerializer(data={"promo_code": "SAVE20"})
+        assert ser.is_valid(), ser.errors
+
+    def test_missing(self):
+        ser = PromoCodeSerializer(data={})
+        assert not ser.is_valid()
+
+
+class TestUpdateSeatCountSerializer:
+    def test_valid(self):
+        ser = UpdateSeatCountSerializer(data={"quantity": 5})
+        assert ser.is_valid(), ser.errors
+
+    def test_min_value(self):
+        ser = UpdateSeatCountSerializer(data={"quantity": 0})
+        assert not ser.is_valid()
+        assert "quantity" in ser.errors

@@ -102,6 +102,7 @@ jobs:
   audit:
     name: Audit — ${{ matrix.pkg }}
     runs-on: ubuntu-latest
+    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -123,7 +124,34 @@ jobs:
 
       - name: Run pip-audit
         working-directory: ${{ matrix.dir }}
-        run: uv run pip-audit --desc --skip-editable
+        run: |
+          uv run pip-audit --desc --skip-editable -f json -o /tmp/audit-raw.json || true
+          # Build a markdown report from JSON output
+          python3 -c "
+          import json, sys
+          data = json.load(open('/tmp/audit-raw.json'))
+          vulns = data.get('dependencies', [])
+          rows = []
+          for dep in vulns:
+              for v in dep.get('vulns', []):
+                  fix = v.get('fix_versions', [])
+                  fix_str = ', '.join(fix) if fix else 'None'
+                  rows.append(f'| {dep[\"name\"]} | {dep[\"version\"]} | {v[\"id\"]} | {fix_str} | {v.get(\"description\", \"\")[:120]} |')
+          if rows:
+              print('| Package | Version | CVE | Fix | Description |')
+              print('|---|---|---|---|---|')
+              print('\n'.join(rows))
+          else:
+              print('no-vulns')
+          " > /tmp/audit-report.txt
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report-${{ matrix.pkg }}
+          path: /tmp/audit-report.txt
+          retention-days: 1
 
   # ─── Dependency freshness ──────────────────────────────────────────────────────
   check-deps:
@@ -184,18 +212,18 @@ jobs:
           path: /tmp/deps-report.txt
           retention-days: 1
 
-  # ─── Post dependency comment ────────────────────────────────────────────────
-  deps-comment:
-    name: Post deps comment
+  # ─── Post audit & dependency comment ────────────────────────────────────────
+  pr-comment:
+    name: Post PR comment
     if: github.event_name == 'pull_request'
-    needs: check-deps
+    needs: [audit, check-deps]
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: deps-report-*
+          pattern: "{audit-report-*,deps-report-*}"
           path: reports
 
       - name: Build and post comment
@@ -204,27 +232,52 @@ jobs:
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          body=""
-          has_updates=false
+          comment=""
 
-          for dir in reports/deps-report-*/; do
-            pkg=$(basename "$dir" | sed 's/deps-report-//')
-            report=$(cat "$dir/deps-report.txt")
-
+          # ── Vulnerability audit section ──
+          audit_body=""
+          has_vulns=false
+          for dir in reports/audit-report-*/; do
+            [ -d "$dir" ] || continue
+            pkg=$(basename "$dir" | sed 's/audit-report-//')
+            report=$(cat "$dir/audit-report.txt")
             if echo "$report" | grep -q "^|"; then
-              has_updates=true
-              body="${body}### ${pkg}\n\n${report}\n\n"
+              has_vulns=true
+              audit_body="${audit_body}### ${pkg}\n\n${report}\n\n"
             fi
           done
+          if [ "$has_vulns" = true ]; then
+            comment="## ⚠️ Vulnerability Audit\n\n${audit_body}"
+          fi
 
-          if [ "$has_updates" = false ]; then
-            echo "All deps up to date — no comment needed."
+          # ── Outdated dependencies section ──
+          deps_body=""
+          has_updates=false
+          for dir in reports/deps-report-*/; do
+            [ -d "$dir" ] || continue
+            pkg=$(basename "$dir" | sed 's/deps-report-//')
+            report=$(cat "$dir/deps-report.txt")
+            if echo "$report" | grep -q "^|"; then
+              has_updates=true
+              deps_body="${deps_body}### ${pkg}\n\n${report}\n\n"
+            fi
+          done
+          if [ "$has_updates" = true ]; then
+            comment="${comment}## Outdated Dependencies\n\n${deps_body}> Run \`uv lock --upgrade\` to update.\n"
+          fi
+
+          # ── Post or clean up ──
+          if [ -z "$comment" ]; then
+            echo "No audit or dependency issues — no comment needed."
+            # Delete stale comment if present
+            gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
+              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Vulnerability Audit") or contains("Outdated Dependencies"))) | .id' \
+              | xargs -I{} gh api -X DELETE "repos/${GH_REPO}/issues/comments/{}" 2>/dev/null || true
             exit 0
           fi
 
-          comment="## Outdated Dependencies\n\n${body}> Run \`uv lock --upgrade\` to update."
-          # Delete previous bot comment on this topic if present
+          # Delete previous bot comment on these topics
           gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Outdated Dependencies"))) | .id' \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Vulnerability Audit") or contains("Outdated Dependencies"))) | .id' \
             | xargs -I{} gh api -X DELETE "repos/${GH_REPO}/issues/comments/{}" 2>/dev/null || true
           printf "%b" "$comment" | gh pr comment "$PR_NUMBER" --body-file -
