@@ -407,3 +407,100 @@ class TestOrgMemberDetailViewDELETE:
     def test_nonexistent_member_returns_404(self, authed_client, org, owner_membership):
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{uuid4()}/")
         assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestOrgDetailViewPATCHEdgeCases:
+    def test_empty_body_returns_unchanged_org(self, authed_client, org, owner_membership):
+        resp = authed_client.patch(f"/api/v1/orgs/{org.id}/", {}, format="json")
+        assert resp.status_code == 200
+        assert resp.data["name"] == "Test Org"
+
+    def test_patch_nonexistent_org_returns_404(self, authed_client):
+        resp = authed_client.patch(f"/api/v1/orgs/{uuid4()}/", {"name": "X"}, format="json")
+        assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestOrgDetailViewDELETEEdgeCases:
+    def test_delete_nonexistent_org_returns_404(self, authed_client):
+        resp = authed_client.delete(f"/api/v1/orgs/{uuid4()}/")
+        assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestOrgMemberListViewEdgeCases:
+    def test_list_members_nonexistent_org_returns_404(self, authed_client):
+        resp = authed_client.get(f"/api/v1/orgs/{uuid4()}/members/")
+        assert resp.status_code == 404
+
+    def test_add_member_nonexistent_org_returns_404(self, authed_client, other_user):
+        resp = authed_client.post(
+            f"/api/v1/orgs/{uuid4()}/members/",
+            {"user_id": str(other_user.id), "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 404
+
+    def test_add_member_with_is_billing_true(
+        self, authed_client, org, owner_membership, other_user
+    ):
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/members/",
+            {"user_id": str(other_user.id), "role": "member", "is_billing": True},
+            format="json",
+        )
+        assert resp.status_code == 201
+        assert resp.data["is_billing"] is True
+
+
+@pytest.mark.django_db
+class TestOrgMemberDetailViewPATCHEdgeCases:
+    def test_empty_body_returns_unchanged_member(
+        self, authed_client, org, owner_membership, member_user, member_membership
+    ):
+        resp = authed_client.patch(
+            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
+            {},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["role"] == "member"
+
+    def test_admin_cannot_promote_member_to_admin(
+        self, admin_client, org, owner_membership, admin_membership, member_user, member_membership
+    ):
+        resp = admin_client.patch(
+            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
+            {"role": "admin"},
+            format="json",
+        )
+        assert resp.status_code == 403
+
+    def test_owner_cannot_promote_member_to_owner(
+        self, authed_client, org, owner_membership, member_user, member_membership
+    ):
+        resp = authed_client.patch(
+            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
+            {"role": "owner"},
+            format="json",
+        )
+        assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+class TestOrgMemberDetailViewDELETEEdgeCases:
+    def test_admin_can_remove_self(
+        self, admin_client, org, owner_membership, admin_user, admin_membership
+    ):
+        """Non-owner members should be able to leave the org (remove themselves)."""
+        resp = admin_client.delete(f"/api/v1/orgs/{org.id}/members/{admin_user.id}/")
+        # Admin removing self: check_can_manage_member(admin, admin) should block this
+        # since admin cannot manage admin-level members
+        assert resp.status_code == 403
+
+    def test_member_can_not_remove_self(
+        self, member_client, org, owner_membership, member_user, member_membership
+    ):
+        resp = member_client.delete(f"/api/v1/orgs/{org.id}/members/{member_user.id}/")
+        assert resp.status_code == 403

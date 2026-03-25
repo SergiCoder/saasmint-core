@@ -36,15 +36,6 @@ def other_user(db):
 
 
 @pytest.fixture
-def third_user(db):
-    return User.objects.create_user(
-        email="third@example.com",
-        supabase_uid="sup_third",
-        full_name="Third User",
-    )
-
-
-@pytest.fixture
 def org(user):
     return Org.objects.create(
         name="Test Org",
@@ -132,6 +123,7 @@ _TEST_DRF = {
         "billing": "1000/hour",
         "account": "1000/hour",
         "account_export": "1000/hour",
+        "orgs": "1000/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
 }
