@@ -83,6 +83,12 @@ class StripeCustomer(models.Model):
 
     class Meta:
         db_table = "stripe_customers"
+        constraints = [  # noqa: RUF012
+            models.CheckConstraint(
+                condition=models.Q(user_id__isnull=False),
+                name="stripecustomer_has_owner",
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.stripe_id

@@ -71,12 +71,16 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
 
 
 class CheckoutRequestSerializer(serializers.Serializer[object]):
-    plan_price_id = serializers.CharField()
-    quantity = serializers.IntegerField(default=1, min_value=1)
-    promo_code = serializers.CharField(required=False, allow_null=True, default=None)
+    plan_price_id = serializers.CharField(max_length=255)
+    quantity = serializers.IntegerField(default=1, min_value=1, max_value=10000)
+    promo_code = serializers.CharField(
+        required=False, allow_null=True, default=None, max_length=255
+    )
     success_url = serializers.URLField()
     cancel_url = serializers.URLField()
-    trial_period_days = serializers.IntegerField(required=False, allow_null=True, default=None)
+    trial_period_days = serializers.IntegerField(
+        required=False, allow_null=True, default=None, min_value=1, max_value=90
+    )
 
     def validate_success_url(self, value: str) -> str:
         return _validate_redirect_url(value)
@@ -93,13 +97,13 @@ class PortalRequestSerializer(serializers.Serializer[object]):
 
 
 class ChangePlanSerializer(serializers.Serializer[object]):
-    plan_price_id = serializers.CharField()
+    plan_price_id = serializers.CharField(max_length=255)
     prorate = serializers.BooleanField(default=True)
 
 
 class PromoCodeSerializer(serializers.Serializer[object]):
-    promo_code = serializers.CharField()
+    promo_code = serializers.CharField(max_length=255)
 
 
 class UpdateSeatCountSerializer(serializers.Serializer[object]):
-    quantity = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(min_value=1, max_value=10000)

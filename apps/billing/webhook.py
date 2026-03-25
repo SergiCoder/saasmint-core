@@ -28,7 +28,7 @@ def stripe_webhook(request: HttpRequest) -> HttpResponse:
     try:
         stripe.Webhook.construct_event(payload, signature, settings.STRIPE_WEBHOOK_SECRET)  # type: ignore[no-untyped-call]
     except stripe.SignatureVerificationError:
-        logger.warning("Stripe webhook signature verification failed")
+        logger.error("Stripe webhook signature verification failed")
         return HttpResponse(status=400)
     except ValueError:
         logger.warning("Stripe webhook payload is invalid JSON")

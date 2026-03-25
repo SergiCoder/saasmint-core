@@ -103,7 +103,7 @@ class CheckoutView(APIView):
 
         # Orgs are not eligible for trial periods
         trial_period_days = data["trial_period_days"]
-        if trial_period_days and plan_price.plan.context == PlanContext.TEAM:
+        if trial_period_days is not None and plan_price.plan.context == PlanContext.TEAM:
             trial_period_days = None
 
         async def _do() -> str:

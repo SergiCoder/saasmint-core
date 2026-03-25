@@ -21,6 +21,7 @@ class SecurityHeadersMiddleware:
         response["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         # X-XSS-Protection intentionally omitted — deprecated and can cause vulnerabilities
         if "text/html" in response.get("Content-Type", ""):
+            # unsafe-inline for style-src: required by DRF browsable API
             response["Content-Security-Policy"] = (
                 "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
             )

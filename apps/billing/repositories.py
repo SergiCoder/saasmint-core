@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
-
-if TYPE_CHECKING:
-    from stripe_saas_core.services.webhooks import WebhookRepos
 
 from stripe_saas_core.domain.stripe_customer import StripeCustomer
 from stripe_saas_core.domain.stripe_event import StripeEvent
@@ -27,6 +25,11 @@ from apps.billing.models import StripeCustomer as StripeCustomerModel
 from apps.billing.models import StripeEvent as StripeEventModel
 from apps.billing.models import Subscription as SubscriptionModel
 from helpers import aget_or_none
+
+if TYPE_CHECKING:
+    from stripe_saas_core.services.webhooks import WebhookRepos
+
+logger = logging.getLogger(__name__)
 
 
 class DjangoStripeCustomerRepository:
@@ -116,7 +119,10 @@ class DjangoSubscriptionRepository:
         except SubscriptionModel.DoesNotExist:
             return None
         except SubscriptionModel.MultipleObjectsReturned:
-            # Return the most recent one
+            logger.error(
+                "Multiple active subscriptions for customer %s — returning latest",
+                stripe_customer_id,
+            )
             obj = await SubscriptionModel.objects.filter(
                 stripe_customer_id=stripe_customer_id,
                 status__in=ACTIVE_SUBSCRIPTION_STATUSES,
