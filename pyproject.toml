@@ -43,7 +43,7 @@ stripe-saas-core = { path = "core", editable = true }
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
-testpaths = ["core/tests", "apps/users/tests"]
+testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests"]
 filterwarnings = [
     "ignore:No directory at.*staticfiles:UserWarning",
 ]
@@ -56,7 +56,7 @@ strict = true
 exclude = [".venv", "node_modules", "__pycache__", "tests", "migrations", "apps/users/management"]
 
 [[tool.mypy.overrides]]
-module = ["apps.orgs.*", "apps.billing.*"]
+module = ["apps.orgs.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
