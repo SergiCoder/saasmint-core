@@ -28,7 +28,7 @@ _user_repo = DjangoUserRepository()
 def _billing_repos() -> tuple[DjangoStripeCustomerRepository, DjangoSubscriptionRepository]:
     """Lazy-import and instantiate billing repositories.
 
-    Raises ``NotImplementedError`` until the billing app is installed (PR 4).
+    Raises ``NotImplementedError`` if the billing app is not installed.
     """
     try:
         from apps.billing.repositories import (
@@ -37,7 +37,7 @@ def _billing_repos() -> tuple[DjangoStripeCustomerRepository, DjangoSubscription
         )
     except ImportError:
         raise NotImplementedError(
-            "Billing app is not installed. GDPR endpoints require apps.billing (PR 4)."
+            "Billing app is not installed. GDPR endpoints require apps.billing."
         ) from None
 
     return DjangoStripeCustomerRepository(), DjangoSubscriptionRepository()

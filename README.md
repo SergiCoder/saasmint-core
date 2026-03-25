@@ -62,7 +62,9 @@ stripe-django/
 │   └── tests/           # Core unit tests
 ├── config/              # Django settings, URLs, WSGI/ASGI
 ├── apps/                # Django apps
+│   ├── billing/         # Stripe billing, subscriptions, and webhook processing
 │   └── users/           # User auth, Supabase JWT authentication, and profile management
+├── middleware/           # Django middleware (exception handling, security headers)
 ├── .github/             # CI workflows and PR template
 └── manage.py
 ```
@@ -101,7 +103,7 @@ uv run ruff format .
 1. Create a [Stripe account](https://dashboard.stripe.com/register)
 2. Get your API keys from the [Stripe Dashboard](https://dashboard.stripe.com/apikeys)
 3. Create your products and prices in Stripe
-4. Set up a webhook endpoint pointing to `/api/v1/webhooks/` with these events:
+4. Set up a webhook endpoint pointing to `/api/v1/webhooks/stripe` with these events:
    - `checkout.session.completed`
    - `customer.subscription.created`
    - `customer.subscription.updated`
