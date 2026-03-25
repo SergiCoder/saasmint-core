@@ -8,6 +8,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.orgs.models import Org, OrgMember, OrgRole
+from apps.users.models import User
 
 
 @pytest.mark.django_db
@@ -15,24 +16,20 @@ class TestOrgListCreateViewGET:
     def test_returns_user_orgs(self, authed_client, org, owner_membership):
         resp = authed_client.get("/api/v1/orgs/")
         assert resp.status_code == 200
-        assert len(resp.data) == 1
-        assert resp.data[0]["name"] == "Test Org"
+        assert resp.data["count"] == 1
+        assert resp.data["results"][0]["name"] == "Test Org"
 
     def test_excludes_orgs_user_not_member_of(self, authed_client, other_user, db):
         other_org = Org.objects.create(name="Other", slug="other", created_by=other_user)
         OrgMember.objects.create(org=other_org, user=other_user, role=OrgRole.OWNER)
         resp = authed_client.get("/api/v1/orgs/")
         assert resp.status_code == 200
-        assert len(resp.data) == 0
+        assert resp.data["count"] == 0
 
-    def test_excludes_soft_deleted_orgs(self, authed_client, org, owner_membership):
-        from datetime import UTC, datetime
-
-        org.deleted_at = datetime.now(UTC)
-        org.save(update_fields=["deleted_at"])
+    def test_excludes_soft_deleted_orgs(self, authed_client, soft_deleted_org, owner_membership):
         resp = authed_client.get("/api/v1/orgs/")
         assert resp.status_code == 200
-        assert len(resp.data) == 0
+        assert resp.data["count"] == 0
 
     def test_unauthenticated_rejected(self):
         client = APIClient()
@@ -106,12 +103,8 @@ class TestOrgDetailViewGET:
         resp = authed_client.get(f"/api/v1/orgs/{uuid4()}/")
         assert resp.status_code == 404
 
-    def test_soft_deleted_org_returns_404(self, authed_client, org, owner_membership):
-        from datetime import UTC, datetime
-
-        org.deleted_at = datetime.now(UTC)
-        org.save(update_fields=["deleted_at"])
-        resp = authed_client.get(f"/api/v1/orgs/{org.id}/")
+    def test_soft_deleted_org_returns_404(self, authed_client, soft_deleted_org, owner_membership):
+        resp = authed_client.get(f"/api/v1/orgs/{soft_deleted_org.id}/")
         assert resp.status_code == 404
 
 
@@ -320,20 +313,16 @@ class TestOrgMemberDetailViewPATCH:
         assert resp.status_code == 200
 
     def test_admin_cannot_update_admin(
-        self, org, owner_membership, admin_user, admin_membership, db
+        self,
+        second_admin_client,
+        org,
+        owner_membership,
+        admin_user,
+        admin_membership,
+        second_admin_membership,
     ):
-        other_admin = admin_user  # reuse fixture user as the target admin
-        # Create a second admin to act as caller
-        from apps.users.models import User
-
-        caller = User.objects.create_user(
-            email="admin2@example.com", supabase_uid="sup_admin2", full_name="Admin2"
-        )
-        OrgMember.objects.create(org=org, user=caller, role=OrgRole.ADMIN)
-        client = APIClient()
-        client.force_authenticate(user=caller)
-        resp = client.patch(
-            f"/api/v1/orgs/{org.id}/members/{other_admin.id}/",
+        resp = second_admin_client.patch(
+            f"/api/v1/orgs/{org.id}/members/{admin_user.id}/",
             {"is_billing": True},
             format="json",
         )
@@ -384,17 +373,17 @@ class TestOrgMemberDetailViewDELETE:
         assert resp.status_code == 403
 
     def test_admin_cannot_remove_admin(
-        self, org, owner_membership, admin_user, admin_membership, db
+        self,
+        second_admin_client,
+        org,
+        owner_membership,
+        admin_user,
+        admin_membership,
+        second_admin_membership,
     ):
-        from apps.users.models import User
-
-        caller = User.objects.create_user(
-            email="admin3@example.com", supabase_uid="sup_admin3", full_name="Admin3"
+        resp = second_admin_client.delete(
+            f"/api/v1/orgs/{org.id}/members/{admin_user.id}/"
         )
-        OrgMember.objects.create(org=org, user=caller, role=OrgRole.ADMIN)
-        client = APIClient()
-        client.force_authenticate(user=caller)
-        resp = client.delete(f"/api/v1/orgs/{org.id}/members/{admin_user.id}/")
         assert resp.status_code == 403
 
     def test_member_cannot_remove_anyone(
@@ -515,7 +504,7 @@ class TestOrgListCreateViewGETEdgeCases:
         OrgMember.objects.create(org=org_a, user=user, role=OrgRole.OWNER)
         resp = authed_client.get("/api/v1/orgs/")
         assert resp.status_code == 200
-        names = [o["name"] for o in resp.data]
+        names = [o["name"] for o in resp.data["results"]]
         assert names == ["Alpha", "Bravo"]
 
     def test_returns_multiple_orgs(self, authed_client, user):
@@ -524,7 +513,7 @@ class TestOrgListCreateViewGETEdgeCases:
             OrgMember.objects.create(org=o, user=user, role=OrgRole.OWNER)
         resp = authed_client.get("/api/v1/orgs/")
         assert resp.status_code == 200
-        assert len(resp.data) == 3
+        assert resp.data["count"] == 3
 
 
 @pytest.mark.django_db
@@ -623,51 +612,37 @@ class TestSoftDeletedOrgMemberOperations:
     """Operations on members of a soft-deleted org should fail."""
 
     def test_patch_member_on_soft_deleted_org_returns_404(
-        self, authed_client, org, owner_membership, member_user, member_membership
+        self, authed_client, soft_deleted_org, owner_membership, member_user, member_membership
     ):
-        from datetime import UTC, datetime
-
-        org.deleted_at = datetime.now(UTC)
-        org.save(update_fields=["deleted_at"])
         resp = authed_client.patch(
-            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
+            f"/api/v1/orgs/{soft_deleted_org.id}/members/{member_user.id}/",
             {"role": "admin"},
             format="json",
         )
         assert resp.status_code == 404
 
     def test_delete_member_on_soft_deleted_org_returns_404(
-        self, authed_client, org, owner_membership, member_user, member_membership
+        self, authed_client, soft_deleted_org, owner_membership, member_user, member_membership
     ):
-        from datetime import UTC, datetime
-
-        org.deleted_at = datetime.now(UTC)
-        org.save(update_fields=["deleted_at"])
-        resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{member_user.id}/")
+        resp = authed_client.delete(
+            f"/api/v1/orgs/{soft_deleted_org.id}/members/{member_user.id}/"
+        )
         assert resp.status_code == 404
 
     def test_add_member_to_soft_deleted_org_returns_404(
-        self, authed_client, org, owner_membership, other_user
+        self, authed_client, soft_deleted_org, owner_membership, other_user
     ):
-        from datetime import UTC, datetime
-
-        org.deleted_at = datetime.now(UTC)
-        org.save(update_fields=["deleted_at"])
         resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
+            f"/api/v1/orgs/{soft_deleted_org.id}/members/",
             {"user_id": str(other_user.id), "role": "member"},
             format="json",
         )
         assert resp.status_code == 404
 
     def test_list_members_on_soft_deleted_org_returns_404(
-        self, authed_client, org, owner_membership
+        self, authed_client, soft_deleted_org, owner_membership
     ):
-        from datetime import UTC, datetime
-
-        org.deleted_at = datetime.now(UTC)
-        org.save(update_fields=["deleted_at"])
-        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/")
+        resp = authed_client.get(f"/api/v1/orgs/{soft_deleted_org.id}/members/")
         assert resp.status_code == 404
 
 
@@ -690,8 +665,6 @@ class TestOrgDetailViewPATCHNullLogoUrl:
 @pytest.mark.django_db
 class TestOrgMemberListPagination:
     def test_limit_offset_params(self, authed_client, org, owner_membership, user):
-        from apps.users.models import User
-
         # Create extra members to paginate
         for i in range(5):
             u = User.objects.create_user(
@@ -706,8 +679,6 @@ class TestOrgMemberListPagination:
         assert len(resp.data["results"]) == 2
 
     def test_offset_skips_results(self, authed_client, org, owner_membership, user):
-        from apps.users.models import User
-
         for i in range(3):
             u = User.objects.create_user(
                 email=f"off{i}@example.com",
@@ -757,10 +728,10 @@ class TestOrgListMaxResults:
     """The list endpoint caps at 100 orgs."""
 
     def test_max_100_orgs_returned(self, authed_client, user):
-
         for i in range(105):
             o = Org.objects.create(name=f"Org{i:03d}", slug=f"org-{i:03d}", created_by=user)
             OrgMember.objects.create(org=o, user=user, role=OrgRole.OWNER)
-        resp = authed_client.get("/api/v1/orgs/")
+        resp = authed_client.get("/api/v1/orgs/?limit=200")
         assert resp.status_code == 200
-        assert len(resp.data) == 100
+        assert resp.data["count"] == 105
+        assert len(resp.data["results"]) == 100  # max_limit caps at 100

@@ -68,8 +68,12 @@ class OrgListCreateView(APIView):
         orgs = Org.objects.filter(
             id__in=OrgMember.objects.filter(user=user).values("org_id"),
             deleted_at__isnull=True,
-        ).order_by("name")[:100]
-        return Response(OrgSerializer(orgs, many=True).data)
+        ).order_by("name")
+        paginator = LimitOffsetPagination()
+        paginator.default_limit = 50
+        paginator.max_limit = 100
+        page = paginator.paginate_queryset(orgs, request)
+        return paginator.get_paginated_response(OrgSerializer(page, many=True).data)
 
     def post(self, request: Request) -> Response:
         user = get_user(request)

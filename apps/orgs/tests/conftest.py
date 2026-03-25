@@ -110,6 +110,40 @@ def member_client(member_user):
     return client
 
 
+@pytest.fixture
+def soft_deleted_org(org):
+    from django.utils import timezone
+
+    org.deleted_at = timezone.now()
+    org.save(update_fields=["deleted_at"])
+    return org
+
+
+@pytest.fixture
+def second_admin_user(db):
+    return User.objects.create_user(
+        email="admin2@example.com",
+        supabase_uid="sup_admin2",
+        full_name="Admin2",
+    )
+
+
+@pytest.fixture
+def second_admin_membership(org, second_admin_user):
+    return OrgMember.objects.create(
+        org=org,
+        user=second_admin_user,
+        role=OrgRole.ADMIN,
+    )
+
+
+@pytest.fixture
+def second_admin_client(second_admin_user):
+    client = APIClient()
+    client.force_authenticate(user=second_admin_user)
+    return client
+
+
 # Relax throttling in tests
 _TEST_DRF = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
