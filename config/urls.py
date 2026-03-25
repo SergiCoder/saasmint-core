@@ -20,4 +20,4 @@ urlpatterns = [
 ]
 
 if settings.DEBUG:
-    urlpatterns += staticfiles_urlpatterns()  # type: ignore[arg-type]
+    urlpatterns += staticfiles_urlpatterns()
