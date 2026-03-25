@@ -85,6 +85,8 @@ INSTALLED_APPS = [
     "apps.users",
     "apps.billing",
     "apps.orgs",
+    "apps.admin_panel",
+    "apps.dashboard",
 ]
 
 MIDDLEWARE = [
@@ -97,7 +99,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    # "middleware.security.SecurityHeadersMiddleware",  # TODO: PR 6
+    "middleware.security.SecurityHeadersMiddleware",
     "hijack.middleware.HijackUserMiddleware",
 ]
 
