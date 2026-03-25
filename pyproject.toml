@@ -43,7 +43,7 @@ stripe-saas-core = { path = "core", editable = true }
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
-testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests"]
+testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests", "apps/orgs/tests"]
 filterwarnings = [
     "ignore:No directory at.*staticfiles:UserWarning",
 ]
