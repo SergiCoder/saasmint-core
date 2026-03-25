@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import ClassVar
 from uuid import UUID
 
 from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
-from rest_framework import serializers, status
+from django.utils import timezone
+from rest_framework import status
 from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.serializers import ValidationError
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from stripe_saas_core.domain.org import OrgRole as CoreOrgRole
@@ -27,6 +28,7 @@ from apps.orgs.serializers import (
     UpdateMemberSerializer,
     UpdateOrgSerializer,
 )
+from apps.users.models import User
 from helpers import get_user
 
 _ADMIN_OR_ABOVE = (OrgRole.OWNER, OrgRole.ADMIN)
@@ -50,7 +52,7 @@ def _get_org_and_member(
         if not Org.objects.filter(id=org_id, deleted_at__isnull=True).exists():
             raise OrgNotFoundError(org_id) from None
         raise InsufficientPermissionError("Access denied.") from None
-    if allowed_roles is not None and member.role not in allowed_roles:
+    if allowed_roles is not None and OrgRole(member.role) not in allowed_roles:
         raise InsufficientPermissionError("Insufficient permissions for this action.")
     return member.org, member
 
@@ -88,9 +90,7 @@ class OrgListCreateView(APIView):
                     role=OrgRole.OWNER,
                 )
         except IntegrityError:
-            raise serializers.ValidationError(
-                {"slug": ["An org with this slug already exists."]}
-            ) from None
+            raise ValidationError({"slug": ["An org with this slug already exists."]}) from None
         return Response(OrgSerializer(org).data, status=status.HTTP_201_CREATED)
 
 
@@ -120,7 +120,7 @@ class OrgDetailView(APIView):
     def delete(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         org, _ = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
-        org.deleted_at = datetime.now(UTC)
+        org.deleted_at = timezone.now()
         org.save(update_fields=["deleted_at"])
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -153,9 +153,7 @@ class OrgMemberListView(APIView):
             new_role=CoreOrgRole(ser.validated_data["role"]),
         )
 
-        from apps.users.models import User as UserModel
-
-        target_user = get_object_or_404(UserModel, id=ser.validated_data["user_id"])
+        target_user = get_object_or_404(User, id=ser.validated_data["user_id"])
         member, created = OrgMember.objects.get_or_create(
             org=org,
             user=target_user,
@@ -177,7 +175,9 @@ class OrgMemberDetailView(APIView):
     def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
-        target = get_object_or_404(OrgMember, org_id=org_id, user_id=member_user_id)
+        target = get_object_or_404(
+            OrgMember, org_id=org_id, user_id=member_user_id, org__deleted_at__isnull=True
+        )
 
         # Only OWNER can modify roles at or above ADMIN level
         check_can_manage_member(
@@ -206,7 +206,9 @@ class OrgMemberDetailView(APIView):
     def delete(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
-        target = get_object_or_404(OrgMember, org_id=org_id, user_id=member_user_id)
+        target = get_object_or_404(
+            OrgMember, org_id=org_id, user_id=member_user_id, org__deleted_at__isnull=True
+        )
 
         # Prevent owner from removing themselves (would leave org ownerless)
         if target.user_id == user.id and target.role == OrgRole.OWNER:

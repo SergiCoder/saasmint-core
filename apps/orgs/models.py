@@ -16,7 +16,7 @@ class OrgRole(models.TextChoices):
 class Org(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
-    slug = models.SlugField(max_length=255, unique=True)
+    slug = models.SlugField(max_length=255)
     logo_url = models.TextField(null=True, blank=True)  # noqa: DJ001
     created_by = models.ForeignKey(
         "users.User",
@@ -28,8 +28,8 @@ class Org(models.Model):
 
     class Meta:
         db_table = "orgs"
-        indexes = [  # noqa: RUF012
-            models.Index(
+        constraints = [  # noqa: RUF012
+            models.UniqueConstraint(
                 fields=["slug"],
                 condition=models.Q(deleted_at__isnull=True),
                 name="idx_orgs_slug_active",

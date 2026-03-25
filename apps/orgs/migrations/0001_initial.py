@@ -25,7 +25,7 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("name", models.CharField(max_length=255)),
-                ("slug", models.SlugField(max_length=255, unique=True)),
+                ("slug", models.SlugField(max_length=255)),
                 ("logo_url", models.TextField(blank=True, null=True)),
                 (
                     "created_by",
@@ -82,11 +82,11 @@ class Migration(migrations.Migration):
                 "db_table": "org_members",
             },
         ),
-        migrations.AddIndex(
+        migrations.AddConstraint(
             model_name="org",
-            index=models.Index(
+            constraint=models.UniqueConstraint(
                 condition=models.Q(("deleted_at__isnull", True)),
-                fields=["slug"],
+                fields=("slug",),
                 name="idx_orgs_slug_active",
             ),
         ),
