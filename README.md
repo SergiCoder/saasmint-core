@@ -6,9 +6,11 @@ A production-ready Django template for building SaaS applications with Stripe bi
 
 - **Stripe integration** — subscriptions, one-time payments, customer portal, and webhook handling
 - **Django backend** — authentication, user management, and admin panel
+- **Admin dashboard** — extended Django admin with subscription status, Stripe event log, and user impersonation via django-hijack
 - **Webhook processing** — idempotent event handling with database-backed deduplication
 - **Organisations** — multi-tenant orgs with role-based membership (owner, admin, member)
 - **Multi-plan support** — free, pro, enterprise (or define your own)
+- **Dev seed data** — one command to populate the database with realistic test users, orgs, and subscriptions
 - **CI/CD** — GitHub Actions for lint, typecheck, and tests out of the box
 
 ## Quick start
@@ -63,11 +65,14 @@ stripe-django/
 │   └── tests/           # Core unit tests
 ├── config/              # Django settings, URLs, WSGI/ASGI
 ├── apps/                # Django apps
+│   ├── admin_panel/     # Extended Django admin (subscription status, impersonation)
 │   ├── billing/         # Stripe billing, subscriptions, and webhook processing
+│   ├── dashboard/       # Server-rendered dashboard and hijack landing views
 │   ├── orgs/            # Organisation management and membership
 │   └── users/           # User auth, Supabase JWT authentication, and profile management
 ├── middleware/           # Django middleware (exception handling, security headers)
 ├── .github/             # CI workflows and PR template
+├── helpers.py           # Shared Django helpers (aget_or_none, get_user)
 └── manage.py
 ```
 
@@ -76,6 +81,7 @@ stripe-django/
 - **Python 3.12+** with Django
 - **PostgreSQL** as the database
 - **Stripe** for payments and billing
+- **django-hijack** for admin user impersonation
 - **uv** for dependency management
 - **Ruff** for linting
 - **mypy** for type checking
@@ -85,19 +91,22 @@ stripe-django/
 
 ```bash
 # Run Django tests
-uv run pytest -v
+make test
 
 # Run core package tests
-cd core && uv run pytest -v
+make test-core
 
 # Lint
-uv run ruff check .
+make lint
 
-# Typecheck
+# Typecheck (django + core)
 make typecheck
 
 # Format
-uv run ruff format .
+make format
+
+# Seed dev data (requires Docker stack running and DEBUG=True)
+make seed
 ```
 
 ## Stripe setup
