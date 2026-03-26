@@ -10,7 +10,6 @@ import pytest
 from apps.billing.models import Plan, StripeCustomer, Subscription
 from apps.users.models import User
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -46,8 +45,9 @@ class TestSubscriptionStatusDisplay:
     """Unit tests for UserAdminExtended.subscription_status()."""
 
     def setup_method(self):
-        from apps.admin_panel.admin import UserAdminExtended
         from django.contrib import admin
+
+        from apps.admin_panel.admin import UserAdminExtended
 
         self.admin_instance = UserAdminExtended(User, admin.site)
 
@@ -105,8 +105,9 @@ class TestUserAdminExtendedQueryset:
     """Integration tests: get_queryset annotates _subscription_status correctly."""
 
     def setup_method(self):
-        from apps.admin_panel.admin import UserAdminExtended
         from django.contrib import admin
+
+        from apps.admin_panel.admin import UserAdminExtended
 
         self.admin_instance = UserAdminExtended(User, admin.site)
         self.mock_request = MagicMock()
@@ -171,7 +172,9 @@ class TestUserAdminExtendedQueryset:
 
         qs = self.admin_instance.get_queryset(self.mock_request)
         annotated = qs.get(pk=user.pk)
-        # The most recently created active subscription wins
+        # The most recently created subscription wins; both are active statuses so either is valid,
+        # but the annotation must be set (not None)
+        assert annotated._subscription_status is not None
         assert annotated._subscription_status in ("active", "trialing")
 
 
@@ -188,7 +191,6 @@ class TestUserAdminChangelistRendering:
         superuser = User.objects.create_superuser(
             email="super@example.com",
             supabase_uid="sup_super",
-            password="superpass",
         )
         client = Client()
         client.force_login(superuser)
@@ -201,7 +203,6 @@ class TestUserAdminChangelistRendering:
         superuser = User.objects.create_superuser(
             email="super2@example.com",
             supabase_uid="sup_super2",
-            password="superpass2",
         )
         regular = _make_user(db, "reg@example.com", "sup_reg")
         plan = Plan.objects.create(

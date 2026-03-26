@@ -52,6 +52,23 @@ class TestDjangoStripeCustomerRepository:
         result = async_to_sync(repo.get_by_user_id)(uuid4())
         assert result is None
 
+    def test_get_by_org_id(self, repo, db):
+        from apps.orgs.models import Org
+        from apps.users.models import User
+
+        owner = User.objects.create_user(
+            email="org_owner@example.com", supabase_uid="sup_org_owner"
+        )
+        org = Org.objects.create(name="Test Org", slug="test-org-repo", created_by=owner)
+        StripeCustomer.objects.create(stripe_id="cus_org_test", org=org, livemode=False)
+        result = async_to_sync(repo.get_by_org_id)(org.id)
+        assert result is not None
+        assert result.stripe_id == "cus_org_test"
+
+    def test_get_by_org_id_not_found(self, repo):
+        result = async_to_sync(repo.get_by_org_id)(uuid4())
+        assert result is None
+
     def test_save_creates_new(self, repo, user):
         from stripe_saas_core.domain.stripe_customer import (
             StripeCustomer as DomainCustomer,
