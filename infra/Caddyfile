@@ -1,0 +1,7 @@
+localhost:8443 {
+	tls /certs/localhost.pem /certs/localhost-key.pem
+
+	header X-Forwarded-Proto https
+
+	reverse_proxy django:8001
+}
