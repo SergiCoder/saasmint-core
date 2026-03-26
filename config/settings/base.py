@@ -80,6 +80,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "drf_spectacular",
     "corsheaders",
     "hijack",
     "hijack.contrib.admin",
@@ -163,6 +164,22 @@ REST_FRAMEWORK = {
         "orgs": "60/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Stripe SaaS API",
+    "DESCRIPTION": "Django backend API for Stripe SaaS — billing, accounts, and organisations.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SCHEMA_PATH_PREFIX": "/api/v[0-9]",
+    "COMPONENT_SPLIT_REQUEST": True,
+    "EXCLUDE_PATH_REGEX": [
+        r"^/admin/",
+        r"^/hijack/",
+        r"^/dashboard/",
+        r"^/api/v1/webhooks/",
+    ],
 }
 
 CORS_ALLOWED_ORIGINS = env.cors_allowed_origins
