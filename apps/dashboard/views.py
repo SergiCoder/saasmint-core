@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.http import HttpRequest, HttpResponse
 from django.urls import reverse
 from django.views.generic import TemplateView
 from hijack.views import AcquireUserView, ReleaseUserView
 
-from apps.billing.repositories import DjangoSubscriptionRepository
+from apps.billing.repositories import DjangoPlanRepository, DjangoSubscriptionRepository
 from apps.orgs.models import OrgMember
-from apps.users.models import User
+
+if TYPE_CHECKING:
+    from apps.users.models import User
 
 
 async def _get_org_memberships(user: User) -> list[OrgMember]:
@@ -32,14 +36,22 @@ class HijackReleaseView(ReleaseUserView):
 
 
 class DashboardView(LoginRequiredMixin, TemplateView):
+    """GET /dashboard/ — render account, subscription, and org membership summary."""
+
     template_name = "dashboard/dashboard.html"
 
     async def get(self, request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
         user = request.user
         subscription = await DjangoSubscriptionRepository().get_active_for_user(user.id)
+        plan = (
+            await DjangoPlanRepository().get_by_id(subscription.plan_id)
+            if subscription is not None
+            else None
+        )
         org_memberships = await _get_org_memberships(user)
         ctx = self.get_context_data(
             subscription=subscription,
+            plan=plan,
             org_memberships=org_memberships,
             **kwargs,
         )
