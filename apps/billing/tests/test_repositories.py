@@ -176,6 +176,65 @@ class TestDjangoSubscriptionRepository:
         async_to_sync(repo.save)(sub)
         assert Subscription.objects.filter(stripe_id="sub_new").exists()
 
+    def test_get_active_for_user_returns_active_subscription(self, repo, subscription, user):
+        result = async_to_sync(repo.get_active_for_user)(user.id)
+        assert result is not None
+        assert result.stripe_id == "sub_test_123"
+
+    def test_get_active_for_user_returns_none_when_no_customer(self, repo, db):
+        from uuid import uuid4
+
+        result = async_to_sync(repo.get_active_for_user)(uuid4())
+        assert result is None
+
+    def test_get_active_for_user_returns_none_when_only_canceled(self, repo, stripe_customer, plan):
+        Subscription.objects.create(
+            stripe_id="sub_canceled",
+            stripe_customer=stripe_customer,
+            status="canceled",
+            plan=plan,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        result = async_to_sync(repo.get_active_for_user)(stripe_customer.user_id)
+        assert result is None
+
+    def test_get_active_for_user_returns_latest_when_multiple_active(
+        self, repo, stripe_customer, plan
+    ):
+        Subscription.objects.create(
+            stripe_id="sub_older",
+            stripe_customer=stripe_customer,
+            status="active",
+            plan=plan,
+            current_period_start=datetime(2025, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2025, 2, 1, tzinfo=UTC),
+        )
+        Subscription.objects.create(
+            stripe_id="sub_newer",
+            stripe_customer=stripe_customer,
+            status="active",
+            plan=plan,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        result = async_to_sync(repo.get_active_for_user)(stripe_customer.user_id)
+        assert result is not None
+        assert result.stripe_id == "sub_newer"
+
+    def test_get_active_for_user_includes_trialing_status(self, repo, stripe_customer, plan):
+        Subscription.objects.create(
+            stripe_id="sub_trialing",
+            stripe_customer=stripe_customer,
+            status="trialing",
+            plan=plan,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        result = async_to_sync(repo.get_active_for_user)(stripe_customer.user_id)
+        assert result is not None
+        assert result.stripe_id == "sub_trialing"
+
     def test_delete(self, repo, subscription):
         async_to_sync(repo.delete)(subscription.id)
         assert not Subscription.objects.filter(id=subscription.id).exists()
