@@ -109,6 +109,16 @@ class DjangoSubscriptionRepository:
     async def get_by_stripe_id(self, stripe_id: str) -> Subscription | None:
         return await aget_or_none(SubscriptionModel, self._to_domain, stripe_id=stripe_id)
 
+    async def get_active_for_user(self, user_id: UUID) -> Subscription | None:
+        try:
+            obj = await SubscriptionModel.objects.filter(
+                stripe_customer__user_id=user_id,
+                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+            ).alatest("created_at")
+            return self._to_domain(obj)
+        except SubscriptionModel.DoesNotExist:
+            return None
+
     async def get_active_for_customer(self, stripe_customer_id: UUID) -> Subscription | None:
         try:
             obj = await SubscriptionModel.objects.aget(
