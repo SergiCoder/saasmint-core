@@ -257,7 +257,7 @@ class DjangoStripeEventRepository:
 
         capped = min(limit, 100)
         qs = StripeEventModel.objects.order_by("-created_at")[:capped]
-        objs = await sync_to_async(list)(qs)
+        objs: list[StripeEventModel] = await sync_to_async(list)(qs)  # type: ignore[arg-type]  # sliced QS is not recognised as Iterable by mypy
         return [self._to_domain(obj) for obj in objs]
 
 
