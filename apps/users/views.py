@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     )
 
 from asgiref.sync import async_to_sync
+from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -49,9 +50,11 @@ class AccountView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "account"
 
+    @extend_schema(responses=UserSerializer, tags=["account"])
     def get(self, request: Request) -> Response:
         return Response(UserSerializer(get_user(request)).data)
 
+    @extend_schema(request=UpdateUserSerializer, responses=UserSerializer, tags=["account"])
     def patch(self, request: Request) -> Response:
         """PATCH /api/v1/account — update profile fields."""
         user = get_user(request)
@@ -65,6 +68,7 @@ class AccountView(APIView):
 
         return Response(UserSerializer(user).data)
 
+    @extend_schema(request=None, responses={204: None}, tags=["account"])
     def delete(self, request: Request) -> Response:
         """DELETE /api/v1/account — GDPR right to erasure."""
         customer_repo, subscription_repo = _billing_repos()
@@ -84,6 +88,7 @@ class AccountExportView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "account_export"
 
+    @extend_schema(responses={200: dict}, tags=["account"])
     def get(self, request: Request) -> Response:
         customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)

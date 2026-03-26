@@ -8,6 +8,8 @@ from uuid import UUID
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
 from django.core.exceptions import ObjectDoesNotExist
+from drf_spectacular.utils import extend_schema, inline_serializer
+from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
@@ -78,6 +80,7 @@ def _get_active_plan_price(stripe_price_id: str) -> PlanPrice:
 class PlanListView(APIView):
     """GET /api/v1/billing/plans — list active plans with prices."""
 
+    @extend_schema(responses=PlanSerializer(many=True), tags=["billing"])
     def get(self, request: Request) -> Response:
         data = cache.get("active_plans")
         if data is None:
@@ -93,6 +96,11 @@ class CheckoutView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
+    @extend_schema(
+        request=CheckoutRequestSerializer,
+        responses={201: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()})},
+        tags=["billing"],
+    )
     def post(self, request: Request) -> Response:
         user = get_user(request)
         ser = CheckoutRequestSerializer(data=request.data)
@@ -136,6 +144,11 @@ class PortalView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
+    @extend_schema(
+        request=PortalRequestSerializer,
+        responses={201: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()})},
+        tags=["billing"],
+    )
     def post(self, request: Request) -> Response:
         user = get_user(request)
         ser = PortalRequestSerializer(data=request.data)
@@ -162,6 +175,7 @@ class PortalView(APIView):
 class SubscriptionView(APIView):
     """GET /api/v1/billing/subscription — current user's active subscription."""
 
+    @extend_schema(responses={200: SubscriptionSerializer, 404: None}, tags=["billing"])
     def get(self, request: Request) -> Response:
         user = get_user(request)
         try:
@@ -185,6 +199,7 @@ class CancelSubscriptionView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
+    @extend_schema(request=None, responses={200: None}, tags=["billing"])
     def post(self, request: Request) -> Response:
         user = get_user(request)
 
@@ -206,6 +221,7 @@ class ChangePlanView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
+    @extend_schema(request=ChangePlanSerializer, responses={200: None}, tags=["billing"])
     def post(self, request: Request) -> Response:
         user = get_user(request)
         ser = ChangePlanSerializer(data=request.data)
@@ -231,6 +247,7 @@ class ApplyPromoCodeView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
+    @extend_schema(request=PromoCodeSerializer, responses={200: None}, tags=["billing"])
     def post(self, request: Request) -> Response:
         user = get_user(request)
         ser = PromoCodeSerializer(data=request.data)
@@ -253,6 +270,7 @@ class UpdateSeatCountView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
+    @extend_schema(request=UpdateSeatCountSerializer, responses={200: None}, tags=["billing"])
     def post(self, request: Request) -> Response:
         user = get_user(request)
         ser = UpdateSeatCountSerializer(data=request.data)

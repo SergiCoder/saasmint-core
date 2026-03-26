@@ -101,6 +101,7 @@ jobs:
   # ─── Vulnerability audit ──────────────────────────────────────────────────────
   audit:
     name: Audit — ${{ matrix.pkg }}
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:
@@ -126,9 +127,21 @@ jobs:
         working-directory: ${{ matrix.dir }}
         run: |
           uv run pip-audit --desc --skip-editable -f json -o /tmp/audit-raw.json || true
-          # Build a markdown report from JSON output
+          # Build a markdown report from JSON output, flagging direct vs transitive deps
           python3 -c "
-          import json, sys
+          import json, re
+          # Extract direct dependency names from pyproject.toml
+          with open('pyproject.toml') as f:
+              text = f.read()
+          direct = set()
+          m = re.search(r'^dependencies\s*=\s*\[(.*?)\](?=\s*\n\s*\n|\s*\n\s*\[)', text, re.S | re.M)
+          if m:
+              for line in m.group(1).splitlines():
+                  line = line.strip().strip(',').strip('\x22\x27')
+                  if line and not line.startswith('#'):
+                      name = re.split(r'[>=<!\[;]', line)[0].strip().lower()
+                      if name:
+                          direct.add(name)
           data = json.load(open('/tmp/audit-raw.json'))
           vulns = data.get('dependencies', [])
           rows = []
@@ -136,10 +149,11 @@ jobs:
               for v in dep.get('vulns', []):
                   fix = v.get('fix_versions', [])
                   fix_str = ', '.join(fix) if fix else 'None'
-                  rows.append(f'| {dep[\"name\"]} | {dep[\"version\"]} | {v[\"id\"]} | {fix_str} | {v.get(\"description\", \"\")[:120]} |')
+                  dep_type = 'direct' if dep['name'].lower() in direct else 'transitive'
+                  rows.append(f'| {dep[\"name\"]} | {dep[\"version\"]} | {dep_type} | {v[\"id\"]} | {fix_str} | {v.get(\"description\", \"\")[:120]} |')
           if rows:
-              print('| Package | Version | CVE | Fix | Description |')
-              print('|---|---|---|---|---|')
+              print('| Package | Version | Type | CVE | Fix | Description |')
+              print('|---|---|---|---|---|---|')
               print('\n'.join(rows))
           else:
               print('no-vulns')
@@ -156,6 +170,7 @@ jobs:
   # ─── Dependency freshness ──────────────────────────────────────────────────────
   check-deps:
     name: Check deps — ${{ matrix.pkg }}
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
     strategy:
@@ -181,6 +196,20 @@ jobs:
             echo "up-to-date" > /tmp/deps-report.txt
             exit 0
           fi
+          # Extract direct dependency names from pyproject.toml
+          direct_deps=$(python3 -c "
+          import re
+          with open('pyproject.toml') as f:
+              text = f.read()
+          m = re.search(r'^dependencies\s*=\s*\[(.*?)\](?=\s*\n\s*\n|\s*\n\s*\[)', text, re.S | re.M)
+          if m:
+              for line in m.group(1).splitlines():
+                  line = line.strip().strip(',').strip('\x22\x27')
+                  if line and not line.startswith('#'):
+                      name = re.split(r'[>=<!\[;]', line)[0].strip().lower()
+                      if name:
+                          print(name)
+          ")
           # Extract name=version pairs from a uv.lock file
           extract() {
             awk '/^\[\[package\]\]/{p=1;name=""} p && /^name = /{name=$3} p && /^version = / && name{print name "=" $3; p=0}' "$1" | tr -d '"' | sort
@@ -188,9 +217,17 @@ jobs:
           extract uv.lock > /tmp/current.txt
           uv lock --upgrade -q
           extract uv.lock > /tmp/latest.txt
-          # Join on package name and keep rows where version changed
+          # Join on package name, flag direct vs transitive, keep rows where version changed
           join -t= /tmp/current.txt /tmp/latest.txt \
-            | awk -F= '$2 != $3 { printf "| %s | %s | %s |\n", $1, $2, $3 }' \
+            | while IFS='=' read -r pkg cur latest; do
+                [ "$cur" = "$latest" ] && continue
+                if echo "$direct_deps" | grep -qx "$pkg"; then
+                  type="direct"
+                else
+                  type="transitive"
+                fi
+                printf '| %s | %s | %s | %s |\n' "$pkg" "$cur" "$latest" "$type"
+              done \
             > /tmp/changed.txt || true
           if [ ! -s /tmp/changed.txt ]; then
             echo "All dependencies up to date."
@@ -198,8 +235,8 @@ jobs:
           else
             echo "::warning::Outdated dependencies found in ${{ matrix.pkg }}"
             {
-              echo "| Package | Current | Latest |"
-              echo "|---|---|---|"
+              echo "| Package | Current | Latest | Type |"
+              echo "|---|---|---|---|"
               head -40 /tmp/changed.txt
             } | tee /tmp/deps-report.txt
           fi
