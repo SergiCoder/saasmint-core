@@ -15,7 +15,7 @@ from django.test import override_settings
 def test_get_supabase_client_creates_once(mock_create: MagicMock) -> None:
     import config.supabase as mod
 
-    mod._client = None
+    mod.get_supabase_client.cache_clear()
     sentinel = MagicMock()
     mock_create.return_value = sentinel
 
@@ -27,4 +27,4 @@ def test_get_supabase_client_creates_once(mock_create: MagicMock) -> None:
     mock_create.assert_called_once_with("https://test.supabase.co", "test-anon-key")
 
     # Reset for other tests
-    mod._client = None
+    mod.get_supabase_client.cache_clear()

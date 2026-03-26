@@ -82,6 +82,7 @@ The `infra/certs/` directory is gitignored. Certs are never committed.
 | `CORS_ALLOWED_ORIGINS` | JSON array of allowed CORS origins |
 | `CORS_ALLOW_ALL_ORIGINS` | Set to `True` to allow all CORS origins (dev only) |
 | `CSRF_TRUSTED_ORIGINS` | JSON array of trusted origins for CSRF (e.g. `["https://localhost:8443"]`) |
+| `DJANGO_SETTINGS_MODULE` | Python dotted path to the Django settings module (e.g. `config.settings.dev`) |
 | `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only) |
 
 ## Project structure
