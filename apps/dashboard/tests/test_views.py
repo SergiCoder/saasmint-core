@@ -14,7 +14,7 @@ class TestDashboardViewAuth:
         client = Client()
         resp = client.get("/dashboard/")
         assert resp.status_code == 302
-        assert "/accounts/login/" in resp["Location"]
+        assert "/admin/login/" in resp["Location"]
 
     def test_authenticated_user_gets_200(self, logged_in_client):
         resp = logged_in_client.get("/dashboard/")

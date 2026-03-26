@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,7 +16,7 @@ from apps.users.models import User
 # ---------------------------------------------------------------------------
 
 
-def _make_user(db, email, supabase_uid, **kwargs):
+def _make_user(db: object, email: str, supabase_uid: str, **kwargs: Any) -> User:
     return User.objects.create_user(
         email=email,
         supabase_uid=supabase_uid,
@@ -23,7 +24,12 @@ def _make_user(db, email, supabase_uid, **kwargs):
     )
 
 
-def _make_subscription(stripe_customer, plan, status, stripe_id):
+def _make_subscription(
+    stripe_customer: StripeCustomer,
+    plan: Plan,
+    status: str,
+    stripe_id: str,
+) -> Subscription:
     return Subscription.objects.create(
         stripe_id=stripe_id,
         stripe_customer=stripe_customer,

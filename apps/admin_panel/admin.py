@@ -1,10 +1,11 @@
-"""Extended Django admin — subscription status on user list, Stripe event log, impersonation."""
+"""Extended Django admin — re-registers User with subscription status column."""
 
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.db.models import OuterRef, QuerySet, Subquery
 from django.http import HttpRequest
 from django.utils.html import format_html
+from django.utils.safestring import SafeString
 
 from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, Subscription, SubscriptionStatus
 from apps.users.models import User
@@ -40,7 +41,7 @@ class UserAdminExtended(BaseUserAdmin):  # type: ignore[type-arg]  # django-stub
         return qs.annotate(_subscription_status=Subquery(customer_sub.values("status")[:1]))
 
     @admin.display(description="Subscription")
-    def subscription_status(self, obj: User) -> str:
+    def subscription_status(self, obj: User) -> str | SafeString:
         status = getattr(obj, "_subscription_status", None)
         if not status:
             return "—"

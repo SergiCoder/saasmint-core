@@ -10,6 +10,11 @@ from hijack.views import AcquireUserView, ReleaseUserView
 
 from apps.billing.repositories import DjangoSubscriptionRepository
 from apps.orgs.models import OrgMember
+from apps.users.models import User
+
+
+async def _get_org_memberships(user: User) -> list[OrgMember]:
+    return [m async for m in OrgMember.objects.filter(user=user).select_related("org")]
 
 
 class HijackAcquireView(AcquireUserView):
@@ -32,9 +37,7 @@ class DashboardView(LoginRequiredMixin, TemplateView):
     async def get(self, request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
         user = request.user
         subscription = await DjangoSubscriptionRepository().get_active_for_user(user.id)
-        org_memberships = [
-            m async for m in OrgMember.objects.filter(user=user).select_related("org")
-        ]
+        org_memberships = await _get_org_memberships(user)
         ctx = self.get_context_data(
             subscription=subscription,
             org_memberships=org_memberships,
