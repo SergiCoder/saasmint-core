@@ -68,7 +68,7 @@ stripe-django/
 │   └── tests/           # Core unit tests
 ├── config/              # Django settings, URLs, WSGI/ASGI
 ├── apps/                # Django apps
-│   ├── admin_panel/     # Extended Django admin (subscription status column on user list)
+│   ├── admin_panel/     # Extended Django admin (subscription status column, site_url → /dashboard/)
 │   ├── billing/         # Stripe billing, subscriptions, and webhook processing
 │   ├── dashboard/       # Server-rendered dashboard, hijack impersonation landing views
 │   ├── orgs/            # Organisation management and membership

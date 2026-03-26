@@ -1,4 +1,4 @@
-"""Extended Django admin — re-registers User with subscription status column."""
+"""Extended Django admin — re-registers User with subscription status column and sets site_url to /dashboard/."""  # noqa: E501
 
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
