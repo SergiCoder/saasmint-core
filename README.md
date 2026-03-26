@@ -26,11 +26,14 @@ uv sync
 cp .env.base .env.local
 # Edit .env.local with your Stripe keys, Supabase JWT secret, and database URL
 
-# 4. Run migrations
-uv run python manage.py migrate
+# 4. Start the Docker stack (PostgreSQL, Redis, Django, Celery)
+make dev
 
-# 5. Start the dev server
-uv run python manage.py runserver
+# 5. In a separate terminal, run migrations
+make migrate
+
+# 6. (Optional) Seed dev data with test users and orgs
+make seed
 ```
 
 ## Environment variables
