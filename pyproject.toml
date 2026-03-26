@@ -57,10 +57,6 @@ strict = true
 exclude = [".venv", "node_modules", "__pycache__", "tests", "migrations", "apps/users/management", "apps/admin_panel", "apps/dashboard"]
 
 [[tool.mypy.overrides]]
-module = ["apps.orgs.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
 module = ["celery", "celery.*"]
 ignore_missing_imports = true
 follow_untyped_imports = false
@@ -87,7 +83,6 @@ omit = [
     "config/settings/prod.py",
     "config/asgi.py",
     "config/wsgi.py",
-    "config/urls.py",
 ]
 
 [dependency-groups]
