@@ -283,13 +283,14 @@ class Command(BaseCommand):
             for p in new_plans:
                 self.stdout.write(f"  + Plan: {p.name}")
 
-        plan_map: dict[str, Plan] = {}
         all_plans = {p.name: p for p in Plan.objects.filter(name__in=[p["name"] for p in PLANS])}
-        for p in PLANS:
-            plan_map[p["key"]] = all_plans[p["name"]]
+        plan_map: dict[str, Plan] = {p["key"]: all_plans[p["name"]] for p in PLANS}
+        self._seed_plan_prices(plan_map)
+        return plan_map
 
+    def _seed_plan_prices(self, plan_map: dict[str, Plan]) -> None:
         existing_prices = set(
-            PlanPrice.objects.filter(plan__in=all_plans.values()).values_list("plan_id", "currency")
+            PlanPrice.objects.filter(plan__in=plan_map.values()).values_list("plan_id", "currency")
         )
         new_prices = [
             PlanPrice(
@@ -303,8 +304,6 @@ class Command(BaseCommand):
         ]
         if new_prices:
             PlanPrice.objects.bulk_create(new_prices)
-
-        return plan_map
 
     def _seed_users(self, plans: dict[str, Plan]) -> dict[str, User]:
         user_map: dict[str, User] = {}
@@ -327,29 +326,28 @@ class Command(BaseCommand):
                 self.stdout.write(f"  + User: {user.full_name} <{user.email}>")
 
             user_map[u["email"]] = user
-
-            # Stripe customer
-            customer, _ = StripeCustomer.objects.get_or_create(
-                stripe_id=u["stripe_id"],
-                defaults={"user": user, "livemode": False},
-            )
-
-            # Subscription
-            self._seed_subscription(
-                stripe_id=u["sub_stripe_id"],
-                customer=customer,
-                plan=plans[u["plan_key"]],
-                status=u["sub_status"],
-                quantity=1,
-                trial_days=u.get("trial_days_from_now"),
-                canceled_days_ago=u.get("canceled_days_ago"),
-            )
+            self._seed_user_billing(user, u, plans)
 
         return user_map
 
+    def _seed_user_billing(self, user: User, u: dict[str, object], plans: dict[str, Plan]) -> None:
+        customer, _ = StripeCustomer.objects.get_or_create(
+            stripe_id=u["stripe_id"],
+            defaults={"user": user, "livemode": False},
+        )
+        self._seed_subscription(
+            stripe_id=u["sub_stripe_id"],  # type: ignore[arg-type]
+            customer=customer,
+            plan=plans[u["plan_key"]],  # type: ignore[index]
+            status=u["sub_status"],  # type: ignore[arg-type]
+            quantity=1,
+            trial_days=u.get("trial_days_from_now"),  # type: ignore[arg-type]
+            canceled_days_ago=u.get("canceled_days_ago"),  # type: ignore[arg-type]
+        )
+
     def _seed_orgs(self, plans: dict[str, Plan], users: dict[str, User]) -> None:
         for o in ORGS:
-            owner = users[o["owner_email"]]
+            owner = users[o["owner_email"]]  # type: ignore[index]
             org, created = Org.objects.get_or_create(
                 slug=o["slug"],
                 defaults={"name": o["name"], "created_by": owner},
@@ -357,38 +355,43 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f"  + Org: {org.name}")
 
-            # Owner membership
-            OrgMember.objects.get_or_create(
-                org=org,
-                user=owner,
-                defaults={"role": OrgRole.OWNER, "is_billing": True},
-            )
+            self._seed_org_memberships(org, owner, o, users)
+            self._seed_org_billing(org, o, plans)
 
-            # Extra members
-            for member_email, role in o.get("members", []):
-                member_user = users.get(member_email)
-                if member_user:
-                    OrgMember.objects.get_or_create(
-                        org=org,
-                        user=member_user,
-                        defaults={"role": role, "is_billing": False},
-                    )
+    def _seed_org_memberships(
+        self,
+        org: Org,
+        owner: User,
+        o: dict[str, object],
+        users: dict[str, User],
+    ) -> None:
+        OrgMember.objects.get_or_create(
+            org=org,
+            user=owner,
+            defaults={"role": OrgRole.OWNER, "is_billing": True},
+        )
+        for member_email, role in o.get("members", []):  # type: ignore[misc]
+            member_user = users.get(member_email)
+            if member_user:
+                OrgMember.objects.get_or_create(
+                    org=org,
+                    user=member_user,
+                    defaults={"role": role, "is_billing": False},
+                )
 
-            # Stripe customer for org
-            customer, _ = StripeCustomer.objects.get_or_create(
-                stripe_id=o["stripe_id"],
-                defaults={"org": org, "livemode": False},
-            )
-
-            # Subscription
-            self._seed_subscription(
-                stripe_id=o["sub_stripe_id"],
-                customer=customer,
-                plan=plans[o["plan_key"]],
-                status=o["sub_status"],
-                quantity=o["seats"],
-                trial_days=o.get("trial_days_from_now"),
-            )
+    def _seed_org_billing(self, org: Org, o: dict[str, object], plans: dict[str, Plan]) -> None:
+        customer, _ = StripeCustomer.objects.get_or_create(
+            stripe_id=o["stripe_id"],
+            defaults={"org": org, "livemode": False},
+        )
+        self._seed_subscription(
+            stripe_id=o["sub_stripe_id"],  # type: ignore[arg-type]
+            customer=customer,
+            plan=plans[o["plan_key"]],  # type: ignore[index]
+            status=o["sub_status"],  # type: ignore[arg-type]
+            quantity=o["seats"],  # type: ignore[arg-type]
+            trial_days=o.get("trial_days_from_now"),  # type: ignore[arg-type]
+        )
 
     def _seed_subscription(
         self,
