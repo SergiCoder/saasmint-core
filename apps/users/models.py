@@ -23,8 +23,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     supabase_uid = models.CharField(max_length=255, unique=True)
     email = models.EmailField(unique=True)
-    full_name = models.CharField(max_length=255, blank=True, null=True)  # noqa: DJ001
-    avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001
+    full_name = models.CharField(max_length=255, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means name not set (distinguishable from empty string)
+    avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no avatar set (distinguishable from empty string)
     account_type = models.CharField(
         max_length=20,
         choices=AccountType.choices,
@@ -54,7 +54,7 @@ class User(AbstractBaseUser, PermissionsMixin):
             ),
         ]
 
-    def save(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+    def save(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401  # *args/**kwargs forwarded to super().save(); heterogeneous by design
         super().save(*args, **kwargs)
         cache.delete(AUTH_USER_CACHE_KEY.format(self.supabase_uid))
 

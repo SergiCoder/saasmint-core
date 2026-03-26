@@ -60,7 +60,7 @@ def _get_org_and_member(
 class OrgListCreateView(APIView):
     """GET /api/v1/orgs/ — list user's orgs; POST — create a new org."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
     def get(self, request: Request) -> Response:
@@ -101,7 +101,7 @@ class OrgListCreateView(APIView):
 class OrgDetailView(APIView):
     """GET/PATCH/DELETE /api/v1/orgs/{org_id}/."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
     def get(self, request: Request, org_id: UUID) -> Response:
@@ -132,7 +132,7 @@ class OrgDetailView(APIView):
 class OrgMemberListView(APIView):
     """GET /api/v1/orgs/{org_id}/members/ — list members; POST — add member."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
     def get(self, request: Request, org_id: UUID) -> Response:
@@ -173,7 +173,7 @@ class OrgMemberListView(APIView):
 class OrgMemberDetailView(APIView):
     """PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
     def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:

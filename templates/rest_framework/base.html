@@ -1,0 +1,188 @@
+{% load static %}
+{% load i18n %}
+{% load rest_framework %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="NONE,NOARCHIVE">
+  <title>{% block title %}{% if name %}{{ name }} – {% endif %}API{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'admin.css' %}">
+  <link rel="stylesheet" href="{% static 'rest_framework/css/prettify.css' %}">
+  {% if code_style %}<style>{{ code_style }}</style>{% endif %}
+  <style>
+    /* Override prettify.css with our light theme */
+    pre.prettyprint { background: #f3f4f6; color: #1a1a1a; padding: 1rem; border-radius: 6px; font-size: .8rem; line-height: 1.5; overflow-x: auto; border: 1px solid #e5e5e5; margin: 0; white-space: pre-wrap; word-break: break-all; }
+    pre.prettyprint b { color: #1a1a1a; }
+    pre.prettyprint .lit { color: #2563eb; }
+    pre.prettyprint .meta { color: #555; }
+  </style>
+</head>
+<body>
+
+{% url 'dashboard:dashboard' as dashboard_url %}
+{% include "shared/topbar.html" with topbar_back_url=dashboard_url topbar_title="Dashboard" topbar_show_user=True %}
+
+<div class="container">
+
+  {% block breadcrumbs %}{% endblock %}
+
+  {% block content %}
+
+  <h1>{{ name }}</h1>
+
+  <div class="api-actions">
+    {% if 'GET' in allowed_methods %}
+      {% if api_settings.URL_FORMAT_OVERRIDE %}
+        <div class="dropdown">
+          <a class="btn btn-primary js-tooltip" href="{{ request.get_full_path }}" rel="nofollow" title="GET {{ name }}">GET ▾</a>
+          <ul class="dropdown-menu">
+            {% for format in available_formats %}
+              <li><a class="js-tooltip format-option" href="{% add_query_param request api_settings.URL_FORMAT_OVERRIDE format %}" rel="nofollow" title="GET {{ name }} as {{ format }}">{{ format }}</a></li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% else %}
+        <a class="btn btn-primary js-tooltip" href="{{ request.get_full_path }}" rel="nofollow" title="GET {{ name }}">GET</a>
+      {% endif %}
+    {% endif %}
+
+    {% if options_form %}
+      <form class="button-form d-inline" action="{{ request.get_full_path }}" data-method="OPTIONS">
+        <button class="btn btn-default js-tooltip" title="OPTIONS {{ name }}">OPTIONS</button>
+      </form>
+    {% endif %}
+
+    {% if delete_form %}
+      <button class="btn btn-danger js-tooltip" data-toggle="modal" data-target="#deleteModal" title="DELETE {{ name }}">DELETE</button>
+      <div class="modal fade" id="deleteModal" tabindex="-1" role="dialog">
+        <div class="modal-dialog">
+          <div class="modal-body"><h4>Delete this {{ name }}?</h4></div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+            <form class="button-form d-inline" action="{{ request.get_full_path }}" data-method="DELETE">
+              <button class="btn btn-danger">Delete</button>
+            </form>
+          </div>
+        </div>
+      </div>
+    {% endif %}
+
+    {% if extra_actions %}
+      <div class="dropdown">
+        <button class="btn btn-default" id="extra-actions-menu" data-toggle="dropdown">{% trans "Extra Actions" %} ▾</button>
+        <ul class="dropdown-menu" aria-labelledby="extra-actions-menu">
+          {% for action_name, url in extra_actions|items %}<li><a href="{{ url }}">{{ action_name }}</a></li>{% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    {% if filter_form %}
+      <button data-toggle="modal" data-target="#filtersModal" class="btn btn-default">{% trans "Filters" %}</button>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Response</h2>
+    {% block description %}{% endblock %}
+    {% if paginator %}
+      <nav class="api-paginator">{% get_pagination_html paginator %}</nav>
+    {% endif %}
+    <p class="api-request-line"><span class="method-badge">{{ request.method }}</span> {{ request.get_full_path }}</p>
+    <pre class="prettyprint"><span class="meta nocode"><b>HTTP {{ response.status_code }} {{ response.status_text }}</b>{% for key, val in response_headers|items %}
+<b>{{ key }}:</b> <span class="lit">{{ val|urlize }}</span>{% endfor %}
+
+</span>{{ content|urlize }}</pre>
+  </div>
+
+  {% if display_edit_forms %}
+    {% if post_form or raw_data_post_form %}
+    <div class="card {% if post_form %}tabbable{% endif %}">
+      <h2>POST</h2>
+      {% if post_form %}
+        <ul class="nav-tabs">
+          <li><a name="html-tab" href="#post-object-form" data-toggle="tab">HTML form</a></li>
+          <li><a name="raw-tab" href="#post-generic-content-form" data-toggle="tab">Raw data</a></li>
+        </ul>
+      {% endif %}
+      <div class="tab-content">
+        {% if post_form %}
+          <div class="tab-pane" id="post-object-form">
+            <form action="{{ request.get_full_path }}" method="POST" enctype="multipart/form-data" class="form-horizontal" novalidate>
+              <fieldset>
+                {% csrf_token %}
+                {{ post_form }}
+                <div class="form-actions"><button class="btn btn-primary js-tooltip" title="POST {{ name }}">POST</button></div>
+              </fieldset>
+            </form>
+          </div>
+        {% endif %}
+        <div {% if post_form %}class="tab-pane"{% endif %} id="post-generic-content-form">
+          {% with form=raw_data_post_form %}
+          <form action="{{ request.get_full_path }}" method="POST" class="form-horizontal">
+            <fieldset>
+              {% include "rest_framework/raw_data_form.html" %}
+              <div class="form-actions"><button class="btn btn-primary js-tooltip" title="POST {{ name }}">POST</button></div>
+            </fieldset>
+          </form>
+          {% endwith %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if put_form or raw_data_put_form or raw_data_patch_form %}
+    <div class="card {% if put_form %}tabbable{% endif %}">
+      <h2>PUT / PATCH</h2>
+      {% if put_form %}
+        <ul class="nav-tabs">
+          <li><a name="html-tab" href="#put-object-form" data-toggle="tab">HTML form</a></li>
+          <li><a name="raw-tab" href="#put-generic-content-form" data-toggle="tab">Raw data</a></li>
+        </ul>
+      {% endif %}
+      <div class="tab-content">
+        {% if put_form %}
+          <div class="tab-pane" id="put-object-form">
+            <form action="{{ request.get_full_path }}" data-method="PUT" enctype="multipart/form-data" class="form-horizontal" novalidate>
+              <fieldset>
+                {{ put_form }}
+                <div class="form-actions"><button class="btn btn-primary js-tooltip" title="PUT {{ name }}">PUT</button></div>
+              </fieldset>
+            </form>
+          </div>
+        {% endif %}
+        <div {% if put_form %}class="tab-pane"{% endif %} id="put-generic-content-form">
+          {% with form=raw_data_put_or_patch_form %}
+          <form action="{{ request.get_full_path }}" data-method="PUT" class="form-horizontal">
+            <fieldset>
+              {% include "rest_framework/raw_data_form.html" %}
+              <div class="form-actions">
+                {% if raw_data_put_form %}<button class="btn btn-primary js-tooltip" title="PUT {{ name }}">PUT</button>{% endif %}
+                {% if raw_data_patch_form %}<button data-method="PATCH" class="btn btn-primary js-tooltip" title="PATCH {{ name }}">PATCH</button>{% endif %}
+              </div>
+            </fieldset>
+          </form>
+          {% endwith %}
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  {% endif %}
+
+  {% endblock content %}
+
+</div>
+
+{% if filter_form %}{{ filter_form }}{% endif %}
+
+<script type="application/json" id="drf_csrf">{"csrfHeaderName":"{{ csrf_header_name|default:'X-CSRFToken' }}","csrfToken":"{% if request %}{{ csrf_token }}{% endif %}"}</script>
+<script src="{% static 'rest_framework/js/jquery-3.7.1.min.js' %}"></script>
+<script src="{% static 'rest_framework/js/ajax-form.js' %}"></script>
+<script src="{% static 'rest_framework/js/csrf.js' %}"></script>
+<script src="{% static 'rest_framework/js/bootstrap.min.js' %}"></script>
+<script src="{% static 'rest_framework/js/prettify-min.js' %}"></script>
+<script src="{% static 'rest_framework/js/default.js' %}"></script>
+<script src="{% static 'rest_framework/js/load-ajax-form.js' %}"></script>
+</body>
+</html>

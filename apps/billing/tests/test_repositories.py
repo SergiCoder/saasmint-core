@@ -52,6 +52,51 @@ class TestDjangoStripeCustomerRepository:
         result = async_to_sync(repo.get_by_user_id)(uuid4())
         assert result is None
 
+    def test_get_by_org_id(self, repo, db):
+        from apps.orgs.models import Org
+        from apps.users.models import User
+
+        owner = User.objects.create_user(
+            email="org_owner@example.com", supabase_uid="sup_org_owner"
+        )
+        org = Org.objects.create(name="Test Org", slug="test-org-repo", created_by=owner)
+        StripeCustomer.objects.create(stripe_id="cus_org_test", org=org, livemode=False)
+        result = async_to_sync(repo.get_by_org_id)(org.id)
+        assert result is not None
+        assert result.stripe_id == "cus_org_test"
+        assert result.org_id == org.id
+
+    def test_get_by_org_id_not_found(self, repo):
+        result = async_to_sync(repo.get_by_org_id)(uuid4())
+        assert result is None
+
+    def test_save_creates_new_for_org(self, repo, db):
+        from stripe_saas_core.domain.stripe_customer import (
+            StripeCustomer as DomainCustomer,
+        )
+
+        from apps.orgs.models import Org
+        from apps.users.models import User
+
+        owner = User.objects.create_user(
+            email="save_org_owner@example.com", supabase_uid="sup_save_org"
+        )
+        org = Org.objects.create(name="Save Org", slug="save-org", created_by=owner)
+        customer = DomainCustomer(
+            id=uuid4(),
+            stripe_id="cus_org_save_123",
+            user_id=None,
+            org_id=org.id,
+            livemode=False,
+            created_at=datetime.now(UTC),
+        )
+        saved = async_to_sync(repo.save)(customer)
+        assert saved.stripe_id == "cus_org_save_123"
+        assert StripeCustomer.objects.filter(stripe_id="cus_org_save_123").exists()
+        db_obj = StripeCustomer.objects.get(stripe_id="cus_org_save_123")
+        assert db_obj.org_id == org.id
+        assert db_obj.user_id is None
+
     def test_save_creates_new(self, repo, user):
         from stripe_saas_core.domain.stripe_customer import (
             StripeCustomer as DomainCustomer,
@@ -158,6 +203,65 @@ class TestDjangoSubscriptionRepository:
         )
         async_to_sync(repo.save)(sub)
         assert Subscription.objects.filter(stripe_id="sub_new").exists()
+
+    def test_get_active_for_user_returns_active_subscription(self, repo, subscription, user):
+        result = async_to_sync(repo.get_active_for_user)(user.id)
+        assert result is not None
+        assert result.stripe_id == "sub_test_123"
+
+    def test_get_active_for_user_returns_none_when_no_customer(self, repo, db):
+        from uuid import uuid4
+
+        result = async_to_sync(repo.get_active_for_user)(uuid4())
+        assert result is None
+
+    def test_get_active_for_user_returns_none_when_only_canceled(self, repo, stripe_customer, plan):
+        Subscription.objects.create(
+            stripe_id="sub_canceled",
+            stripe_customer=stripe_customer,
+            status="canceled",
+            plan=plan,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        result = async_to_sync(repo.get_active_for_user)(stripe_customer.user_id)
+        assert result is None
+
+    def test_get_active_for_user_returns_latest_when_multiple_active(
+        self, repo, stripe_customer, plan
+    ):
+        Subscription.objects.create(
+            stripe_id="sub_older",
+            stripe_customer=stripe_customer,
+            status="active",
+            plan=plan,
+            current_period_start=datetime(2025, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2025, 2, 1, tzinfo=UTC),
+        )
+        Subscription.objects.create(
+            stripe_id="sub_newer",
+            stripe_customer=stripe_customer,
+            status="active",
+            plan=plan,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        result = async_to_sync(repo.get_active_for_user)(stripe_customer.user_id)
+        assert result is not None
+        assert result.stripe_id == "sub_newer"
+
+    def test_get_active_for_user_includes_trialing_status(self, repo, stripe_customer, plan):
+        Subscription.objects.create(
+            stripe_id="sub_trialing",
+            stripe_customer=stripe_customer,
+            status="trialing",
+            plan=plan,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        result = async_to_sync(repo.get_active_for_user)(stripe_customer.user_id)
+        assert result is not None
+        assert result.stripe_id == "sub_trialing"
 
     def test_delete(self, repo, subscription):
         async_to_sync(repo.delete)(subscription.id)
@@ -275,18 +379,20 @@ class TestDjangoStripeEventRepository:
         obj = StripeEvent.objects.get(stripe_id="evt_fail")
         assert obj.error == "connection timeout"
 
-    def test_list_recent(self, repo, db):
+    @pytest.mark.anyio
+    async def test_list_recent(self, repo, db):
         for i in range(3):
-            StripeEvent.objects.create(
+            await StripeEvent.objects.acreate(
                 stripe_id=f"evt_recent_{i}",
                 type="test",
                 livemode=False,
                 payload={},
             )
-        results = async_to_sync(repo.list_recent)(limit=2)
+        results = await repo.list_recent(limit=2)
         assert len(results) == 2
 
-    def test_list_recent_caps_at_100(self, repo, db):
-        results = async_to_sync(repo.list_recent)(limit=200)
+    @pytest.mark.anyio
+    async def test_list_recent_caps_at_100(self, repo, db):
+        results = await repo.list_recent(limit=200)
         # Should not error, just cap
         assert isinstance(results, list)

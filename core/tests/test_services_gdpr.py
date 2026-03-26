@@ -126,7 +126,7 @@ async def test_delete_user_data_subscription_already_canceled_in_stripe() -> Non
             "stripe.Subscription.cancel",
             side_effect=stripe.InvalidRequestError(
                 "already canceled", param="id", code="resource_missing"
-            ),  # type: ignore[no-untyped-call]
+            ),  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation on InvalidRequestError constructor
         ),
         patch("stripe.Customer.delete"),
     ):

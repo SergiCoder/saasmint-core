@@ -90,7 +90,7 @@ class PlanListView(APIView):
 class CheckoutView(APIView):
     """POST /api/v1/billing/checkout — create a Stripe Checkout Session."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
     def post(self, request: Request) -> Response:
@@ -133,7 +133,7 @@ class CheckoutView(APIView):
 class PortalView(APIView):
     """POST /api/v1/billing/portal — create a Stripe Customer Portal session."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
     def post(self, request: Request) -> Response:
@@ -182,7 +182,7 @@ class SubscriptionView(APIView):
 class CancelSubscriptionView(APIView):
     """POST /api/v1/billing/subscription/cancel."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
     def post(self, request: Request) -> Response:
@@ -203,7 +203,7 @@ class CancelSubscriptionView(APIView):
 class ChangePlanView(APIView):
     """POST /api/v1/billing/subscription/change-plan."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
     def post(self, request: Request) -> Response:
@@ -228,7 +228,7 @@ class ChangePlanView(APIView):
 class ApplyPromoCodeView(APIView):
     """POST /api/v1/billing/subscription/promo."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
     def post(self, request: Request) -> Response:
@@ -250,7 +250,7 @@ class ApplyPromoCodeView(APIView):
 class UpdateSeatCountView(APIView):
     """POST /api/v1/billing/subscription/seats — update org seat count."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
     def post(self, request: Request) -> Response:

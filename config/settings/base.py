@@ -46,7 +46,7 @@ class _Env(BaseSettings):
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
-env = _Env()  # type: ignore[call-arg]
+env = _Env()  # type: ignore[call-arg]  # pydantic-settings reads fields from env vars at construction; mypy sees no positional args but none are needed
 
 
 def _parse_db_url(url: str) -> dict[str, object]:
@@ -85,6 +85,8 @@ INSTALLED_APPS = [
     "apps.users",
     "apps.billing",
     "apps.orgs",
+    "apps.admin_panel",
+    "apps.dashboard",
 ]
 
 MIDDLEWARE = [
@@ -97,7 +99,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    # "middleware.security.SecurityHeadersMiddleware",  # TODO: PR 6
+    "middleware.security.SecurityHeadersMiddleware",
     "hijack.middleware.HijackUserMiddleware",
 ]
 
@@ -124,6 +126,7 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {"default": _parse_db_url(env.database_url)}
 
 AUTH_USER_MODEL = "users.User"
+LOGIN_URL = "/admin/login/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

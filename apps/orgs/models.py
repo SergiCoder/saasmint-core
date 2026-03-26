@@ -17,7 +17,7 @@ class Org(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     slug = models.SlugField(max_length=255)
-    logo_url = models.TextField(null=True, blank=True)  # noqa: DJ001
+    logo_url = models.TextField(null=True, blank=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no logo set (distinguishable from empty string)
     created_by = models.ForeignKey(
         "users.User",
         on_delete=models.PROTECT,
@@ -28,7 +28,7 @@ class Org(models.Model):
 
     class Meta:
         db_table = "orgs"
-        constraints = [  # noqa: RUF012
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(
                 fields=["slug"],
                 condition=models.Q(deleted_at__isnull=True),
@@ -50,7 +50,7 @@ class OrgMember(models.Model):
 
     class Meta:
         db_table = "org_members"
-        constraints = [  # noqa: RUF012
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(fields=["org", "user"], name="org_members_org_user_uniq"),
         ]
 

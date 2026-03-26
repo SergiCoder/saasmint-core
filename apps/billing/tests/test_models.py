@@ -46,6 +46,34 @@ class TestStripeCustomer:
     def test_str(self, stripe_customer):
         assert str(stripe_customer) == "cus_test_123"
 
+    def test_constraint_rejects_both_null(self, db):
+        """StripeCustomer must have exactly one owner — neither user nor org."""
+        from apps.billing.models import StripeCustomer
+
+        with pytest.raises(IntegrityError):
+            StripeCustomer.objects.create(
+                stripe_id="cus_no_owner",
+                livemode=False,
+            )
+
+    def test_constraint_rejects_both_set(self, db):
+        """StripeCustomer must have exactly one owner — not both user and org."""
+        from apps.billing.models import StripeCustomer
+        from apps.orgs.models import Org
+        from apps.users.models import User
+
+        user = User.objects.create_user(
+            email="constraint_user@example.com", supabase_uid="sup_constraint"
+        )
+        org = Org.objects.create(name="Constraint Org", slug="constraint-org", created_by=user)
+        with pytest.raises(IntegrityError):
+            StripeCustomer.objects.create(
+                stripe_id="cus_both_owners",
+                user=user,
+                org=org,
+                livemode=False,
+            )
+
 
 @pytest.mark.django_db
 class TestSubscription:

@@ -1,0 +1,132 @@
+{% extends "dashboard/base.html" %}
+
+{% block title %}Dashboard — {{ request.user.email }}{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+
+<!-- Account -->
+<div class="card">
+  <h2>Account</h2>
+  <div class="row">
+    <div class="field">
+      <label>Email</label>
+      <span>{{ request.user.email }}</span>
+    </div>
+    <div class="field">
+      <label>Name</label>
+      <span>{{ request.user.full_name|default:"—" }}</span>
+    </div>
+    <div class="field">
+      <label>Account type</label>
+      <span>{{ request.user.get_account_type_display }}</span>
+    </div>
+    <div class="field">
+      <label>Locale</label>
+      <span>{{ request.user.preferred_locale }} / {{ request.user.preferred_currency|upper }}</span>
+    </div>
+    <div class="field">
+      <label>Verified</label>
+      <span>{{ request.user.is_verified|yesno:"Yes,No" }}</span>
+    </div>
+    <div class="field">
+      <label>Member since</label>
+      <span>{{ request.user.created_at|date:"N j, Y" }}</span>
+    </div>
+  </div>
+</div>
+
+<!-- Subscription -->
+<div class="card">
+  <h2>Subscription</h2>
+  {% if subscription %}
+  <div class="row">
+    <div class="field">
+      <label>Plan</label>
+      <span>{{ plan.name }}</span>
+    </div>
+    <div class="field">
+      <label>Interval</label>
+      <span>{{ plan.interval }}</span>
+    </div>
+    <div class="field">
+      <label>Status</label>
+      <span>
+        {% if subscription.status == "active" %}
+          <span class="badge badge-green">Active</span>
+        {% elif subscription.status == "trialing" %}
+          <span class="badge badge-blue">Trialing</span>
+        {% elif subscription.status == "past_due" %}
+          <span class="badge badge-orange">Past due</span>
+        {% else %}
+          <span class="badge badge-grey">{{ subscription.status }}</span>
+        {% endif %}
+      </span>
+    </div>
+    <div class="field">
+      <label>Quantity / Seats</label>
+      <span>{{ subscription.quantity }}</span>
+    </div>
+    {% if subscription.trial_ends_at %}
+    <div class="field">
+      <label>Trial ends</label>
+      <span>{{ subscription.trial_ends_at|date:"N j, Y" }}</span>
+    </div>
+    {% endif %}
+    <div class="field">
+      <label>Current period</label>
+      <span>{{ subscription.current_period_start|date:"N j" }} – {{ subscription.current_period_end|date:"N j, Y" }}</span>
+    </div>
+    {% if subscription.discount_percent %}
+    <div class="field">
+      <label>Discount</label>
+      <span>{{ subscription.discount_percent|floatformat:0 }}% off{% if subscription.discount_end_at %} until {{ subscription.discount_end_at|date:"N j, Y" }}{% endif %}</span>
+    </div>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="text-muted">No active subscription.</p>
+  {% endif %}
+</div>
+
+<!-- Org memberships -->
+{% if org_memberships %}
+<div class="card">
+  <h2>Organisation memberships</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Organisation</th>
+        <th>Slug</th>
+        <th>Role</th>
+        <th>Billing contact</th>
+        <th>Joined</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in org_memberships %}
+      <tr>
+        <td><strong>{{ m.org.name }}</strong></td>
+        <td>{{ m.org.slug }}</td>
+        <td>{{ m.get_role_display }}</td>
+        <td>{{ m.is_billing|yesno:"Yes,No" }}</td>
+        <td>{{ m.joined_at|date:"N j, Y" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- API links -->
+<div class="card">
+  <h2>API endpoints</h2>
+  <ul class="links">
+    <li><a href="{% url 'account' %}"><span class="method-badge">GET</span> /api/v1/account/ — Profile</a></li>
+    <li><a href="{% url 'billing-subscription' %}"><span class="method-badge">GET</span> /api/v1/billing/subscription — Subscription detail</a></li>
+    <li><a href="{% url 'billing-plans' %}"><span class="method-badge">GET</span> /api/v1/billing/plans — Available plans</a></li>
+    <li><a href="{% url 'org-list-create' %}"><span class="method-badge">GET</span> /api/v1/orgs — Organisations</a></li>
+    <li><a href="{% url 'account-export' %}"><span class="method-badge">GET</span> /api/v1/account/export/ — Data export (GDPR)</a></li>
+  </ul>
+</div>
+{% endblock %}

@@ -9,7 +9,7 @@ description = "Shared business logic for Stripe SaaS — framework-agnostic"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic[email]>=2.12.5",
-    "stripe>=14.0",
+    "stripe>=15.0",
 ]
 
 [project.optional-dependencies]

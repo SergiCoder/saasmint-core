@@ -381,9 +381,7 @@ class TestOrgMemberDetailViewDELETE:
         admin_membership,
         second_admin_membership,
     ):
-        resp = second_admin_client.delete(
-            f"/api/v1/orgs/{org.id}/members/{admin_user.id}/"
-        )
+        resp = second_admin_client.delete(f"/api/v1/orgs/{org.id}/members/{admin_user.id}/")
         assert resp.status_code == 403
 
     def test_member_cannot_remove_anyone(
@@ -624,9 +622,7 @@ class TestSoftDeletedOrgMemberOperations:
     def test_delete_member_on_soft_deleted_org_returns_404(
         self, authed_client, soft_deleted_org, owner_membership, member_user, member_membership
     ):
-        resp = authed_client.delete(
-            f"/api/v1/orgs/{soft_deleted_org.id}/members/{member_user.id}/"
-        )
+        resp = authed_client.delete(f"/api/v1/orgs/{soft_deleted_org.id}/members/{member_user.id}/")
         assert resp.status_code == 404
 
     def test_add_member_to_soft_deleted_org_returns_404(

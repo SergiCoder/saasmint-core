@@ -1,0 +1,120 @@
+/* Shared admin/dashboard stylesheet — used by all backend frameworks */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #1a1a1a; }
+
+/* ── Topbar ─────────────────────────────────────────────────────────────── */
+.topbar { background: #1a1a1a; color: #fff; }
+.topbar-inner { max-width: 960px; margin: 0 auto; padding: .75rem 1rem; display: flex; align-items: center; justify-content: space-between; }
+.topbar-links { display: flex; align-items: center; gap: 1rem; }
+.topbar a { color: #ccc; text-decoration: none; font-size: .875rem; }
+.topbar a:hover { color: #fff; }
+.topbar-brand { color: #fff; font-weight: 700; text-decoration: none; font-size: .875rem; }
+.topbar-brand:hover { color: #fff; }
+.topbar-left { display: flex; align-items: center; gap: .75rem; }
+.topbar-tag { font-size: .7rem; font-weight: 700; padding: .2rem .5rem; border-radius: 3px; background: #f59e0b; color: #1a1a1a; letter-spacing: .04em; text-transform: uppercase; }
+.topbar-release-form { display: contents; }
+.topbar-release { color: #ccc; font-weight: 400; font-size: .875rem; text-decoration: none; background: none; border: none; cursor: pointer; padding: 0; font-family: inherit; }
+.topbar-release:hover { color: #fff; }
+.topbar-user { font-size: .8rem; color: #ccc; }
+.topbar-user .user-name { color: #fff; font-weight: 600; }
+.topbar-user-id { opacity: .5; }
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+.container { max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+.card { background: #fff; border: 1px solid #e5e5e5; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; }
+.card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; color: #555; text-transform: uppercase; letter-spacing: .05em; }
+.card-narrow { max-width: 400px; margin: 4rem auto 0; }
+.card-narrow p { margin-bottom: 1.25rem; }
+
+/* ── Field grid ──────────────────────────────────────────────────────────── */
+.row { display: flex; gap: 2rem; flex-wrap: wrap; }
+.field { flex: 1 1 180px; min-width: 0; overflow: hidden; }
+.field label { font-size: .75rem; color: #888; display: block; margin-bottom: .25rem; text-transform: uppercase; letter-spacing: .04em; }
+.field span { font-size: .95rem; font-weight: 500; overflow-wrap: break-word; word-break: break-all; min-width: 0; }
+
+/* ── Badges ──────────────────────────────────────────────────────────────── */
+.badge { display: inline-block; padding: .2rem .6rem; border-radius: 4px; font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.badge-green  { background: #d1fae5; color: #065f46; }
+.badge-blue   { background: #dbeafe; color: #1e40af; }
+.badge-orange { background: #ffedd5; color: #9a3412; }
+.badge-grey   { background: #f3f4f6; color: #6b7280; }
+
+/* ── Method badge ────────────────────────────────────────────────────────── */
+.method-badge { display: inline-block; font-size: .7rem; font-weight: 700; padding: .15rem .45rem; border-radius: 3px; background: #2563eb; color: #fff; letter-spacing: .04em; text-transform: uppercase; }
+
+/* ── Link list ───────────────────────────────────────────────────────────── */
+.links { list-style: none; display: flex; flex-direction: column; gap: .5rem; }
+.links li a { display: flex; align-items: center; gap: .5rem; color: #2563eb; text-decoration: none; font-size: .9rem; }
+.links li a:hover { text-decoration: underline; }
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+th { text-align: left; color: #888; font-weight: 600; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; padding: .5rem 0; border-bottom: 1px solid #e5e5e5; }
+td { padding: .6rem 0; border-bottom: 1px solid #f3f4f6; }
+tr:last-child td { border-bottom: none; }
+
+/* ── Typography ──────────────────────────────────────────────────────────── */
+h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem; }
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; padding: .35rem .85rem; border-radius: 4px; font-size: .8rem; font-weight: 700; cursor: pointer; border: none; text-decoration: none; letter-spacing: .03em; }
+.btn-primary { background: #2563eb; color: #fff; }
+.btn-primary:hover { background: #1d4ed8; color: #fff; }
+.btn-danger  { background: #dc2626; color: #fff; }
+.btn-danger:hover  { background: #b91c1c; color: #fff; }
+.btn-default { background: #f3f4f6; color: #1a1a1a; border: 1px solid #e5e5e5; }
+.btn-default:hover { background: #e5e7eb; }
+
+/* ── API actions bar ─────────────────────────────────────────────────────── */
+.api-actions { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1.5rem; align-items: center; }
+.api-request-line { font-size: .85rem; color: #888; margin-bottom: .75rem; display: flex; align-items: center; gap: .5rem; }
+.api-paginator { margin-top: .75rem; }
+
+/* ── Forms (used by DRF browsable API and admin pages) ───────────────────── */
+fieldset { border: none; padding: 0; margin: 0; }
+.form-horizontal label { font-size: .75rem; color: #888; text-transform: uppercase; letter-spacing: .04em; display: block; margin-bottom: .25rem; margin-top: 1rem; }
+.form-horizontal label:first-child { margin-top: 0; }
+.form-horizontal input[type=text],
+.form-horizontal input[type=email],
+.form-horizontal input[type=number],
+.form-horizontal input[type=url],
+.form-horizontal select,
+.form-horizontal textarea { width: 100%; padding: .45rem .6rem; border: 1px solid #e5e5e5; border-radius: 4px; font-size: .875rem; font-family: inherit; background: #fafafa; margin-bottom: 1rem; }
+.form-horizontal textarea { min-height: 8rem; font-family: monospace; font-size: .8rem; }
+.form-actions { margin-top: 1.25rem; }
+
+/* ── Tabs (used by DRF browsable API) ───────────────────────────────────── */
+.nav-tabs { display: flex; list-style: none; border-bottom: 1px solid #e5e5e5; margin-bottom: 1rem; }
+.nav-tabs li a { display: block; padding: .4rem 1rem; font-size: .875rem; color: #888; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.nav-tabs li.active a,
+.nav-tabs li a:hover { color: #2563eb; border-bottom-color: #2563eb; }
+.tab-pane { display: none; }
+.tab-pane.active { display: block; }
+
+/* ── Dropdown (used by DRF browsable API) ────────────────────────────────── */
+.dropdown { position: relative; display: inline-block; }
+.dropdown-menu { display: none; position: absolute; top: 100%; left: 0; background: #fff; border: 1px solid #e5e5e5; border-radius: 4px; min-width: 130px; z-index: 20; box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+.dropdown-menu li a { display: block; padding: .4rem .75rem; font-size: .875rem; color: #1a1a1a; text-decoration: none; }
+.dropdown-menu li a:hover { background: #f3f4f6; }
+.open > .dropdown-menu { display: block; }
+
+/* ── Modal (used by DRF browsable API delete confirmation) ───────────────── */
+.modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 100; align-items: center; justify-content: center; }
+.modal.in { display: flex; }
+.modal-dialog { background: #fff; border-radius: 8px; padding: 1.5rem; max-width: 400px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,.15); }
+.modal-body h4 { font-size: 1rem; font-weight: 600; text-align: center; margin-bottom: 1rem; }
+.modal-footer { display: flex; gap: .5rem; justify-content: flex-end; margin-top: 1rem; }
+
+/* ── Pagination (used by DRF browsable API) ──────────────────────────────── */
+.pagination { display: flex; gap: .25rem; list-style: none; }
+.pagination li a,
+.pagination li span { padding: .25rem .6rem; border: 1px solid #e5e5e5; border-radius: 4px; font-size: .8rem; color: #2563eb; text-decoration: none; display: block; }
+.pagination li.active span { background: #2563eb; color: #fff; border-color: #2563eb; }
+.pagination li.disabled span { color: #ccc; }
+
+/* ── Utilities ───────────────────────────────────────────────────────────── */
+.d-inline { display: inline; }
+.text-muted { color: #888; font-size: .9rem; }

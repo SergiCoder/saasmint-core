@@ -9,18 +9,19 @@ description = "Django backend for Stripe SaaS"
 requires-python = ">=3.12"
 dependencies = [
     "stripe-saas-core",
-    "django>=6.0",
+    "django>=6.0.3",
     "djangorestframework>=3.15",
     "django-cors-headers>=4.7",
-    "psycopg[binary]>=3.1",
-    "celery[redis]>=5.4",
-    "pydantic-settings>=2.10",
-    "django-hijack>=3.4",       # user impersonation in admin
-    "whitenoise>=6.7",
-    "pyjwt>=2.8",
-    "uvicorn[standard]>=0.40",
+    "psycopg[binary]>=3.3.3",
+    "celery[redis]>=5.6.3",
+    # redis is pinned by celery's kombu dep to <6.5; redis 7.x requires a kombu/celery upgrade first
+    "pydantic-settings>=2.13.1",
+    "django-hijack>=3.7.6",     # user impersonation in admin
+    "whitenoise>=6.12.0",
+    "pyjwt>=2.12.1",
+    "uvicorn[standard]>=0.42.0",
     "pydantic[email]>=2.12.5",
-    "supabase>=2.20",
+    "supabase>=2.28.3",
 ]
 
 [project.optional-dependencies]
@@ -43,7 +44,7 @@ stripe-saas-core = { path = "core", editable = true }
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
-testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests", "apps/orgs/tests"]
+testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests", "apps/orgs/tests", "apps/dashboard/tests", "apps/admin_panel/tests"]
 filterwarnings = [
     "ignore:No directory at.*staticfiles:UserWarning",
 ]
@@ -53,7 +54,7 @@ addopts = "--cov-config=pyproject.toml"
 python_version = "3.12"
 plugins = ["mypy_django_plugin.main", "mypy_drf_plugin.main"]
 strict = true
-exclude = [".venv", "node_modules", "__pycache__", "tests", "migrations", "apps/users/management"]
+exclude = [".venv", "node_modules", "__pycache__", "tests", "migrations", "apps/users/management", "apps/admin_panel", "apps/dashboard"]
 
 [[tool.mypy.overrides]]
 module = ["apps.orgs.*"]
@@ -77,7 +78,7 @@ ignore = []
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "ANN"]
-"apps/*/tests/**" = ["S101", "ANN"]
+"apps/*/tests/**" = ["S101", "ANN", "S105"]
 "*/migrations/**" = ["ANN", "RUF", "E501"]
 
 [tool.coverage.run]
@@ -91,6 +92,7 @@ omit = [
 
 [dependency-groups]
 dev = [
+    "pytest-anyio>=0.0.0",
     "pytest-cov>=7.0.0",
     "pytest-django>=4.12.0",
 ]

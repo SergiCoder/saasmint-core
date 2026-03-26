@@ -86,7 +86,7 @@ async def test_invalid_signature_raises_webhook_verification_error() -> None:
     repos = _make_repos()
     with patch(
         "stripe.Webhook.construct_event",
-        side_effect=stripe.error.SignatureVerificationError("bad sig", "t=1"),  # type: ignore[no-untyped-call]
+        side_effect=stripe.error.SignatureVerificationError("bad sig", "t=1"),  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation on SignatureVerificationError constructor
     ):
         with pytest.raises(WebhookVerificationError):
             await handle_stripe_event(b"payload", "bad_sig", "secret", repos)
@@ -502,7 +502,7 @@ async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
         "customer.subscription.created",
         stripe_customer_id="cus_qty",
         price_id="price_qty",
-        quantity=None,  # type: ignore[arg-type]
+        quantity=None,  # type: ignore[arg-type]  # intentional: testing that None quantity is coerced to default value of 1
     )
 
     with patch("stripe.Webhook.construct_event", return_value=event):

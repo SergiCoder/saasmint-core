@@ -57,7 +57,7 @@ class PlanPrice(models.Model):
 
     class Meta:
         db_table = "plan_prices"
-        constraints = [  # noqa: RUF012
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(
                 fields=["plan", "currency"], name="plan_prices_plan_currency_uniq"
             ),
@@ -77,15 +77,24 @@ class StripeCustomer(models.Model):
         blank=True,
         related_name="stripe_customer",
     )
-    # org FK and exactly-one-owner constraint added by the orgs app (PR 5)
+    org = models.OneToOneField(
+        "orgs.Org",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="stripe_customer",
+    )
     livemode = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "stripe_customers"
-        constraints = [  # noqa: RUF012
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.CheckConstraint(
-                condition=models.Q(user_id__isnull=False),
+                condition=(
+                    models.Q(user_id__isnull=False, org_id__isnull=True)
+                    | models.Q(user_id__isnull=True, org_id__isnull=False)
+                ),
                 name="stripecustomer_has_owner",
             ),
         ]
@@ -105,7 +114,7 @@ class Subscription(models.Model):
     )
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="subscriptions")
     quantity = models.IntegerField(default=1)
-    promotion_code_id = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001
+    promotion_code_id = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001  # nullable CharField intentional: NULL means no promo code applied (distinguishable from empty string)
     discount_percent = models.IntegerField(null=True, blank=True)
     discount_end_at = models.DateTimeField(null=True, blank=True)
     trial_ends_at = models.DateTimeField(null=True, blank=True)
@@ -117,7 +126,7 @@ class Subscription(models.Model):
     class Meta:
         db_table = "subscriptions"
         get_latest_by = "created_at"
-        indexes = [  # noqa: RUF012
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.Index(fields=["stripe_customer", "status"], name="idx_sub_customer_status"),
         ]
 
@@ -132,12 +141,12 @@ class StripeEvent(models.Model):
     livemode = models.BooleanField()
     payload = models.JSONField()
     processed_at = models.DateTimeField(null=True, blank=True)
-    error = models.TextField(null=True, blank=True)  # noqa: DJ001
+    error = models.TextField(null=True, blank=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no error (distinguishable from empty string)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "stripe_events"
-        indexes = [  # noqa: RUF012
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.Index(fields=["type"], name="idx_stripe_events_type"),
             models.Index(fields=["-created_at"], name="idx_stripe_events_created_at"),
         ]

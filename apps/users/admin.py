@@ -7,7 +7,7 @@ from apps.users.models import User
 
 
 @admin.register(User)
-class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]
+class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but BaseUserAdmin doesn't declare its type parameter
     list_display = ("email", "full_name", "account_type", "is_verified", "is_active", "created_at")
     list_filter = ("account_type", "is_active", "is_staff", "is_verified")
     search_fields = ("email", "full_name", "supabase_uid")

@@ -46,7 +46,7 @@ def _billing_repos() -> tuple[DjangoStripeCustomerRepository, DjangoSubscription
 class AccountView(APIView):
     """GET /api/v1/account — return the current user's profile."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "account"
 
     def get(self, request: Request) -> Response:
@@ -81,7 +81,7 @@ class AccountView(APIView):
 class AccountExportView(APIView):
     """GET /api/v1/account/export — GDPR right of access."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "account_export"
 
     def get(self, request: Request) -> Response:
