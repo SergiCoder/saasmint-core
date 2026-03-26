@@ -121,6 +121,22 @@ class TestProcessStripeWebhookRetry:
 
         assert mock_handle.await_count >= 1
 
+    def test_retries_on_operational_error(self):
+        from django.db.utils import OperationalError
+
+        exc = OperationalError("db connection lost")
+        mock_handle = AsyncMock(side_effect=exc)
+        with (
+            patch("stripe_saas_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
+            patch("apps.billing.tasks.settings") as mock_settings,
+        ):
+            mock_settings.STRIPE_WEBHOOK_SECRET = "whsec_test"
+            with pytest.raises(OperationalError):
+                _run_task()
+
+        assert mock_handle.await_count >= 1
+
 
 # ---------------------------------------------------------------------------
 # Malformed JSON payload — graceful handling
