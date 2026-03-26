@@ -7,7 +7,7 @@ unexport VIRTUAL_ENV  # prevent uv from using a stale venv from the parent shell
 
 .PHONY: dev
 dev: ## Run Django + Celery + infra
-	docker compose up --build --watch
+	docker compose up --build
 
 .PHONY: stop
 stop: ## Stop all running services
@@ -20,8 +20,12 @@ logs: ## Tail Django logs
 # ─── Database ─────────────────────────────────────────────────────────────────
 
 .PHONY: migrate
-migrate: ## Run DB migrations
-	docker compose run --rm django uv run python manage.py migrate
+migrate: ## Run pending DB migrations (stack must be running)
+	docker compose exec django uv run python manage.py migrate
+
+.PHONY: static
+static: ## Collect static files (stack must be running)
+	docker compose exec django uv run python manage.py collectstatic --no-input --clear
 
 .PHONY: migration
 migration: ## Create a new migration (make migration MSG="add coupon table")
@@ -68,13 +72,33 @@ typecheck: ## Run mypy (django + core)
 install: ## Install all Python dependencies
 	uv sync
 
+.PHONY: https-setup
+https-setup: ## Generate mkcert TLS certs for local HTTPS (run once per machine)
+	@echo ""
+	@echo "Local HTTPS setup — run these commands once on your machine:"
+	@echo ""
+	@echo "  Install mkcert:"
+	@echo "    macOS:   brew install mkcert"
+	@echo "    Ubuntu:  sudo apt install mkcert"
+	@echo "    Windows: winget install FiloSottile.mkcert"
+	@echo "             (or: choco install mkcert)"
+	@echo ""
+	@echo "  Then generate certs:"
+	@echo "    mkdir -p infra/certs"
+	@echo "    mkcert -install"
+	@echo "    mkcert -key-file infra/certs/localhost-key.pem -cert-file infra/certs/localhost.pem localhost"
+	@echo ""
+	@echo "  After that, 'make dev' will serve HTTPS at https://localhost:8443"
+	@echo ""
+
 .PHONY: setup
-setup: install ## Full first-time project setup
+setup: install https-setup ## Full first-time project setup
 	@cp -n .env.base .env.local 2>/dev/null || true
 	@echo ""
 	@echo "Setup complete. Next steps:"
 	@echo "  1. Fill in .env.local with your Supabase and Stripe test keys"
-	@echo "  2. make dev"
+	@echo "  2. Follow the mkcert instructions above to enable local HTTPS"
+	@echo "  3. make dev"
 
 # ─── Git Flow ─────────────────────────────────────────────────────────────────
 

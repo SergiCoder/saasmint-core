@@ -36,6 +36,34 @@ make migrate
 make seed
 ```
 
+## Local HTTPS
+
+The dev stack includes a [Caddy](https://caddyserver.com/) reverse proxy that terminates TLS at `https://localhost:8443` and forwards to Django. This requires a one-time [mkcert](https://github.com/FiloSottile/mkcert) setup per machine.
+
+**Install mkcert (once per machine):**
+
+| Platform | Command |
+|---|---|
+| macOS | `brew install mkcert` |
+| Ubuntu | `sudo apt install mkcert` |
+| Windows | `winget install FiloSottile.mkcert` or `choco install mkcert` |
+
+**Generate locally-trusted certs:**
+
+```bash
+mkdir -p infra/certs
+mkcert -install
+mkcert -key-file infra/certs/localhost-key.pem -cert-file infra/certs/localhost.pem localhost
+```
+
+After that, `make dev` serves Django at both:
+- `http://localhost:8001` — direct (no TLS)
+- `https://localhost:8443` — via Caddy (TLS, green padlock)
+
+The `infra/certs/` directory is gitignored. Certs are never committed.
+
+> Run `make https-setup` at any time to see these instructions again.
+
 ## Environment variables
 
 | Variable | Description |
@@ -53,6 +81,7 @@ make seed
 | `ALLOWED_HOSTS` | JSON array of allowed hosts (e.g. `["localhost","127.0.0.1"]`) |
 | `CORS_ALLOWED_ORIGINS` | JSON array of allowed CORS origins |
 | `CORS_ALLOW_ALL_ORIGINS` | Set to `True` to allow all CORS origins (dev only) |
+| `CSRF_TRUSTED_ORIGINS` | JSON array of trusted origins for CSRF (e.g. `["https://localhost:8443"]`) |
 | `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only) |
 
 ## Project structure
