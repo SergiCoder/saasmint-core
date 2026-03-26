@@ -44,7 +44,7 @@ async def get_or_create_customer(
     stripe_customer = await asyncio.to_thread(
         stripe.Customer.create,
         email=email,
-        name=name,  # type: ignore[arg-type]
+        name=name,  # type: ignore[arg-type]  # Stripe stub declares str, API accepts str | None
         preferred_locales=[locale],
         metadata=metadata,
     )
@@ -101,8 +101,8 @@ async def create_checkout_session(
     if subscription_data:
         params["subscription_data"] = subscription_data
 
-    session = await asyncio.to_thread(stripe.checkout.Session.create, **params)  # type: ignore[arg-type]
-    return session.url  # type: ignore[return-value]
+    session = await asyncio.to_thread(stripe.checkout.Session.create, **params)  # type: ignore[arg-type]  # Stripe stub can't validate **kwargs shape
+    return session.url  # type: ignore[return-value]  # Stripe stub types url as str | None but hosted checkout always returns str
 
 
 async def create_billing_portal_session(
@@ -115,7 +115,7 @@ async def create_billing_portal_session(
     session = await asyncio.to_thread(
         stripe.billing_portal.Session.create,
         customer=stripe_customer_id,
-        locale=locale,  # type: ignore[arg-type]
+        locale=locale,  # type: ignore[arg-type]  # Stripe stub overload doesn't match str argument
         return_url=return_url,
     )
     return session.url

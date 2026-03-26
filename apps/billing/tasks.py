@@ -15,7 +15,7 @@ from config.celery import app
 logger = logging.getLogger(__name__)
 
 
-@app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]
+@app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]  # celery has no stubs
 def process_stripe_webhook(self: object, payload: str, signature: str) -> None:
     """Process a Stripe webhook event asynchronously with retry on failure."""
     from stripe_saas_core.exceptions import WebhookVerificationError

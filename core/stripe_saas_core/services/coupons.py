@@ -29,7 +29,7 @@ async def validate_promo_code(promo_code: str) -> stripe.PromotionCode:
 
     promotion_code = results.data[0]
 
-    coupon: Any = promotion_code.coupon  # type: ignore[attr-defined]
+    coupon: Any = promotion_code.coupon  # type: ignore[attr-defined]  # Stripe stub gap
     if not coupon.valid:  # pyright: ignore[reportUnknownMemberType]
         raise InvalidPromoCodeError(f"Promo code '{promo_code}' is no longer valid.")
 
@@ -38,7 +38,7 @@ async def validate_promo_code(promo_code: str) -> stripe.PromotionCode:
 
 def _coupon_to_dict(promotion_code: stripe.PromotionCode) -> dict[str, Any]:
     """Extract coupon fields into a typed dict to avoid pyright Unknown propagation."""
-    coupon: Any = promotion_code.coupon  # type: ignore[attr-defined]
+    coupon: Any = promotion_code.coupon  # type: ignore[attr-defined]  # Stripe stub gap
     return {
         "percent_off": coupon.percent_off,  # pyright: ignore[reportUnknownMemberType]
         "amount_off": coupon.amount_off,  # pyright: ignore[reportUnknownMemberType]
