@@ -1,13 +1,13 @@
 """Extended Django admin — re-registers User with subscription status column and sets site_url to /dashboard/."""  # noqa: E501
 
 from django.contrib import admin
-from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.db.models import OuterRef, QuerySet, Subquery
 from django.http import HttpRequest
 from django.utils.html import format_html
 from django.utils.safestring import SafeString
 
 from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, Subscription, SubscriptionStatus
+from apps.users.admin import UserAdmin
 from apps.users.models import User
 
 admin.site.site_url = "/dashboard/"
@@ -17,7 +17,7 @@ admin.site.unregister(User)
 
 
 @admin.register(User)
-class UserAdminExtended(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but BaseUserAdmin doesn't declare its type parameter
+class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but BaseUserAdmin doesn't declare its type parameter
     list_display = (
         "email",
         "full_name",
@@ -27,10 +27,6 @@ class UserAdminExtended(BaseUserAdmin):  # type: ignore[type-arg]  # django-stub
         "is_active",
         "created_at",
     )
-    list_filter = ("account_type", "is_active", "is_staff", "is_verified")
-    search_fields = ("email", "full_name", "supabase_uid")
-    ordering = ("-created_at",)
-    readonly_fields = ("id", "supabase_uid", "created_at", "deleted_at")
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[User]:
         qs = super().get_queryset(request)  # type: ignore[misc]  # django-stubs types get_queryset as returning QuerySet[Any]; we narrow to QuerySet[User]
