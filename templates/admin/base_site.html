@@ -1,0 +1,42 @@
+{% extends "admin/base.html" %}
+{% load static %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+<div id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></div>
+{% if user.is_anonymous %}
+  {% include "admin/color_theme_toggle.html" %}
+{% endif %}
+{% endblock %}
+
+{% block extrastyle %}
+<style>
+  /* ── Center admin layout to 960px like the dashboard ── */
+
+  /* Only center the dashboard index page — list/detail pages keep full width */
+  body.dashboard #container {
+    max-width: 960px;
+    margin: 0 auto;
+  }
+
+  /* Header: full-width dark background via pseudo-element */
+  #header {
+    position: relative;
+    background: none;
+  }
+  #header::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100vw;
+    background: var(--header-bg);
+    z-index: -1;
+  }
+</style>
+{% endblock %}
+
+{% block nav-global %}{% endblock %}
