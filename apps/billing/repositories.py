@@ -39,7 +39,7 @@ class DjangoStripeCustomerRepository:
             id=obj.id,
             stripe_id=obj.stripe_id,
             user_id=obj.user_id,
-            org_id=getattr(obj, "org_id", None),  # org FK added by orgs app (PR 5)
+            org_id=obj.org_id,
             livemode=obj.livemode,
             created_at=obj.created_at,
         )
@@ -68,10 +68,9 @@ class DjangoStripeCustomerRepository:
         defaults: dict[str, object] = {
             "stripe_id": customer.stripe_id,
             "user_id": customer.user_id,
+            "org_id": customer.org_id,
             "livemode": customer.livemode,
         }
-        if hasattr(StripeCustomerModel, "org"):  # org FK added by orgs app (PR 5)
-            defaults["org_id"] = customer.org_id
 
         await StripeCustomerModel.objects.aupdate_or_create(
             **lookup,
