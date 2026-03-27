@@ -1,5 +1,5 @@
 {% extends "admin/base.html" %}
-{% load static %}
+{% load static i18n %}
 
 {% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
 
@@ -37,6 +37,22 @@
     z-index: -1;
   }
 </style>
+{% endblock %}
+
+{% block userlinks %}
+  {% if site_url %}
+    <a href="{{ site_url }}">{% translate 'View site' %}</a> /
+  {% endif %}
+  <a href="{% url 'swagger-ui' %}">Swagger</a> /
+  <a href="{% url 'redoc' %}">ReDoc</a> /
+  {% if user.has_usable_password %}
+    <a href="{% url 'admin:password_change' %}">{% translate 'Change password' %}</a> /
+  {% endif %}
+  <form id="logout-form" method="post" action="{% url 'admin:logout' %}">
+    {% csrf_token %}
+    <button type="submit">{% translate 'Log out' %}</button>
+  </form>
+  {% include "admin/color_theme_toggle.html" %}
 {% endblock %}
 
 {% block nav-global %}{% endblock %}
