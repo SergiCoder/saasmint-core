@@ -64,6 +64,16 @@ The `infra/certs/` directory is gitignored. Certs are never committed.
 
 > Run `make https-setup` at any time to see these instructions again.
 
+## API documentation
+
+When `DEBUG=True`, interactive API docs are served at:
+
+- `/api/docs/` — Swagger UI
+- `/api/redoc/` — ReDoc
+- `/api/schema/` — raw OpenAPI 3 JSON schema
+
+Links to Swagger and ReDoc also appear in the Django admin header.
+
 ## Environment variables
 
 | Variable | Description |
@@ -104,6 +114,8 @@ stripe-django/
 │   ├── orgs/            # Organisation management and membership
 │   └── users/           # User auth, Supabase JWT authentication, and profile management
 ├── middleware/           # Django middleware (exception handling, security headers)
+├── infra/               # Docker, Caddy TLS proxy, and dev entrypoint
+├── templates/           # Shared HTML templates (admin overrides, DRF browsable API, topbar)
 ├── .github/             # CI workflows and PR template
 ├── helpers.py           # Shared Django helpers (aget_or_none, get_user)
 └── manage.py
@@ -115,6 +127,8 @@ stripe-django/
 - **PostgreSQL** as the database
 - **Stripe** for payments and billing
 - **django-hijack** for admin user impersonation
+- **drf-spectacular** for OpenAPI schema, Swagger UI, and ReDoc
+- **Caddy** as local TLS reverse proxy
 - **uv** for dependency management
 - **Ruff** for linting
 - **mypy** for type checking
