@@ -224,3 +224,64 @@ class TestUserAdminChangelistRendering:
         resp = client.get("/admin/users/user/")
         assert resp.status_code == 200
         assert b"active" in resp.content
+
+
+# ---------------------------------------------------------------------------
+# Inheritance from UserAdmin
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestUserAdminExtendedInheritance:
+    """Verify UserAdminExtended inherits configuration from apps.users.admin.UserAdmin."""
+
+    def setup_method(self):
+        from django.contrib import admin
+
+        from apps.admin_panel.admin import UserAdminExtended
+
+        self.admin_instance = UserAdminExtended(User, admin.site)
+
+    def test_inherits_list_filter(self):
+        from django.contrib import admin as admin_module
+
+        from apps.users.admin import UserAdmin
+
+        base = UserAdmin(User, admin_module.site)
+        assert self.admin_instance.list_filter == base.list_filter
+
+    def test_inherits_search_fields(self):
+        from django.contrib import admin as admin_module
+
+        from apps.users.admin import UserAdmin
+
+        base = UserAdmin(User, admin_module.site)
+        assert self.admin_instance.search_fields == base.search_fields
+
+    def test_inherits_ordering(self):
+        from django.contrib import admin as admin_module
+
+        from apps.users.admin import UserAdmin
+
+        base = UserAdmin(User, admin_module.site)
+        assert self.admin_instance.ordering == base.ordering
+
+    def test_inherits_readonly_fields(self):
+        from django.contrib import admin as admin_module
+
+        from apps.users.admin import UserAdmin
+
+        base = UserAdmin(User, admin_module.site)
+        assert self.admin_instance.readonly_fields == base.readonly_fields
+
+    def test_inherits_fieldsets(self):
+        from django.contrib import admin as admin_module
+
+        from apps.users.admin import UserAdmin
+
+        base = UserAdmin(User, admin_module.site)
+        assert self.admin_instance.fieldsets == base.fieldsets
+
+    def test_overrides_list_display(self):
+        # Extended admin adds subscription_status column
+        assert "subscription_status" in self.admin_instance.list_display
