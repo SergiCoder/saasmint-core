@@ -38,13 +38,12 @@ from apps.billing.repositories import (
     DjangoSubscriptionRepository,
 )
 from apps.billing.serializers import (
-    ChangePlanSerializer,
     CheckoutRequestSerializer,
     PlanSerializer,
     PortalRequestSerializer,
     PromoCodeSerializer,
     SubscriptionSerializer,
-    UpdateSeatCountSerializer,
+    UpdateSubscriptionSerializer,
 )
 from helpers import get_user
 
@@ -90,8 +89,8 @@ class PlanListView(APIView):
         return Response(data)
 
 
-class CheckoutView(APIView):
-    """POST /api/v1/billing/checkout — create a Stripe Checkout Session."""
+class CheckoutSessionView(APIView):
+    """POST /api/v1/billing/checkout-sessions — create a Stripe Checkout Session."""
 
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
@@ -138,8 +137,8 @@ class CheckoutView(APIView):
         return Response({"url": url}, status=status.HTTP_201_CREATED)
 
 
-class PortalView(APIView):
-    """POST /api/v1/billing/portal — create a Stripe Customer Portal session."""
+class PortalSessionView(APIView):
+    """POST /api/v1/billing/portal-sessions — create a Stripe Customer Portal session."""
 
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
@@ -173,7 +172,10 @@ class PortalView(APIView):
 
 
 class SubscriptionView(APIView):
-    """GET /api/v1/billing/subscription — current user's active subscription."""
+    """GET/PATCH/DELETE /api/v1/billing/subscription — manage the current subscription."""
+
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
+    throttle_scope = "billing"
 
     @extend_schema(responses={200: SubscriptionSerializer, 404: None}, tags=["billing"])
     def get(self, request: Request) -> Response:
@@ -192,15 +194,35 @@ class SubscriptionView(APIView):
         except ObjectDoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
+    @extend_schema(request=UpdateSubscriptionSerializer, responses={204: None}, tags=["billing"])
+    def patch(self, request: Request) -> Response:
+        user = get_user(request)
+        ser = UpdateSubscriptionSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
 
-class CancelSubscriptionView(APIView):
-    """POST /api/v1/billing/subscription/cancel."""
+        if "plan_price_id" in data:
+            _get_active_plan_price(data["plan_price_id"])
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
+        async def _do() -> None:
+            _, sub = await _get_customer_and_subscription(user.id)
+            if "plan_price_id" in data:
+                await change_plan(
+                    stripe_subscription_id=sub.stripe_id,
+                    new_stripe_price_id=data["plan_price_id"],
+                    prorate=data["prorate"],
+                )
+            if "quantity" in data:
+                await update_seat_count(
+                    stripe_subscription_id=sub.stripe_id,
+                    quantity=data["quantity"],
+                )
 
-    @extend_schema(request=None, responses={200: None}, tags=["billing"])
-    def post(self, request: Request) -> Response:
+        async_to_sync(_do)()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @extend_schema(request=None, responses={204: None}, tags=["billing"])
+    def delete(self, request: Request) -> Response:
         user = get_user(request)
 
         async def _do() -> None:
@@ -212,37 +234,11 @@ class CancelSubscriptionView(APIView):
             )
 
         async_to_sync(_do)()
-        return Response(status=status.HTTP_200_OK)
-
-
-class ChangePlanView(APIView):
-    """POST /api/v1/billing/subscription/change-plan."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
-
-    @extend_schema(request=ChangePlanSerializer, responses={200: None}, tags=["billing"])
-    def post(self, request: Request) -> Response:
-        user = get_user(request)
-        ser = ChangePlanSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-
-        _get_active_plan_price(ser.validated_data["plan_price_id"])
-
-        async def _do() -> None:
-            _, sub = await _get_customer_and_subscription(user.id)
-            await change_plan(
-                stripe_subscription_id=sub.stripe_id,
-                new_stripe_price_id=ser.validated_data["plan_price_id"],
-                prorate=ser.validated_data["prorate"],
-            )
-
-        async_to_sync(_do)()
-        return Response(status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ApplyPromoCodeView(APIView):
-    """POST /api/v1/billing/subscription/promo."""
+    """POST /api/v1/billing/subscription/promo-code — apply a promo code."""
 
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
@@ -258,29 +254,6 @@ class ApplyPromoCodeView(APIView):
             await apply_promo_code(
                 stripe_subscription_id=sub.stripe_id,
                 promo_code=ser.validated_data["promo_code"],
-            )
-
-        async_to_sync(_do)()
-        return Response(status=status.HTTP_200_OK)
-
-
-class UpdateSeatCountView(APIView):
-    """POST /api/v1/billing/subscription/seats — update org seat count."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
-
-    @extend_schema(request=UpdateSeatCountSerializer, responses={200: None}, tags=["billing"])
-    def post(self, request: Request) -> Response:
-        user = get_user(request)
-        ser = UpdateSeatCountSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-
-        async def _do() -> None:
-            _, sub = await _get_customer_and_subscription(user.id)
-            await update_seat_count(
-                stripe_subscription_id=sub.stripe_id,
-                quantity=ser.validated_data["quantity"],
             )
 
         async_to_sync(_do)()

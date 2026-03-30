@@ -174,6 +174,9 @@ SPECTACULAR_SETTINGS = {
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": "/api/v[0-9]",
     "COMPONENT_SPLIT_REQUEST": True,
+    "PREPROCESSING_HOOKS": [
+        "config.spectacular_hooks.preprocess_exclude_spectacular_views",
+    ],
     "EXCLUDE_PATH_REGEX": [
         r"^/admin/",
         r"^/hijack/",

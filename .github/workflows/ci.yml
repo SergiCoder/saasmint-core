@@ -98,20 +98,14 @@ jobs:
             exit $code
           }
 
-  # ─── Vulnerability audit ──────────────────────────────────────────────────────
-  audit:
-    name: Audit — ${{ matrix.pkg }}
+  # ─── Audit & dependency freshness ─────────────────────────────────────────────
+  audit-and-deps:
+    name: Audit & deps
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - pkg: django
-            dir: .
-          - pkg: core
-            dir: core
+    permissions:
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -119,30 +113,24 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install dependencies
-        working-directory: ${{ matrix.dir }}
-        run: uv sync --extra dev --no-install-project 2>/dev/null || uv sync --extra dev
-
-      - name: Run pip-audit
-        working-directory: ${{ matrix.dir }}
+      # ── Vulnerability audit ──
+      - name: Audit vulnerabilities
         run: |
-          uv run pip-audit --desc --skip-editable -f json -o /tmp/audit-raw.json || true
-          # Build a markdown report from JSON output, flagging direct vs transitive deps
-          python3 -c "
-          import json, re
-          # Extract direct dependency names from pyproject.toml
-          with open('pyproject.toml') as f:
-              text = f.read()
-          direct = set()
-          m = re.search(r'^dependencies\s*=\s*\[(.*?)\](?=\s*\n\s*\n|\s*\n\s*\[)', text, re.S | re.M)
-          if m:
-              for line in m.group(1).splitlines():
-                  line = line.strip().strip(',').strip('\x22\x27')
-                  if line and not line.startswith('#'):
-                      name = re.split(r'[>=<!\[;]', line)[0].strip().lower()
-                      if name:
-                          direct.add(name)
-          data = json.load(open('/tmp/audit-raw.json'))
+          for pair in "django:." "core:core"; do
+            pkg="${pair%%:*}"
+            dir="${pair#*:}"
+
+            pushd "$dir" > /dev/null
+            uv sync --extra dev --no-install-project 2>/dev/null || uv sync --extra dev
+
+            uv run pip-audit --desc --skip-editable -f json -o /tmp/audit-raw-${pkg}.json || true
+            python3 -c "
+          import json, subprocess, sys
+          direct = set(subprocess.check_output(
+              [sys.executable, '$GITHUB_WORKSPACE/scripts/parse_direct_deps.py', 'pyproject.toml'],
+              text=True,
+          ).splitlines())
+          data = json.load(open('/tmp/audit-raw-${pkg}.json'))
           vulns = data.get('dependencies', [])
           rows = []
           for dep in vulns:
@@ -157,113 +145,59 @@ jobs:
               print('\n'.join(rows))
           else:
               print('no-vulns')
-          " > /tmp/audit-report.txt
+          " > /tmp/audit-report-${pkg}.txt
+            popd > /dev/null
+          done
 
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: audit-report-${{ matrix.pkg }}
-          path: /tmp/audit-report.txt
-          retention-days: 1
-
-  # ─── Dependency freshness ──────────────────────────────────────────────────────
-  check-deps:
-    name: Check deps — ${{ matrix.pkg }}
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - pkg: django
-            dir: .
-          - pkg: core
-            dir: core
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Check for outdated dependencies
-        working-directory: ${{ matrix.dir }}
+      # ── Dependency freshness ──
+      - name: Check outdated dependencies
         run: |
-          if [ ! -f uv.lock ]; then
-            echo "⚠ Skipped — no uv.lock yet"
-            echo "up-to-date" > /tmp/deps-report.txt
-            exit 0
-          fi
-          # Extract direct dependency names from pyproject.toml
-          direct_deps=$(python3 -c "
-          import re
-          with open('pyproject.toml') as f:
-              text = f.read()
-          m = re.search(r'^dependencies\s*=\s*\[(.*?)\](?=\s*\n\s*\n|\s*\n\s*\[)', text, re.S | re.M)
-          if m:
-              for line in m.group(1).splitlines():
-                  line = line.strip().strip(',').strip('\x22\x27')
-                  if line and not line.startswith('#'):
-                      name = re.split(r'[>=<!\[;]', line)[0].strip().lower()
-                      if name:
-                          print(name)
-          ")
-          # Extract name=version pairs from a uv.lock file
-          extract() {
-            awk '/^\[\[package\]\]/{p=1;name=""} p && /^name = /{name=$3} p && /^version = / && name{print name "=" $3; p=0}' "$1" | tr -d '"' | sort
-          }
-          extract uv.lock > /tmp/current.txt
-          uv lock --upgrade -q
-          extract uv.lock > /tmp/latest.txt
-          # Join on package name, flag direct vs transitive, keep rows where version changed
-          join -t= /tmp/current.txt /tmp/latest.txt \
-            | while IFS='=' read -r pkg cur latest; do
-                [ "$cur" = "$latest" ] && continue
-                if echo "$direct_deps" | grep -qx "$pkg"; then
-                  type="direct"
-                else
-                  type="transitive"
-                fi
-                printf '| %s | %s | %s | %s |\n' "$pkg" "$cur" "$latest" "$type"
-              done \
-            > /tmp/changed.txt || true
-          if [ ! -s /tmp/changed.txt ]; then
-            echo "All dependencies up to date."
-            echo "up-to-date" > /tmp/deps-report.txt
-          else
-            echo "::warning::Outdated dependencies found in ${{ matrix.pkg }}"
-            {
-              echo "| Package | Current | Latest | Type |"
-              echo "|---|---|---|---|"
-              head -40 /tmp/changed.txt
-            } | tee /tmp/deps-report.txt
-          fi
+          for pair in "django:." "core:core"; do
+            pkg="${pair%%:*}"
+            dir="${pair#*:}"
 
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deps-report-${{ matrix.pkg }}
-          path: /tmp/deps-report.txt
-          retention-days: 1
+            pushd "$dir" > /dev/null
+            if [ ! -f uv.lock ]; then
+              echo "up-to-date" > /tmp/deps-report-${pkg}.txt
+              popd > /dev/null
+              continue
+            fi
 
-  # ─── Post audit & dependency comment ────────────────────────────────────────
-  pr-comment:
-    name: Post PR comment
-    if: github.event_name == 'pull_request'
-    needs: [audit, check-deps]
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: "{audit-report-*,deps-report-*}"
-          path: reports
+            direct_deps=$(python3 "$GITHUB_WORKSPACE/scripts/parse_direct_deps.py" pyproject.toml)
 
-      - name: Build and post comment
+            extract() {
+              awk '/^\[\[package\]\]/{p=1;name=""} p && /^name = /{name=$3} p && /^version = / && name{print name "=" $3; p=0}' "$1" | tr -d '"' | sort
+            }
+            extract uv.lock > /tmp/current-${pkg}.txt
+            uv lock --upgrade -q
+            extract uv.lock > /tmp/latest-${pkg}.txt
+
+            join -t= /tmp/current-${pkg}.txt /tmp/latest-${pkg}.txt \
+              | while IFS='=' read -r name cur latest; do
+                  [ "$cur" = "$latest" ] && continue
+                  if echo "$direct_deps" | grep -qx "$name"; then
+                    type="direct"
+                  else
+                    type="transitive"
+                  fi
+                  printf '| %s | %s | %s | %s |\n' "$name" "$cur" "$latest" "$type"
+                done \
+              > /tmp/changed-${pkg}.txt || true
+
+            if [ ! -s /tmp/changed-${pkg}.txt ]; then
+              echo "up-to-date" > /tmp/deps-report-${pkg}.txt
+            else
+              {
+                echo "| Package | Current | Latest | Type |"
+                echo "|---|---|---|---|"
+                head -40 /tmp/changed-${pkg}.txt
+              } > /tmp/deps-report-${pkg}.txt
+            fi
+            popd > /dev/null
+          done
+
+      # ── Post PR comment ──
+      - name: Post PR comment
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -274,10 +208,8 @@ jobs:
           # ── Vulnerability audit section ──
           audit_body=""
           has_vulns=false
-          for dir in reports/audit-report-*/; do
-            [ -d "$dir" ] || continue
-            pkg=$(basename "$dir" | sed 's/audit-report-//')
-            report=$(cat "$dir/audit-report.txt")
+          for pkg in django core; do
+            report=$(cat /tmp/audit-report-${pkg}.txt)
             if echo "$report" | grep -q "^|"; then
               has_vulns=true
               audit_body="${audit_body}### ${pkg}\n\n${report}\n\n"
@@ -285,15 +217,15 @@ jobs:
           done
           if [ "$has_vulns" = true ]; then
             comment="## ⚠️ Vulnerability Audit\n\n${audit_body}"
+          else
+            comment="## ✅ Vulnerability Audit\n\nNo known vulnerabilities found in any package.\n\n"
           fi
 
           # ── Outdated dependencies section ──
           deps_body=""
           has_updates=false
-          for dir in reports/deps-report-*/; do
-            [ -d "$dir" ] || continue
-            pkg=$(basename "$dir" | sed 's/deps-report-//')
-            report=$(cat "$dir/deps-report.txt")
+          for pkg in django core; do
+            report=$(cat /tmp/deps-report-${pkg}.txt)
             if echo "$report" | grep -q "^|"; then
               has_updates=true
               deps_body="${deps_body}### ${pkg}\n\n${report}\n\n"
@@ -301,20 +233,12 @@ jobs:
           done
           if [ "$has_updates" = true ]; then
             comment="${comment}## Outdated Dependencies\n\n${deps_body}> Run \`uv lock --upgrade\` to update.\n"
-          fi
-
-          # ── Post or clean up ──
-          if [ -z "$comment" ]; then
-            echo "No audit or dependency issues — no comment needed."
-            # Delete stale comment if present
-            gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
-              --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Vulnerability Audit") or contains("Outdated Dependencies"))) | .id' \
-              | xargs -I{} gh api -X DELETE "repos/${GH_REPO}/issues/comments/{}" 2>/dev/null || true
-            exit 0
+          else
+            comment="${comment}## ✅ Dependencies\n\nAll dependencies are up to date.\n"
           fi
 
           # Delete previous bot comment on these topics
           gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Vulnerability Audit") or contains("Outdated Dependencies"))) | .id' \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("Vulnerability Audit") or contains("Dependencies"))) | .id' \
             | xargs -I{} gh api -X DELETE "repos/${GH_REPO}/issues/comments/{}" 2>/dev/null || true
           printf "%b" "$comment" | gh pr comment "$PR_NUMBER" --body-file -

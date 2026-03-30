@@ -5,14 +5,13 @@ from __future__ import annotations
 import pytest
 
 from apps.billing.serializers import (
-    ChangePlanSerializer,
     CheckoutRequestSerializer,
     PlanPriceSerializer,
     PlanSerializer,
     PortalRequestSerializer,
     PromoCodeSerializer,
     SubscriptionSerializer,
-    UpdateSeatCountSerializer,
+    UpdateSubscriptionSerializer,
 )
 
 
@@ -178,15 +177,64 @@ class TestPortalRequestSerializer:
         assert not ser.is_valid()
 
 
-class TestChangePlanSerializer:
-    def test_valid_data(self):
-        ser = ChangePlanSerializer(data={"plan_price_id": "price_new"})
+class TestUpdateSubscriptionSerializer:
+    def test_valid_plan_change(self):
+        ser = UpdateSubscriptionSerializer(data={"plan_price_id": "price_new"})
         assert ser.is_valid(), ser.errors
         assert ser.validated_data["prorate"] is True
 
     def test_prorate_false(self):
-        ser = ChangePlanSerializer(data={"plan_price_id": "price_new", "prorate": False})
+        ser = UpdateSubscriptionSerializer(data={"plan_price_id": "price_new", "prorate": False})
         assert ser.is_valid(), ser.errors
+        assert ser.validated_data["prorate"] is False
+
+    def test_valid_seat_update(self):
+        ser = UpdateSubscriptionSerializer(data={"quantity": 5})
+        assert ser.is_valid(), ser.errors
+
+    def test_both_fields(self):
+        ser = UpdateSubscriptionSerializer(data={"plan_price_id": "price_new", "quantity": 5})
+        assert ser.is_valid(), ser.errors
+
+    def test_empty_body_rejected(self):
+        ser = UpdateSubscriptionSerializer(data={})
+        assert not ser.is_valid()
+
+    def test_invalid_quantity(self):
+        ser = UpdateSubscriptionSerializer(data={"quantity": 0})
+        assert not ser.is_valid()
+        assert "quantity" in ser.errors
+
+    def test_quantity_at_min_boundary(self):
+        ser = UpdateSubscriptionSerializer(data={"quantity": 1})
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["quantity"] == 1
+
+    def test_negative_quantity_rejected(self):
+        ser = UpdateSubscriptionSerializer(data={"quantity": -1})
+        assert not ser.is_valid()
+        assert "quantity" in ser.errors
+
+    def test_quantity_at_max_boundary(self):
+        ser = UpdateSubscriptionSerializer(data={"quantity": 10000})
+        assert ser.is_valid(), ser.errors
+
+    def test_quantity_above_max_rejected(self):
+        ser = UpdateSubscriptionSerializer(data={"quantity": 10001})
+        assert not ser.is_valid()
+        assert "quantity" in ser.errors
+
+    def test_only_prorate_without_action_rejected(self):
+        ser = UpdateSubscriptionSerializer(data={"prorate": True})
+        assert not ser.is_valid()
+
+    def test_both_fields_preserves_values(self):
+        ser = UpdateSubscriptionSerializer(
+            data={"plan_price_id": "price_new", "quantity": 3, "prorate": False}
+        )
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["plan_price_id"] == "price_new"
+        assert ser.validated_data["quantity"] == 3
         assert ser.validated_data["prorate"] is False
 
 
@@ -198,14 +246,3 @@ class TestPromoCodeSerializer:
     def test_missing(self):
         ser = PromoCodeSerializer(data={})
         assert not ser.is_valid()
-
-
-class TestUpdateSeatCountSerializer:
-    def test_valid(self):
-        ser = UpdateSeatCountSerializer(data={"quantity": 5})
-        assert ser.is_valid(), ser.errors
-
-    def test_min_value(self):
-        ser = UpdateSeatCountSerializer(data={"quantity": 0})
-        assert not ser.is_valid()
-        assert "quantity" in ser.errors

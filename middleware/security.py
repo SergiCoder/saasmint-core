@@ -21,8 +21,24 @@ class SecurityHeadersMiddleware:
         response["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
         # X-XSS-Protection intentionally omitted — deprecated and can cause vulnerabilities
         if "text/html" in response.get("Content-Type", ""):
-            # unsafe-inline for style-src: required by DRF browsable API
-            response["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
-            )
+            path = request.path
+            if path.startswith(("/api/docs/", "/api/redoc/")):
+                # Swagger UI and ReDoc load assets from external CDNs
+                cdn = "https://cdn.jsdelivr.net"
+                fonts = "https://fonts.googleapis.com https://fonts.gstatic.com"
+                redoc = "https://cdn.redoc.ly"
+                response["Content-Security-Policy"] = (
+                    f"default-src 'self'; "
+                    f"script-src 'self' 'unsafe-inline' {cdn}; "
+                    f"style-src 'self' 'unsafe-inline' {cdn} {fonts}; "
+                    f"font-src 'self' {fonts}; "
+                    f"img-src 'self' data: {cdn} {redoc}; "
+                    f"worker-src blob:; "
+                    f"connect-src 'self' {cdn}"
+                )
+            else:
+                # unsafe-inline for style-src: required by DRF browsable API
+                response["Content-Security-Policy"] = (
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+                )
         return response

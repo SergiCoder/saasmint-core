@@ -96,14 +96,18 @@ class PortalRequestSerializer(serializers.Serializer[object]):
         return _validate_redirect_url(value)
 
 
-class ChangePlanSerializer(serializers.Serializer[object]):
-    plan_price_id = serializers.CharField(max_length=255)
+class UpdateSubscriptionSerializer(serializers.Serializer[object]):
+    plan_price_id = serializers.CharField(max_length=255, required=False)
     prorate = serializers.BooleanField(default=True)
+    quantity = serializers.IntegerField(min_value=1, max_value=10000, required=False)
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        if "plan_price_id" not in attrs and "quantity" not in attrs:
+            raise serializers.ValidationError(
+                "At least one of 'plan_price_id' or 'quantity' is required."
+            )
+        return attrs
 
 
 class PromoCodeSerializer(serializers.Serializer[object]):
     promo_code = serializers.CharField(max_length=255)
-
-
-class UpdateSeatCountSerializer(serializers.Serializer[object]):
-    quantity = serializers.IntegerField(min_value=1, max_value=10000)
