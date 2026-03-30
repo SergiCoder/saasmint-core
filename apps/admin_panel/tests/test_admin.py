@@ -42,6 +42,20 @@ def _make_subscription(
 
 
 # ---------------------------------------------------------------------------
+# Shared fixture
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def admin_instance():
+    from django.contrib import admin
+
+    from apps.admin_panel.admin import UserAdminExtended
+
+    return UserAdminExtended(User, admin.site)
+
+
+# ---------------------------------------------------------------------------
 # subscription_status display method
 # ---------------------------------------------------------------------------
 
@@ -50,54 +64,47 @@ def _make_subscription(
 class TestSubscriptionStatusDisplay:
     """Unit tests for UserAdminExtended.subscription_status()."""
 
-    def setup_method(self):
-        from django.contrib import admin
-
-        from apps.admin_panel.admin import UserAdminExtended
-
-        self.admin_instance = UserAdminExtended(User, admin.site)
-
     def _obj_with_status(self, status):
         obj = MagicMock(spec=User)
         obj._subscription_status = status
         return obj
 
-    def test_no_subscription_returns_dash(self):
+    def test_no_subscription_returns_dash(self, admin_instance):
         obj = MagicMock(spec=User)
         del obj._subscription_status  # ensure getattr returns None
         obj.__class__ = User
         # Use a plain object without the attribute at all
         plain = object.__new__(User)
-        result = self.admin_instance.subscription_status(plain)
+        result = admin_instance.subscription_status(plain)
         assert result == "—"
 
-    def test_active_renders_green(self):
+    def test_active_renders_green(self, admin_instance):
         obj = self._obj_with_status("active")
-        html = self.admin_instance.subscription_status(obj)
+        html = admin_instance.subscription_status(obj)
         assert "green" in str(html)
         assert "active" in str(html)
 
-    def test_trialing_renders_blue(self):
+    def test_trialing_renders_blue(self, admin_instance):
         obj = self._obj_with_status("trialing")
-        html = self.admin_instance.subscription_status(obj)
+        html = admin_instance.subscription_status(obj)
         assert "blue" in str(html)
         assert "trialing" in str(html)
 
-    def test_past_due_renders_orange(self):
+    def test_past_due_renders_orange(self, admin_instance):
         obj = self._obj_with_status("past_due")
-        html = self.admin_instance.subscription_status(obj)
+        html = admin_instance.subscription_status(obj)
         assert "orange" in str(html)
         assert "past_due" in str(html)
 
-    def test_unknown_status_renders_grey(self):
+    def test_unknown_status_renders_grey(self, admin_instance):
         obj = self._obj_with_status("canceled")
-        html = self.admin_instance.subscription_status(obj)
+        html = admin_instance.subscription_status(obj)
         assert "grey" in str(html)
         assert "canceled" in str(html)
 
-    def test_empty_string_status_returns_dash(self):
+    def test_empty_string_status_returns_dash(self, admin_instance):
         obj = self._obj_with_status("")
-        result = self.admin_instance.subscription_status(obj)
+        result = admin_instance.subscription_status(obj)
         assert result == "—"
 
 
@@ -110,21 +117,15 @@ class TestSubscriptionStatusDisplay:
 class TestUserAdminExtendedQueryset:
     """Integration tests: get_queryset annotates _subscription_status correctly."""
 
-    def setup_method(self):
-        from django.contrib import admin
-
-        from apps.admin_panel.admin import UserAdminExtended
-
-        self.admin_instance = UserAdminExtended(User, admin.site)
-        self.mock_request = MagicMock()
-
-    def test_user_without_customer_has_null_annotation(self, db):
+    def test_user_without_customer_has_null_annotation(self, db, admin_instance):
+        mock_request = MagicMock()
         user = _make_user(db, "noplan@example.com", "sup_noplan")
-        qs = self.admin_instance.get_queryset(self.mock_request)
+        qs = admin_instance.get_queryset(mock_request)
         annotated = qs.get(pk=user.pk)
         assert getattr(annotated, "_subscription_status", None) is None
 
-    def test_user_with_active_subscription_annotated(self, db):
+    def test_user_with_active_subscription_annotated(self, db, admin_instance):
+        mock_request = MagicMock()
         user = _make_user(db, "active@example.com", "sup_active")
         plan = Plan.objects.create(name="Pro", context="personal", interval="month", is_active=True)
         customer = StripeCustomer.objects.create(
@@ -132,11 +133,12 @@ class TestUserAdminExtendedQueryset:
         )
         _make_subscription(customer, plan, "active", "sub_admin_active")
 
-        qs = self.admin_instance.get_queryset(self.mock_request)
+        qs = admin_instance.get_queryset(mock_request)
         annotated = qs.get(pk=user.pk)
         assert annotated._subscription_status == "active"
 
-    def test_user_with_trialing_subscription_annotated(self, db):
+    def test_user_with_trialing_subscription_annotated(self, db, admin_instance):
+        mock_request = MagicMock()
         user = _make_user(db, "trial@example.com", "sup_trial")
         plan = Plan.objects.create(
             name="Free", context="personal", interval="month", is_active=True
@@ -146,11 +148,12 @@ class TestUserAdminExtendedQueryset:
         )
         _make_subscription(customer, plan, "trialing", "sub_admin_trial")
 
-        qs = self.admin_instance.get_queryset(self.mock_request)
+        qs = admin_instance.get_queryset(mock_request)
         annotated = qs.get(pk=user.pk)
         assert annotated._subscription_status == "trialing"
 
-    def test_user_with_only_canceled_subscription_has_null_annotation(self, db):
+    def test_user_with_only_canceled_subscription_has_null_annotation(self, db, admin_instance):
+        mock_request = MagicMock()
         user = _make_user(db, "canceled@example.com", "sup_canceled")
         plan = Plan.objects.create(
             name="Basic", context="personal", interval="month", is_active=True
@@ -160,11 +163,12 @@ class TestUserAdminExtendedQueryset:
         )
         _make_subscription(customer, plan, "canceled", "sub_admin_canceled")
 
-        qs = self.admin_instance.get_queryset(self.mock_request)
+        qs = admin_instance.get_queryset(mock_request)
         annotated = qs.get(pk=user.pk)
         assert getattr(annotated, "_subscription_status", None) is None
 
-    def test_most_recent_active_subscription_status_used(self, db):
+    def test_most_recent_active_subscription_status_used(self, db, admin_instance):
+        mock_request = MagicMock()
         user = _make_user(db, "multi@example.com", "sup_multi")
         plan = Plan.objects.create(
             name="Pro Multi", context="personal", interval="month", is_active=True
@@ -176,7 +180,7 @@ class TestUserAdminExtendedQueryset:
         _make_subscription(customer, plan, "trialing", "sub_admin_multi_old")
         _make_subscription(customer, plan, "active", "sub_admin_multi_new")
 
-        qs = self.admin_instance.get_queryset(self.mock_request)
+        qs = admin_instance.get_queryset(mock_request)
         annotated = qs.get(pk=user.pk)
         # The most recently created subscription wins; both are active statuses so either is valid,
         # but the annotation must be set (not None)
@@ -235,53 +239,46 @@ class TestUserAdminChangelistRendering:
 class TestUserAdminExtendedInheritance:
     """Verify UserAdminExtended inherits configuration from apps.users.admin.UserAdmin."""
 
-    def setup_method(self):
-        from django.contrib import admin
-
-        from apps.admin_panel.admin import UserAdminExtended
-
-        self.admin_instance = UserAdminExtended(User, admin.site)
-
-    def test_inherits_list_filter(self):
+    def test_inherits_list_filter(self, admin_instance):
         from django.contrib import admin as admin_module
 
         from apps.users.admin import UserAdmin
 
         base = UserAdmin(User, admin_module.site)
-        assert self.admin_instance.list_filter == base.list_filter
+        assert admin_instance.list_filter == base.list_filter
 
-    def test_inherits_search_fields(self):
+    def test_inherits_search_fields(self, admin_instance):
         from django.contrib import admin as admin_module
 
         from apps.users.admin import UserAdmin
 
         base = UserAdmin(User, admin_module.site)
-        assert self.admin_instance.search_fields == base.search_fields
+        assert admin_instance.search_fields == base.search_fields
 
-    def test_inherits_ordering(self):
+    def test_inherits_ordering(self, admin_instance):
         from django.contrib import admin as admin_module
 
         from apps.users.admin import UserAdmin
 
         base = UserAdmin(User, admin_module.site)
-        assert self.admin_instance.ordering == base.ordering
+        assert admin_instance.ordering == base.ordering
 
-    def test_inherits_readonly_fields(self):
+    def test_inherits_readonly_fields(self, admin_instance):
         from django.contrib import admin as admin_module
 
         from apps.users.admin import UserAdmin
 
         base = UserAdmin(User, admin_module.site)
-        assert self.admin_instance.readonly_fields == base.readonly_fields
+        assert admin_instance.readonly_fields == base.readonly_fields
 
-    def test_inherits_fieldsets(self):
+    def test_inherits_fieldsets(self, admin_instance):
         from django.contrib import admin as admin_module
 
         from apps.users.admin import UserAdmin
 
         base = UserAdmin(User, admin_module.site)
-        assert self.admin_instance.fieldsets == base.fieldsets
+        assert admin_instance.fieldsets == base.fieldsets
 
-    def test_overrides_list_display(self):
+    def test_overrides_list_display(self, admin_instance):
         # Extended admin adds subscription_status column
-        assert "subscription_status" in self.admin_instance.list_display
+        assert "subscription_status" in admin_instance.list_display
