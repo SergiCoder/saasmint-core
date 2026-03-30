@@ -180,6 +180,10 @@ This template works with any platform that supports Django:
 
 Make sure to set all environment variables and run migrations in production.
 
+## Plugins
+
+- [Prism](https://github.com/SergiCoder/prism) — Claude Code plugin for multi-profile code review, conventional commits, branching, and PR workflows
+
 ## License
 
-MIT
+[MIT](https://github.com/SergiCoder/stripe-django/blob/main/LICENSE)
