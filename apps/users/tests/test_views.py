@@ -22,6 +22,7 @@ _TEST_DRF = {
         "account": "1000/hour",
         "account_export": "1000/hour",
     },
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 

@@ -94,6 +94,7 @@ _TEST_DRF = {
         "orgs": "1000/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 
