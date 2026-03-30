@@ -4,11 +4,25 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 from rest_framework.test import APIClient
+from stripe_saas_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
 
 from apps.billing.models import Plan, PlanPrice
+
+
+@pytest.fixture
+def mock_stripe_customer():
+    return DomainStripeCustomer(
+        id=uuid4(),
+        stripe_id="cus_test",
+        user_id=uuid4(),
+        org_id=None,
+        livemode=False,
+        created_at=datetime.now(UTC),
+    )
 
 
 @pytest.mark.django_db
@@ -45,19 +59,10 @@ class TestPlanListView:
 class TestCheckoutSessionView:
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_creates_session(self, mock_get_customer, mock_create, authed_client, plan_price):
-        from uuid import uuid4
-
-        from stripe_saas_core.domain.stripe_customer import StripeCustomer
-
-        mock_get_customer.return_value = StripeCustomer(
-            id=uuid4(),
-            stripe_id="cus_test",
-            user_id=uuid4(),
-            org_id=None,
-            livemode=False,
-            created_at=datetime.now(UTC),
-        )
+    def test_creates_session(
+        self, mock_get_customer, mock_create, authed_client, plan_price, mock_stripe_customer
+    ):
+        mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         resp = authed_client.post(
@@ -91,26 +96,15 @@ class TestCheckoutSessionView:
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
     def test_trial_suppressed_for_team_plans(
-        self, mock_get_customer, mock_create, authed_client, db
+        self, mock_get_customer, mock_create, authed_client, mock_stripe_customer, db
     ):
-        from stripe_saas_core.domain.stripe_customer import StripeCustomer
-
         team_plan = Plan.objects.create(
             name="Team Monthly", context="team", interval="month", is_active=True
         )
         PlanPrice.objects.create(
             plan=team_plan, stripe_price_id="price_team", currency="usd", amount=2999
         )
-        from uuid import uuid4
-
-        mock_get_customer.return_value = StripeCustomer(
-            id=uuid4(),
-            stripe_id="cus_test",
-            user_id=uuid4(),
-            org_id=None,
-            livemode=False,
-            created_at=datetime.now(UTC),
-        )
+        mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         authed_client.post(
@@ -129,20 +123,9 @@ class TestCheckoutSessionView:
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
     def test_trial_preserved_for_personal_plans(
-        self, mock_get_customer, mock_create, authed_client, plan_price
+        self, mock_get_customer, mock_create, authed_client, plan_price, mock_stripe_customer
     ):
-        from uuid import uuid4
-
-        from stripe_saas_core.domain.stripe_customer import StripeCustomer
-
-        mock_get_customer.return_value = StripeCustomer(
-            id=uuid4(),
-            stripe_id="cus_test",
-            user_id=uuid4(),
-            org_id=None,
-            livemode=False,
-            created_at=datetime.now(UTC),
-        )
+        mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         authed_client.post(
@@ -168,19 +151,10 @@ class TestCheckoutSessionView:
 class TestPortalSessionView:
     @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_creates_portal_session(self, mock_get_customer, mock_portal, authed_client):
-        from uuid import uuid4
-
-        from stripe_saas_core.domain.stripe_customer import StripeCustomer
-
-        mock_get_customer.return_value = StripeCustomer(
-            id=uuid4(),
-            stripe_id="cus_test",
-            user_id=uuid4(),
-            org_id=None,
-            livemode=False,
-            created_at=datetime.now(UTC),
-        )
+    def test_creates_portal_session(
+        self, mock_get_customer, mock_portal, authed_client, mock_stripe_customer
+    ):
+        mock_get_customer.return_value = mock_stripe_customer
         mock_portal.return_value = "https://billing.stripe.com/portal"
 
         resp = authed_client.post(
@@ -260,7 +234,7 @@ class TestUpdateSubscription:
             {"plan_price_id": "price_test_123"},
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_change.assert_called_once()
 
     def test_invalid_plan_returns_404(self, authed_client, subscription):
@@ -278,7 +252,7 @@ class TestUpdateSubscription:
             {"quantity": 5},
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_seats.assert_called_once()
 
     def test_invalid_quantity_returns_400(self, authed_client, subscription):
@@ -311,7 +285,7 @@ class TestUpdateSubscription:
             {"plan_price_id": "price_test_123", "quantity": 3},
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_change.assert_called_once()
         mock_seats.assert_called_once()
         assert mock_seats.call_args.kwargs["quantity"] == 3
