@@ -4,3 +4,4 @@ from config.settings.base import *  # noqa: F403  # star import intentional for 
 
 DEBUG = True
 CORS_ALLOW_ALL_ORIGINS = True
+INTERNAL_IPS = ["127.0.0.1"]

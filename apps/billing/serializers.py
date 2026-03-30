@@ -102,7 +102,7 @@ class UpdateSubscriptionSerializer(serializers.Serializer[object]):
     quantity = serializers.IntegerField(min_value=1, max_value=10000, required=False)
 
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
-        if not attrs.get("plan_price_id") and "quantity" not in attrs:
+        if "plan_price_id" not in attrs and "quantity" not in attrs:
             raise serializers.ValidationError(
                 "At least one of 'plan_price_id' or 'quantity' is required."
             )
