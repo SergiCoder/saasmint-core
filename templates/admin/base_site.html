@@ -43,6 +43,7 @@
   {% if site_url %}
     <a href="{{ site_url }}">{% translate 'View site' %}</a> /
   {% endif %}
+  {# swagger-ui and redoc URL names are only registered when DEBUG=True (see config/urls.py) #}
   <a href="{% url 'swagger-ui' %}">Swagger</a> /
   <a href="{% url 'redoc' %}">ReDoc</a> /
   {% if user.has_usable_password %}
