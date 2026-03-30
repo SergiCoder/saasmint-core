@@ -205,6 +205,16 @@ class TestUpdateSubscriptionSerializer:
         assert not ser.is_valid()
         assert "quantity" in ser.errors
 
+    def test_quantity_at_min_boundary(self):
+        ser = UpdateSubscriptionSerializer(data={"quantity": 1})
+        assert ser.is_valid(), ser.errors
+        assert ser.validated_data["quantity"] == 1
+
+    def test_negative_quantity_rejected(self):
+        ser = UpdateSubscriptionSerializer(data={"quantity": -1})
+        assert not ser.is_valid()
+        assert "quantity" in ser.errors
+
     def test_quantity_at_max_boundary(self):
         ser = UpdateSubscriptionSerializer(data={"quantity": 10000})
         assert ser.is_valid(), ser.errors

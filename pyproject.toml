@@ -45,7 +45,7 @@ stripe-saas-core = { path = "core", editable = true }
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
-testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests", "apps/orgs/tests", "apps/dashboard/tests", "apps/admin_panel/tests"]
+testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests", "apps/orgs/tests", "apps/dashboard/tests", "apps/admin_panel/tests", "scripts/tests"]
 filterwarnings = [
     "ignore:No directory at.*staticfiles:UserWarning",
 ]
@@ -76,6 +76,7 @@ ignore = []
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "ANN"]
 "apps/*/tests/**" = ["S101", "ANN", "S105"]
+"scripts/tests/**" = ["S101", "ANN"]
 "*/migrations/**" = ["ANN", "RUF", "E501"]
 
 [tool.coverage.run]
