@@ -2,18 +2,36 @@
 
 from __future__ import annotations
 
+import importlib
+
 import pytest
 from django.test import Client
+from django.urls import clear_url_caches
 
 
 @pytest.fixture
-def schema_content(db):
+def _debug_urls(settings):
+    """Force URL conf reload so DEBUG-only routes (schema, docs) are registered."""
+    settings.DEBUG = True
+    import config.urls
+
+    importlib.reload(config.urls)
+    clear_url_caches()
+    settings.ROOT_URLCONF = "config.urls"
+    yield
+    importlib.reload(config.urls)
+    clear_url_caches()
+
+
+@pytest.fixture
+def schema_content(db, _debug_urls):
     client = Client()
     resp = client.get("/api/schema/", HTTP_ACCEPT="application/json")
     assert resp.status_code == 200
     return resp.content.decode()
 
 
+@pytest.mark.usefixtures("_debug_urls")
 @pytest.mark.django_db
 class TestOpenAPIEndpoints:
     def test_schema_endpoint_returns_json(self):

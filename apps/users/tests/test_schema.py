@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from apps.users.authentication import SupabaseJWTAuthentication
 from apps.users.schema import SupabaseJWTAuthenticationScheme
 
 
 class TestSupabaseJWTAuthenticationScheme:
     def test_target_class_is_correct(self):
-        assert (
-            SupabaseJWTAuthenticationScheme.target_class
-            == "apps.users.authentication.SupabaseJWTAuthentication"
-        )
+        target = SupabaseJWTAuthenticationScheme.target_class
+        # drf-spectacular may resolve the dotted-path string to the actual class
+        if isinstance(target, str):
+            assert target == "apps.users.authentication.SupabaseJWTAuthentication"
+        else:
+            assert target is SupabaseJWTAuthentication
 
     def test_name_is_supabase_jwt(self):
         assert SupabaseJWTAuthenticationScheme.name == "SupabaseJWT"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def preprocess_exclude_spectacular_views(endpoints: list[Any], **kwargs: Any) -> list[Any]:
+def preprocess_exclude_spectacular_views(endpoints: list[Any], **kwargs: object) -> list[Any]:
     """Exclude drf-spectacular's own UI views from schema generation.
 
     SpectacularSwaggerView, SpectacularRedocView, and SpectacularAPIView do not
