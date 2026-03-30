@@ -219,6 +219,10 @@ class TestCancelSubscription:
         resp = authed_client.delete("/api/v1/billing/subscription/")
         assert resp.status_code == 404
 
+    def test_no_active_subscription_returns_404(self, authed_client, stripe_customer):
+        resp = authed_client.delete("/api/v1/billing/subscription/")
+        assert resp.status_code == 404
+
     def test_unauthenticated_rejected(self):
         client = APIClient()
         resp = client.delete("/api/v1/billing/subscription/")
@@ -235,6 +239,19 @@ class TestUpdateSubscription:
             format="json",
         )
         assert resp.status_code == 204
+        mock_change.assert_called_once()
+
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_plan_only_does_not_call_update_seat_count(
+        self, mock_change, authed_client, subscription, plan_price
+    ):
+        with patch("apps.billing.views.update_seat_count", new_callable=AsyncMock) as mock_seats:
+            authed_client.patch(
+                "/api/v1/billing/subscription/",
+                {"plan_price_id": "price_test_123"},
+                format="json",
+            )
+            mock_seats.assert_not_called()
         mock_change.assert_called_once()
 
     def test_invalid_plan_returns_404(self, authed_client, subscription):
@@ -254,6 +271,18 @@ class TestUpdateSubscription:
         )
         assert resp.status_code == 204
         mock_seats.assert_called_once()
+        assert mock_seats.call_args.kwargs["quantity"] == 5
+
+    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
+    def test_seats_only_does_not_call_change_plan(self, mock_seats, authed_client, subscription):
+        with patch("apps.billing.views.change_plan", new_callable=AsyncMock) as mock_change:
+            authed_client.patch(
+                "/api/v1/billing/subscription/",
+                {"quantity": 3},
+                format="json",
+            )
+            mock_change.assert_not_called()
+        mock_seats.assert_called_once()
 
     def test_invalid_quantity_returns_400(self, authed_client, subscription):
         resp = authed_client.patch(
@@ -267,7 +296,15 @@ class TestUpdateSubscription:
         resp = authed_client.patch("/api/v1/billing/subscription/", {}, format="json")
         assert resp.status_code == 400
 
-    def test_no_subscription_returns_404(self, authed_client, user):
+    def test_no_customer_returns_404(self, authed_client, user):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"quantity": 5},
+            format="json",
+        )
+        assert resp.status_code == 404
+
+    def test_customer_without_subscription_returns_404(self, authed_client, stripe_customer):
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
             {"quantity": 5},
@@ -303,9 +340,7 @@ class TestUpdateSubscription:
 
     def test_unauthenticated_rejected(self):
         client = APIClient()
-        resp = client.patch(
-            "/api/v1/billing/subscription/", {"quantity": 5}, format="json"
-        )
+        resp = client.patch("/api/v1/billing/subscription/", {"quantity": 5}, format="json")
         assert resp.status_code in (401, 403)
 
 

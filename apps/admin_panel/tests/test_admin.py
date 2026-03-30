@@ -55,6 +55,15 @@ def admin_instance():
     return UserAdminExtended(User, admin.site)
 
 
+@pytest.fixture
+def base_admin():
+    from django.contrib import admin as django_admin
+
+    from apps.users.admin import UserAdmin
+
+    return UserAdmin(User, django_admin.site)
+
+
 # ---------------------------------------------------------------------------
 # subscription_status display method
 # ---------------------------------------------------------------------------
@@ -239,45 +248,20 @@ class TestUserAdminChangelistRendering:
 class TestUserAdminExtendedInheritance:
     """Verify UserAdminExtended inherits configuration from apps.users.admin.UserAdmin."""
 
-    def test_inherits_list_filter(self, admin_instance):
-        from django.contrib import admin as admin_module
+    def test_inherits_list_filter(self, admin_instance, base_admin):
+        assert admin_instance.list_filter == base_admin.list_filter
 
-        from apps.users.admin import UserAdmin
+    def test_inherits_search_fields(self, admin_instance, base_admin):
+        assert admin_instance.search_fields == base_admin.search_fields
 
-        base = UserAdmin(User, admin_module.site)
-        assert admin_instance.list_filter == base.list_filter
+    def test_inherits_ordering(self, admin_instance, base_admin):
+        assert admin_instance.ordering == base_admin.ordering
 
-    def test_inherits_search_fields(self, admin_instance):
-        from django.contrib import admin as admin_module
+    def test_inherits_readonly_fields(self, admin_instance, base_admin):
+        assert admin_instance.readonly_fields == base_admin.readonly_fields
 
-        from apps.users.admin import UserAdmin
-
-        base = UserAdmin(User, admin_module.site)
-        assert admin_instance.search_fields == base.search_fields
-
-    def test_inherits_ordering(self, admin_instance):
-        from django.contrib import admin as admin_module
-
-        from apps.users.admin import UserAdmin
-
-        base = UserAdmin(User, admin_module.site)
-        assert admin_instance.ordering == base.ordering
-
-    def test_inherits_readonly_fields(self, admin_instance):
-        from django.contrib import admin as admin_module
-
-        from apps.users.admin import UserAdmin
-
-        base = UserAdmin(User, admin_module.site)
-        assert admin_instance.readonly_fields == base.readonly_fields
-
-    def test_inherits_fieldsets(self, admin_instance):
-        from django.contrib import admin as admin_module
-
-        from apps.users.admin import UserAdmin
-
-        base = UserAdmin(User, admin_module.site)
-        assert admin_instance.fieldsets == base.fieldsets
+    def test_inherits_fieldsets(self, admin_instance, base_admin):
+        assert admin_instance.fieldsets == base_admin.fieldsets
 
     def test_overrides_list_display(self, admin_instance):
         # Extended admin adds subscription_status column
