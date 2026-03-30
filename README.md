@@ -72,7 +72,7 @@ When `DEBUG=True`, interactive API docs are served at:
 - `/api/redoc/` — ReDoc
 - `/api/schema/` — raw OpenAPI 3 JSON schema
 
-Links to Swagger and ReDoc also appear in the Django admin header.
+Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 
 ## Environment variables
 
