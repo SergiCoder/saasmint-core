@@ -125,18 +125,11 @@ jobs:
 
             uv run pip-audit --desc --skip-editable -f json -o /tmp/audit-raw-${pkg}.json || true
             python3 -c "
-          import json, re
-          with open('pyproject.toml') as f:
-              text = f.read()
-          direct = set()
-          m = re.search(r'^dependencies\s*=\s*\[(.*?)\](?=\s*\n\s*\n|\s*\n\s*\[)', text, re.S | re.M)
-          if m:
-              for line in m.group(1).splitlines():
-                  line = line.strip().strip(',').strip('\x22\x27')
-                  if line and not line.startswith('#'):
-                      name = re.split(r'[>=<!\[;]', line)[0].strip().lower()
-                      if name:
-                          direct.add(name)
+          import json, subprocess, sys
+          direct = set(subprocess.check_output(
+              [sys.executable, '$GITHUB_WORKSPACE/scripts/parse_direct_deps.py', 'pyproject.toml'],
+              text=True,
+          ).splitlines())
           data = json.load(open('/tmp/audit-raw-${pkg}.json'))
           vulns = data.get('dependencies', [])
           rows = []
@@ -170,19 +163,7 @@ jobs:
               continue
             fi
 
-            direct_deps=$(python3 -c "
-          import re
-          with open('pyproject.toml') as f:
-              text = f.read()
-          m = re.search(r'^dependencies\s*=\s*\[(.*?)\](?=\s*\n\s*\n|\s*\n\s*\[)', text, re.S | re.M)
-          if m:
-              for line in m.group(1).splitlines():
-                  line = line.strip().strip(',').strip('\x22\x27')
-                  if line and not line.startswith('#'):
-                      name = re.split(r'[>=<!\[;]', line)[0].strip().lower()
-                      if name:
-                          print(name)
-          ")
+            direct_deps=$(python3 "$GITHUB_WORKSPACE/scripts/parse_direct_deps.py" pyproject.toml)
 
             extract() {
               awk '/^\[\[package\]\]/{p=1;name=""} p && /^name = /{name=$3} p && /^version = / && name{print name "=" $3; p=0}' "$1" | tr -d '"' | sort
