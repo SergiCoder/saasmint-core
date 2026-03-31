@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import jwt
 from django.conf import settings
 from django.core.cache import cache
@@ -12,7 +14,17 @@ from rest_framework.request import Request
 
 from apps.users.models import AUTH_USER_CACHE_KEY, User
 
+logger = logging.getLogger(__name__)
+
 _AUTH_CACHE_TTL = 60  # seconds
+_JWKS_CACHE_KEY = "supabase:jwks"
+_JWKS_CACHE_TTL = 3600  # 1 hour
+
+
+def _get_jwks_client() -> jwt.PyJWKClient:
+    """Return a JWKS client for the Supabase project, using a cached keyset."""
+    jwks_url = f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+    return jwt.PyJWKClient(jwks_url, cache_keys=True, lifespan=_JWKS_CACHE_TTL)
 
 
 class SupabaseJWTAuthentication(BaseAuthentication):
@@ -26,23 +38,40 @@ class SupabaseJWTAuthentication(BaseAuthentication):
         token = auth_header.split(" ", 1)[1]
 
         try:
-            payload: dict[str, object] = jwt.decode(
-                token,
-                settings.SUPABASE_JWT_SECRET,
-                algorithms=["HS256"],
-                audience="authenticated",
-            )
+            # Determine signing algorithm from the token header
+            header = jwt.get_unverified_header(token)
+            alg = header.get("alg", "HS256")
+
+            if alg.startswith("ES") or alg.startswith("RS"):
+                # Asymmetric algorithm — verify with JWKS public key
+                jwks_client = _get_jwks_client()
+                signing_key = jwks_client.get_signing_key_from_jwt(token)
+                payload: dict[str, object] = jwt.decode(
+                    token,
+                    signing_key.key,
+                    algorithms=[alg],
+                    audience="authenticated",
+                )
+            else:
+                # Symmetric algorithm (HS256) — verify with shared secret
+                payload = jwt.decode(
+                    token,
+                    settings.SUPABASE_JWT_SECRET,
+                    algorithms=["HS256"],
+                    audience="authenticated",
+                )
         except jwt.ExpiredSignatureError as exc:
             raise AuthenticationFailed("Token has expired.") from exc
         except jwt.InvalidTokenError as exc:
+            logger.error("JWT verification failed: %s (alg=%s)", exc, alg)
+            raise AuthenticationFailed("Invalid token.") from exc
+        except Exception as exc:
+            logger.error("Unexpected auth error: %s", exc)
             raise AuthenticationFailed("Invalid token.") from exc
 
         supabase_uid = str(payload.get("sub", ""))
         if not supabase_uid:
             raise AuthenticationFailed("Token missing 'sub' claim.")
-
-        if not payload.get("email_verified", False):
-            raise AuthenticationFailed("Email not verified.")
 
         cache_key = AUTH_USER_CACHE_KEY.format(supabase_uid)
         user: User | None = cache.get(cache_key)
