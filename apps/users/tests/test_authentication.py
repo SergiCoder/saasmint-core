@@ -192,6 +192,20 @@ class TestSupabaseJWTAuthentication:
         with pytest.raises(AuthenticationFailed, match="Email not verified"):
             self.auth.authenticate(request)
 
+    def test_non_dict_user_metadata_rejected(self):
+        """When user_metadata is present but not a dict, email_verified defaults to False."""
+        payload = {
+            "sub": "sup_test123",
+            "email": "test@example.com",
+            "user_metadata": "not-a-dict",
+            "aud": "authenticated",
+            "exp": datetime.now(UTC) + timedelta(hours=1),
+        }
+        token = jwt.encode(payload, SECRET, algorithm="HS256")
+        request = _make_request(token)
+        with pytest.raises(AuthenticationFailed, match="Email not verified"):
+            self.auth.authenticate(request)
+
     def test_unsupported_algorithm_raises(self):
         """A token with an unsupported algorithm should raise AuthenticationFailed."""
         payload = {
