@@ -1,0 +1,18 @@
+/* Phone prefix + phone: place fields side-by-side without gap */
+.form-row.field-phone_prefix.field-phone {
+    display: flex;
+    align-items: flex-end;
+    gap: 0;
+}
+
+.form-row.field-phone_prefix.field-phone .fieldBox.field-phone_prefix {
+    flex: 0 0 auto;
+}
+
+.form-row.field-phone_prefix.field-phone .fieldBox.field-phone {
+    flex: 1 1 auto;
+}
+
+.form-row.field-phone_prefix.field-phone .fieldBox.field-phone label {
+    display: none;
+}
