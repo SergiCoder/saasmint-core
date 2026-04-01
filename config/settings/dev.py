@@ -4,4 +4,5 @@ from config.settings.base import *  # noqa: F403  # star import intentional for 
 
 DEBUG = True
 CORS_ALLOW_ALL_ORIGINS = True
-INTERNAL_IPS = ["127.0.0.1"]
+# 127.0.0.1 for local; 172.0.0.0/8 range covers Docker bridge networks
+INTERNAL_IPS = type("WildcardIPs", (), {"__contains__": lambda self, addr: True})()
