@@ -34,7 +34,7 @@ class TestProcessStripeWebhookSuccess:
         mock_handle = AsyncMock()
         with (
             patch(
-                "stripe_saas_core.services.webhooks.handle_stripe_event",
+                "saasmint_core.services.webhooks.handle_stripe_event",
                 mock_handle,
             ),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
@@ -52,7 +52,7 @@ class TestProcessStripeWebhookSuccess:
     def test_completes_without_error_on_success(self):
         mock_handle = AsyncMock()
         with (
-            patch("stripe_saas_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
             patch("apps.billing.tasks.settings") as mock_settings,
         ):
@@ -69,11 +69,11 @@ class TestProcessStripeWebhookSuccess:
 @pytest.mark.django_db
 class TestProcessStripeWebhookVerificationError:
     def test_raises_without_retrying_on_verification_failure(self):
-        from stripe_saas_core.exceptions import WebhookVerificationError
+        from saasmint_core.exceptions import WebhookVerificationError
 
         mock_handle = AsyncMock(side_effect=WebhookVerificationError("bad sig"))
         with (
-            patch("stripe_saas_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
             patch("apps.billing.tasks.settings") as mock_settings,
         ):
@@ -96,7 +96,7 @@ class TestProcessStripeWebhookRetry:
         exc = StripeError("network failure")
         mock_handle = AsyncMock(side_effect=exc)
         with (
-            patch("stripe_saas_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
             patch("apps.billing.tasks.settings") as mock_settings,
         ):
@@ -111,7 +111,7 @@ class TestProcessStripeWebhookRetry:
         exc = ConnectionError("timeout")
         mock_handle = AsyncMock(side_effect=exc)
         with (
-            patch("stripe_saas_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
             patch("apps.billing.tasks.settings") as mock_settings,
         ):
@@ -127,7 +127,7 @@ class TestProcessStripeWebhookRetry:
         exc = OperationalError("db connection lost")
         mock_handle = AsyncMock(side_effect=exc)
         with (
-            patch("stripe_saas_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
             patch("apps.billing.tasks.settings") as mock_settings,
         ):
@@ -149,7 +149,7 @@ class TestProcessStripeWebhookMalformedPayload:
         """Malformed JSON should not crash the task before it calls handle_stripe_event."""
         mock_handle = AsyncMock()
         with (
-            patch("stripe_saas_core.services.webhooks.handle_stripe_event", mock_handle),
+            patch("saasmint_core.services.webhooks.handle_stripe_event", mock_handle),
             patch("apps.billing.tasks.get_webhook_repos", return_value=MagicMock()),
             patch("apps.billing.tasks.settings") as mock_settings,
         ):

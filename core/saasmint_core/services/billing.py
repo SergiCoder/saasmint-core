@@ -8,11 +8,11 @@ from uuid import UUID, uuid4
 
 import stripe
 
-from stripe_saas_core.domain.stripe_customer import StripeCustomer
-from stripe_saas_core.exceptions import SubscriptionNotFoundError
-from stripe_saas_core.repositories.customer import StripeCustomerRepository
-from stripe_saas_core.repositories.subscription import SubscriptionRepository
-from stripe_saas_core.services.coupons import validate_promo_code
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.exceptions import SubscriptionNotFoundError
+from saasmint_core.repositories.customer import StripeCustomerRepository
+from saasmint_core.repositories.subscription import SubscriptionRepository
+from saasmint_core.services.coupons import validate_promo_code
 
 
 async def get_or_create_customer(

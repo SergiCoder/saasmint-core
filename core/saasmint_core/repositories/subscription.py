@@ -1,7 +1,7 @@
 from typing import Protocol
 from uuid import UUID
 
-from stripe_saas_core.domain.subscription import Subscription
+from saasmint_core.domain.subscription import Subscription
 
 
 class SubscriptionRepository(Protocol):

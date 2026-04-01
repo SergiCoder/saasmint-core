@@ -1,4 +1,4 @@
-# Stripe SaaS Django — Makefile
+# SaasMint Core — Makefile
 
 SHELL := bash
 unexport VIRTUAL_ENV  # prevent uv from using a stale venv from the parent shell

@@ -6,25 +6,37 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('billing', '0002_add_owner_constraint'),
-        ('orgs', '0001_initial'),
+        ("billing", "0002_add_owner_constraint"),
+        ("orgs", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.RemoveConstraint(
-            model_name='stripecustomer',
-            name='stripecustomer_has_owner',
+            model_name="stripecustomer",
+            name="stripecustomer_has_owner",
         ),
         migrations.AddField(
-            model_name='stripecustomer',
-            name='org',
-            field=models.OneToOneField(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='stripe_customer', to='orgs.org'),
+            model_name="stripecustomer",
+            name="org",
+            field=models.OneToOneField(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.CASCADE,
+                related_name="stripe_customer",
+                to="orgs.org",
+            ),
         ),
         migrations.AddConstraint(
-            model_name='stripecustomer',
-            constraint=models.CheckConstraint(condition=models.Q(models.Q(('org_id__isnull', True), ('user_id__isnull', False)), models.Q(('org_id__isnull', False), ('user_id__isnull', True)), _connector='OR'), name='stripecustomer_has_owner'),
+            model_name="stripecustomer",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    models.Q(("org_id__isnull", True), ("user_id__isnull", False)),
+                    models.Q(("org_id__isnull", False), ("user_id__isnull", True)),
+                    _connector="OR",
+                ),
+                name="stripecustomer_has_owner",
+            ),
         ),
     ]

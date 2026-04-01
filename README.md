@@ -1,6 +1,6 @@
-# stripe-django
+# SaasMint Core
 
-A production-ready Django template for building SaaS applications with Stripe billing. Fork it, configure your Stripe keys, and start building.
+A production-ready Django backend for building SaaS applications with Stripe billing. Fork it, configure your Stripe keys, and start building.
 
 ## What you get
 
@@ -17,7 +17,7 @@ A production-ready Django template for building SaaS applications with Stripe bi
 
 ```bash
 # 1. Fork and clone
-gh repo fork SergiCoder/stripe-django --clone
+gh repo fork SergiCoder/saasmint-core --clone
 
 # 2. Install dependencies
 uv sync
@@ -98,9 +98,9 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 ## Project structure
 
 ```
-stripe-django/
-├── core/                # Framework-agnostic shared business logic (stripe-saas-core)
-│   ├── stripe_saas_core/
+saasmint-core/
+├── core/                # Framework-agnostic shared business logic (saasmint-core-lib)
+│   ├── saasmint_core/
 │   │   ├── domain/      # Pydantic domain models (User, Org, Subscription, …)
 │   │   ├── services/    # Business logic (billing, webhooks, GDPR, …)
 │   │   ├── repositories/ # Repository protocols (async, framework-agnostic)
@@ -187,4 +187,4 @@ Make sure to set all environment variables and run migrations in production.
 
 ## License
 
-[MIT](https://github.com/SergiCoder/stripe-django/blob/main/LICENSE)
+[MIT](https://github.com/SergiCoder/saasmint-core/blob/main/LICENSE)

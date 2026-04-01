@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from stripe_saas_core.exceptions import InvalidPromoCodeError
-from stripe_saas_core.services.subscriptions import apply_promo_code, change_plan, update_seat_count
+from saasmint_core.exceptions import InvalidPromoCodeError
+from saasmint_core.services.subscriptions import apply_promo_code, change_plan, update_seat_count
 
 
 def _mock_stripe_sub(item_id: str = "si_abc") -> MagicMock:

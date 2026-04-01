@@ -17,7 +17,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from stripe_saas_core.services.gdpr import delete_user_data, export_user_data
+from saasmint_core.services.gdpr import delete_user_data, export_user_data
 
 from apps.users.repositories import DjangoUserRepository
 from apps.users.serializers import UpdateUserSerializer, UserSerializer

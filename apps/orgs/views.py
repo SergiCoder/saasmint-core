@@ -16,9 +16,9 @@ from rest_framework.response import Response
 from rest_framework.serializers import ValidationError
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from stripe_saas_core.domain.org import OrgRole as CoreOrgRole
-from stripe_saas_core.exceptions import InsufficientPermissionError, OrgNotFoundError
-from stripe_saas_core.services.orgs import check_can_assign_role, check_can_manage_member
+from saasmint_core.domain.org import OrgRole as CoreOrgRole
+from saasmint_core.exceptions import InsufficientPermissionError, OrgNotFoundError
+from saasmint_core.services.orgs import check_can_assign_role, check_can_manage_member
 
 from apps.orgs.models import Org, OrgMember, OrgRole
 from apps.orgs.serializers import (
@@ -202,9 +202,7 @@ class OrgMemberDetailView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
-    @extend_schema(
-        request=UpdateMemberSerializer, responses=OrgMemberSerializer, tags=["orgs"]
-    )
+    @extend_schema(request=UpdateMemberSerializer, responses=OrgMemberSerializer, tags=["orgs"])
     def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)

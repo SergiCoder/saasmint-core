@@ -7,8 +7,8 @@ from uuid import uuid4
 
 import pytest
 
-from stripe_saas_core.exceptions import InvalidPromoCodeError, SubscriptionNotFoundError
-from stripe_saas_core.services.billing import (
+from saasmint_core.exceptions import InvalidPromoCodeError, SubscriptionNotFoundError
+from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
     create_checkout_session,

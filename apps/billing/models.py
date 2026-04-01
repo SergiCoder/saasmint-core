@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 from django.db import models
-from stripe_saas_core.domain.subscription import (
+from saasmint_core.domain.subscription import (
     ACTIVE_SUBSCRIPTION_STATUSES as _CORE_ACTIVE_STATUSES,
 )
 

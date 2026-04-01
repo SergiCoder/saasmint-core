@@ -31,12 +31,12 @@ class UpdateUserSerializer(serializers.Serializer[User]):
     preferred_currency = serializers.CharField(max_length=3, required=False)
 
     def validate_preferred_locale(self, value: str) -> str:
-        from stripe_saas_core.services.locale import SUPPORTED_LOCALES
+        from saasmint_core.services.locale import SUPPORTED_LOCALES
 
         return self._validate_in_set(value, SUPPORTED_LOCALES, "locale")
 
     def validate_preferred_currency(self, value: str) -> str:
-        from stripe_saas_core.services.currency import SUPPORTED_CURRENCIES
+        from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 
         return self._validate_in_set(value, SUPPORTED_CURRENCIES, "currency")
 

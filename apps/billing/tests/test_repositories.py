@@ -71,7 +71,7 @@ class TestDjangoStripeCustomerRepository:
         assert result is None
 
     def test_save_creates_new_for_org(self, repo, db):
-        from stripe_saas_core.domain.stripe_customer import (
+        from saasmint_core.domain.stripe_customer import (
             StripeCustomer as DomainCustomer,
         )
 
@@ -98,7 +98,7 @@ class TestDjangoStripeCustomerRepository:
         assert db_obj.user_id is None
 
     def test_save_creates_new(self, repo, user):
-        from stripe_saas_core.domain.stripe_customer import (
+        from saasmint_core.domain.stripe_customer import (
             StripeCustomer as DomainCustomer,
         )
 
@@ -115,7 +115,7 @@ class TestDjangoStripeCustomerRepository:
         assert StripeCustomer.objects.filter(stripe_id="cus_new_123").exists()
 
     def test_save_upserts_existing(self, repo, stripe_customer, user):
-        from stripe_saas_core.domain.stripe_customer import (
+        from saasmint_core.domain.stripe_customer import (
             StripeCustomer as DomainCustomer,
         )
 
@@ -182,10 +182,10 @@ class TestDjangoSubscriptionRepository:
         assert result.stripe_id == "sub_new"
 
     def test_save_creates_new(self, repo, stripe_customer, plan):
-        from stripe_saas_core.domain.subscription import (
+        from saasmint_core.domain.subscription import (
             Subscription as DomainSub,
         )
-        from stripe_saas_core.domain.subscription import (
+        from saasmint_core.domain.subscription import (
             SubscriptionStatus,
         )
 
@@ -321,7 +321,7 @@ class TestDjangoStripeEventRepository:
         assert async_to_sync(repo.exists)("evt_exists") is True
 
     def test_save_if_new_creates(self, repo):
-        from stripe_saas_core.domain.stripe_event import StripeEvent as DomainEvent
+        from saasmint_core.domain.stripe_event import StripeEvent as DomainEvent
 
         event = DomainEvent(
             id=uuid4(),
@@ -336,7 +336,7 @@ class TestDjangoStripeEventRepository:
         assert StripeEvent.objects.filter(stripe_id="evt_new").exists()
 
     def test_save_if_new_idempotent(self, repo, db):
-        from stripe_saas_core.domain.stripe_event import StripeEvent as DomainEvent
+        from saasmint_core.domain.stripe_event import StripeEvent as DomainEvent
 
         StripeEvent.objects.create(
             stripe_id="evt_dup",

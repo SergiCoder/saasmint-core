@@ -7,8 +7,8 @@ from typing import Any
 
 import stripe
 
-from stripe_saas_core.exceptions import InvalidPromoCodeError
-from stripe_saas_core.services.currency import ZERO_DECIMAL_CURRENCIES
+from saasmint_core.exceptions import InvalidPromoCodeError
+from saasmint_core.services.currency import ZERO_DECIMAL_CURRENCIES
 
 
 async def validate_promo_code(promo_code: str) -> stripe.PromotionCode:

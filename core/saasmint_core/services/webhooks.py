@@ -11,12 +11,12 @@ from uuid import uuid4
 
 import stripe
 
-from stripe_saas_core.domain.stripe_event import StripeEvent
-from stripe_saas_core.domain.subscription import Subscription, SubscriptionStatus
-from stripe_saas_core.repositories.customer import StripeCustomerRepository
-from stripe_saas_core.repositories.plan import PlanRepository
-from stripe_saas_core.repositories.stripe_event import StripeEventRepository
-from stripe_saas_core.repositories.subscription import SubscriptionRepository
+from saasmint_core.domain.stripe_event import StripeEvent
+from saasmint_core.domain.subscription import Subscription, SubscriptionStatus
+from saasmint_core.repositories.customer import StripeCustomerRepository
+from saasmint_core.repositories.plan import PlanRepository
+from saasmint_core.repositories.stripe_event import StripeEventRepository
+from saasmint_core.repositories.subscription import SubscriptionRepository
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ async def handle_stripe_event(
     Raises WebhookVerificationError if the signature is invalid.
     Is a no-op if the event has already been processed (idempotent).
     """
-    from stripe_saas_core.exceptions import WebhookVerificationError
+    from saasmint_core.exceptions import WebhookVerificationError
 
     try:
         event = stripe.Webhook.construct_event(payload, signature, webhook_secret)  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation
@@ -117,7 +117,7 @@ def _ts_to_dt_required(value: int | float) -> datetime:
 
 async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
     """Upsert a Stripe subscription into the local DB from raw event data."""
-    from stripe_saas_core.exceptions import WebhookDataError
+    from saasmint_core.exceptions import WebhookDataError
 
     stripe_customer_str = str(sub_data["customer"])
     items = sub_data["items"]["data"]

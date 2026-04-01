@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from stripe_saas_core.services.currency import (
+from saasmint_core.services.currency import (
     COUNTRY_CURRENCY_MAP,
     SUPPORTED_CURRENCIES,
     ZERO_DECIMAL_CURRENCIES,

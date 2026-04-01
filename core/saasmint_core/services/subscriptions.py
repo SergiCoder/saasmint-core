@@ -6,7 +6,7 @@ import asyncio
 
 import stripe
 
-from stripe_saas_core.services.coupons import validate_promo_code
+from saasmint_core.services.coupons import validate_promo_code
 
 
 async def _get_first_item_id(stripe_subscription_id: str) -> str:

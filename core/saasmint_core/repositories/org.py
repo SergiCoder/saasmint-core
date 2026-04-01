@@ -1,7 +1,7 @@
 from typing import Protocol
 from uuid import UUID
 
-from stripe_saas_core.domain.org import Org, OrgMember
+from saasmint_core.domain.org import Org, OrgMember
 
 
 class OrgRepository(Protocol):

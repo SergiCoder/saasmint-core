@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from stripe_saas_core.domain.org import OrgRole
-from stripe_saas_core.exceptions import InsufficientPermissionError
+from saasmint_core.domain.org import OrgRole
+from saasmint_core.exceptions import InsufficientPermissionError
 
 ORG_ROLE_RANK: dict[OrgRole, int] = {
     OrgRole.OWNER: 3,

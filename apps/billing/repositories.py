@@ -7,9 +7,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from stripe_saas_core.domain.stripe_customer import StripeCustomer
-from stripe_saas_core.domain.stripe_event import StripeEvent
-from stripe_saas_core.domain.subscription import (
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.domain.stripe_event import StripeEvent
+from saasmint_core.domain.subscription import (
     ACTIVE_SUBSCRIPTION_STATUSES,
     Plan,
     PlanContext,
@@ -27,7 +27,7 @@ from apps.billing.models import Subscription as SubscriptionModel
 from helpers import aget_or_none
 
 if TYPE_CHECKING:
-    from stripe_saas_core.services.webhooks import WebhookRepos
+    from saasmint_core.services.webhooks import WebhookRepos
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +262,7 @@ class DjangoStripeEventRepository:
 
 def get_webhook_repos() -> WebhookRepos:
     """Build the WebhookRepos used by webhook processing (view + Celery task)."""
-    from stripe_saas_core.services.webhooks import WebhookRepos
+    from saasmint_core.services.webhooks import WebhookRepos
 
     return WebhookRepos(
         events=DjangoStripeEventRepository(),

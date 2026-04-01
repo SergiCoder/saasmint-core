@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 from rest_framework.test import APIClient
-from stripe_saas_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
+from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
 
 from apps.billing.models import Plan, PlanPrice
 

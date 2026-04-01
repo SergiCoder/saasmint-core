@@ -1,7 +1,7 @@
 from typing import Protocol
 from uuid import UUID
 
-from stripe_saas_core.domain.user import User
+from saasmint_core.domain.user import User
 
 
 class UserRepository(Protocol):

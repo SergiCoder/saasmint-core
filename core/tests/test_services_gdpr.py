@@ -8,8 +8,8 @@ from uuid import uuid4
 import pytest
 import stripe
 
-from stripe_saas_core.exceptions import UserNotFoundError
-from stripe_saas_core.services.gdpr import delete_user_data, export_user_data
+from saasmint_core.exceptions import UserNotFoundError
+from saasmint_core.services.gdpr import delete_user_data, export_user_data
 from tests.conftest import (
     InMemoryStripeCustomerRepository,
     InMemorySubscriptionRepository,

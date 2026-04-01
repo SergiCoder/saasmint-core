@@ -16,15 +16,15 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from stripe_saas_core.domain.stripe_customer import StripeCustomer
-from stripe_saas_core.domain.subscription import Subscription
-from stripe_saas_core.services.billing import (
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.domain.subscription import Subscription
+from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
     create_checkout_session,
     get_or_create_customer,
 )
-from stripe_saas_core.services.subscriptions import (
+from saasmint_core.services.subscriptions import (
     apply_promo_code,
     change_plan,
     update_seat_count,

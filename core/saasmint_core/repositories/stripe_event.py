@@ -1,6 +1,6 @@
 from typing import Protocol
 
-from stripe_saas_core.domain.stripe_event import StripeEvent
+from saasmint_core.domain.stripe_event import StripeEvent
 
 
 class StripeEventRepository(Protocol):

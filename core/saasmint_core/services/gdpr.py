@@ -7,12 +7,12 @@ from uuid import UUID
 
 import stripe
 
-from stripe_saas_core.domain.stripe_customer import StripeCustomer
-from stripe_saas_core.domain.user import User
-from stripe_saas_core.exceptions import UserNotFoundError
-from stripe_saas_core.repositories.customer import StripeCustomerRepository
-from stripe_saas_core.repositories.subscription import SubscriptionRepository
-from stripe_saas_core.repositories.user import UserRepository
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.domain.user import User
+from saasmint_core.exceptions import UserNotFoundError
+from saasmint_core.repositories.customer import StripeCustomerRepository
+from saasmint_core.repositories.subscription import SubscriptionRepository
+from saasmint_core.repositories.user import UserRepository
 
 
 async def _load_user_and_customer(

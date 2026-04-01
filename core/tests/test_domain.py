@@ -8,11 +8,11 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from stripe_saas_core.domain.org import Org, OrgMember, OrgRole
-from stripe_saas_core.domain.payment import Invoice, InvoiceStatus, Payment, PaymentStatus
-from stripe_saas_core.domain.stripe_customer import StripeCustomer
-from stripe_saas_core.domain.stripe_event import StripeEvent
-from stripe_saas_core.domain.subscription import (
+from saasmint_core.domain.org import Org, OrgMember, OrgRole
+from saasmint_core.domain.payment import Invoice, InvoiceStatus, Payment, PaymentStatus
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.domain.stripe_event import StripeEvent
+from saasmint_core.domain.subscription import (
     Plan,
     PlanContext,
     PlanInterval,
@@ -20,7 +20,7 @@ from stripe_saas_core.domain.subscription import (
     Subscription,
     SubscriptionStatus,
 )
-from stripe_saas_core.domain.user import AccountType, User
+from saasmint_core.domain.user import AccountType, User
 
 NOW = datetime(2024, 1, 1, tzinfo=UTC)
 

@@ -2024,6 +2024,105 @@ wheels = [
 ]
 
 [[package]]
+name = "saasmint-core"
+version = "0.2.0"
+source = { editable = "." }
+dependencies = [
+    { name = "celery", extra = ["redis"] },
+    { name = "django" },
+    { name = "django-cors-headers" },
+    { name = "django-hijack" },
+    { name = "djangorestframework" },
+    { name = "drf-spectacular" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pydantic", extra = ["email"] },
+    { name = "pydantic-settings" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "saasmint-core-lib" },
+    { name = "supabase" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "whitenoise" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "django-stubs" },
+    { name = "djangorestframework-stubs" },
+    { name = "mypy" },
+    { name = "pip-audit" },
+    { name = "pytest" },
+    { name = "pytest-django" },
+    { name = "ruff" },
+    { name = "testcontainers" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest-anyio" },
+    { name = "pytest-cov" },
+    { name = "pytest-django" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "celery", extras = ["redis"], specifier = ">=5.6.3" },
+    { name = "django", specifier = ">=6.0.3" },
+    { name = "django-cors-headers", specifier = ">=4.7" },
+    { name = "django-hijack", specifier = ">=3.7.6" },
+    { name = "django-stubs", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "djangorestframework", specifier = ">=3.15" },
+    { name = "djangorestframework-stubs", marker = "extra == 'dev'", specifier = ">=3.15" },
+    { name = "drf-spectacular", specifier = ">=0.28" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
+    { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.3" },
+    { name = "pydantic", extras = ["email"], specifier = ">=2.12.5" },
+    { name = "pydantic-settings", specifier = ">=2.13.1" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.12.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-django", marker = "extra == 'dev'", specifier = ">=4.8" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14" },
+    { name = "saasmint-core-lib", editable = "core" },
+    { name = "supabase", specifier = ">=2.28.3" },
+    { name = "testcontainers", extras = ["postgres"], marker = "extra == 'dev'", specifier = ">=4.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.42.0" },
+    { name = "whitenoise", specifier = ">=6.12.0" },
+]
+provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest-anyio", specifier = ">=0.0.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "pytest-django", specifier = ">=4.12.0" },
+]
+
+[[package]]
+name = "saasmint-core-lib"
+version = "0.2.0"
+source = { editable = "core" }
+dependencies = [
+    { name = "pydantic", extra = ["email"] },
+    { name = "stripe" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
+    { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },
+    { name = "pydantic", extras = ["email"], specifier = ">=2.12.5" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pytest-anyio", marker = "extra == 'dev'", specifier = ">=0.0.0" },
+    { name = "pytest-html", marker = "extra == 'dev'", specifier = ">=4.2.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14" },
+    { name = "stripe", specifier = ">=15.0" },
+]
+provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest-cov", specifier = ">=7.0.0" }]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2098,105 +2197,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/36/5a/0cdea4b7911b8012936c765544109da27c0728f6911ec7aefe9d59e7a4f9/stripe-15.0.0.tar.gz", hash = "sha256:0717cd9ba8e8193cef8b1c488ce27836754df496ab6fb75864096e0cdf15e52d", size = 1486873, upload-time = "2026-03-26T01:39:04.073Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/03/4a/4431c998c451cf07f8b4fed98f425b4aaf3d59cc4fb1e6f54d7713606688/stripe-15.0.0-py3-none-any.whl", hash = "sha256:434ec5267a7402a30b76786d159c18d0e138f89195969d6c56bea2e08d353be0", size = 2125454, upload-time = "2026-03-26T01:39:01.801Z" },
-]
-
-[[package]]
-name = "stripe-saas-core"
-version = "0.2.0"
-source = { editable = "core" }
-dependencies = [
-    { name = "pydantic", extra = ["email"] },
-    { name = "stripe" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
-    { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },
-    { name = "pydantic", extras = ["email"], specifier = ">=2.12.5" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-anyio", marker = "extra == 'dev'", specifier = ">=0.0.0" },
-    { name = "pytest-html", marker = "extra == 'dev'", specifier = ">=4.2.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14" },
-    { name = "stripe", specifier = ">=15.0" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pytest-cov", specifier = ">=7.0.0" }]
-
-[[package]]
-name = "stripe-saas-django"
-version = "0.2.0"
-source = { editable = "." }
-dependencies = [
-    { name = "celery", extra = ["redis"] },
-    { name = "django" },
-    { name = "django-cors-headers" },
-    { name = "django-hijack" },
-    { name = "djangorestframework" },
-    { name = "drf-spectacular" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "pydantic", extra = ["email"] },
-    { name = "pydantic-settings" },
-    { name = "pyjwt", extra = ["crypto"] },
-    { name = "stripe-saas-core" },
-    { name = "supabase" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "whitenoise" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "django-stubs" },
-    { name = "djangorestframework-stubs" },
-    { name = "mypy" },
-    { name = "pip-audit" },
-    { name = "pytest" },
-    { name = "pytest-django" },
-    { name = "ruff" },
-    { name = "testcontainers" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pytest-anyio" },
-    { name = "pytest-cov" },
-    { name = "pytest-django" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "celery", extras = ["redis"], specifier = ">=5.6.3" },
-    { name = "django", specifier = ">=6.0.3" },
-    { name = "django-cors-headers", specifier = ">=4.7" },
-    { name = "django-hijack", specifier = ">=3.7.6" },
-    { name = "django-stubs", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "djangorestframework", specifier = ">=3.15" },
-    { name = "djangorestframework-stubs", marker = "extra == 'dev'", specifier = ">=3.15" },
-    { name = "drf-spectacular", specifier = ">=0.28" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14" },
-    { name = "pip-audit", marker = "extra == 'dev'", specifier = ">=2.7" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.3" },
-    { name = "pydantic", extras = ["email"], specifier = ">=2.12.5" },
-    { name = "pydantic-settings", specifier = ">=2.13.1" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.12.1" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-django", marker = "extra == 'dev'", specifier = ">=4.8" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14" },
-    { name = "stripe-saas-core", editable = "core" },
-    { name = "supabase", specifier = ">=2.28.3" },
-    { name = "testcontainers", extras = ["postgres"], marker = "extra == 'dev'", specifier = ">=4.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.42.0" },
-    { name = "whitenoise", specifier = ">=6.12.0" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest-anyio", specifier = ">=0.0.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0" },
-    { name = "pytest-django", specifier = ">=4.12.0" },
 ]
 
 [[package]]

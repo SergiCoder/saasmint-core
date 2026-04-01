@@ -38,7 +38,7 @@ class _Env(BaseSettings):
     supabase_anon_key: str = ""
     supabase_jwt_secret: str
     redis_url: str = "redis://localhost:6379/0"
-    database_url: str = "postgresql://localhost:5432/stripe_saas"
+    database_url: str = "postgresql://localhost:5432/saasmint"
     debug: bool = False
     allowed_hosts: list[str] = []
     cors_allowed_origins: list[str] = []
@@ -168,8 +168,8 @@ REST_FRAMEWORK = {
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "Stripe SaaS API",
-    "DESCRIPTION": "Django backend API for Stripe SaaS — billing, accounts, and organisations.",
+    "TITLE": "SaasMint Core API",
+    "DESCRIPTION": "Django backend API for SaasMint — billing, accounts, and organisations.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": "/api/v[0-9]",

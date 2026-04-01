@@ -6,11 +6,11 @@ If a member is added/removed in one place but not the other, these tests fail.
 from __future__ import annotations
 
 import pytest
-from stripe_saas_core.domain.org import OrgRole as CoreOrgRole
-from stripe_saas_core.domain.subscription import PlanContext as CorePlanContext
-from stripe_saas_core.domain.subscription import PlanInterval as CorePlanInterval
-from stripe_saas_core.domain.subscription import SubscriptionStatus as CoreSubscriptionStatus
-from stripe_saas_core.domain.user import AccountType as CoreAccountType
+from saasmint_core.domain.org import OrgRole as CoreOrgRole
+from saasmint_core.domain.subscription import PlanContext as CorePlanContext
+from saasmint_core.domain.subscription import PlanInterval as CorePlanInterval
+from saasmint_core.domain.subscription import SubscriptionStatus as CoreSubscriptionStatus
+from saasmint_core.domain.user import AccountType as CoreAccountType
 
 from apps.billing.models import PlanContext as DjPlanContext
 from apps.billing.models import PlanInterval as DjPlanInterval

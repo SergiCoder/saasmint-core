@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from stripe_saas_core.exceptions import (
+from saasmint_core.exceptions import (
     AccountTypeConflictError,
     DomainError,
     InsufficientPermissionError,

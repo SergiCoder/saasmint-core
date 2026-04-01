@@ -9,9 +9,9 @@ from uuid import uuid4
 import pytest
 import stripe
 
-from stripe_saas_core.domain.subscription import SubscriptionStatus
-from stripe_saas_core.exceptions import WebhookDataError, WebhookVerificationError
-from stripe_saas_core.services.webhooks import WebhookRepos, handle_stripe_event
+from saasmint_core.domain.subscription import SubscriptionStatus
+from saasmint_core.exceptions import WebhookDataError, WebhookVerificationError
+from saasmint_core.services.webhooks import WebhookRepos, handle_stripe_event
 from tests.conftest import (
     InMemoryPlanRepository,
     InMemoryStripeCustomerRepository,
@@ -98,7 +98,7 @@ async def test_duplicate_event_is_no_op() -> None:
     repos = _make_repos(event_repo=event_repo)
 
     # Pre-insert the event so it looks like a duplicate
-    from stripe_saas_core.domain.stripe_event import StripeEvent
+    from saasmint_core.domain.stripe_event import StripeEvent
 
     existing = StripeEvent(
         id=uuid4(),
@@ -164,7 +164,7 @@ async def test_dispatch_failure_marks_event_failed_and_reraises() -> None:
     with (
         patch("stripe.Webhook.construct_event", return_value=mock_event),
         patch(
-            "stripe_saas_core.services.webhooks._dispatch",
+            "saasmint_core.services.webhooks._dispatch",
             side_effect=RuntimeError("dispatch boom"),
         ),
     ):
