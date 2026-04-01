@@ -141,6 +141,25 @@ class TestCheckoutSessionView:
         # trial_period_days should be preserved for personal plans
         assert mock_create.call_args.kwargs["trial_period_days"] == 7
 
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_checkout_response_includes_location_header(
+        self, mock_get_customer, mock_create, authed_client, plan_price, mock_stripe_customer
+    ):
+        mock_get_customer.return_value = mock_stripe_customer
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": "price_test_123",
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+            },
+            format="json",
+        )
+        assert resp["Location"] == "https://checkout.stripe.com/session"
+
     def test_unauthenticated_rejected(self):
         client = APIClient()
         resp = client.post("/api/v1/billing/checkout-sessions/", {}, format="json")
@@ -174,6 +193,21 @@ class TestPortalSessionView:
             format="json",
         )
         assert resp.status_code == 400
+
+    @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_portal_response_includes_location_header(
+        self, mock_get_customer, mock_portal, authed_client, mock_stripe_customer
+    ):
+        mock_get_customer.return_value = mock_stripe_customer
+        mock_portal.return_value = "https://billing.stripe.com/portal"
+
+        resp = authed_client.post(
+            "/api/v1/billing/portal-sessions/",
+            {"return_url": "https://localhost/dashboard"},
+            format="json",
+        )
+        assert resp["Location"] == "https://billing.stripe.com/portal"
 
     def test_missing_body_returns_400(self, authed_client):
         resp = authed_client.post("/api/v1/billing/portal-sessions/", {}, format="json")
@@ -324,6 +358,21 @@ class TestUpdateSubscription:
         assert resp.status_code == 204
         mock_change.assert_called_once()
         assert mock_change.call_args.kwargs["quantity"] == 3
+
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_combined_update_does_not_call_update_seat_count(
+        self, mock_change, authed_client, subscription, plan_price
+    ):
+        """When both plan_price_id and quantity are sent, only change_plan is called
+        (with quantity kwarg) — update_seat_count must NOT be called separately."""
+        with patch("apps.billing.views.update_seat_count", new_callable=AsyncMock) as mock_seats:
+            authed_client.patch(
+                "/api/v1/billing/subscription/",
+                {"plan_price_id": "price_test_123", "quantity": 3},
+                format="json",
+            )
+            mock_seats.assert_not_called()
+        mock_change.assert_called_once()
 
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_prorate_kwarg_passed_to_change_plan(

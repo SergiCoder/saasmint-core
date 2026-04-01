@@ -35,8 +35,9 @@ def _make_token(
     return jwt.encode(payload, SECRET, algorithm="HS256")
 
 
-def _make_rs256_token(
-    private_key: rsa.RSAPrivateKey,
+def _make_asymmetric_token(
+    private_key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey,
+    algorithm: str,
     sub: str = "sup_test123",
     email: str = "test@example.com",
     exp_delta: timedelta | None = None,
@@ -48,23 +49,7 @@ def _make_rs256_token(
         "aud": "authenticated",
         "exp": datetime.now(UTC) + (exp_delta or timedelta(hours=1)),
     }
-    return jwt.encode(payload, private_key, algorithm="RS256")
-
-
-def _make_es256_token(
-    private_key: ec.EllipticCurvePrivateKey,
-    sub: str = "sup_test123",
-    email: str = "test@example.com",
-    exp_delta: timedelta | None = None,
-) -> str:
-    payload = {
-        "sub": sub,
-        "email": email,
-        "user_metadata": {"email_verified": True},
-        "aud": "authenticated",
-        "exp": datetime.now(UTC) + (exp_delta or timedelta(hours=1)),
-    }
-    return jwt.encode(payload, private_key, algorithm="ES256")
+    return jwt.encode(payload, private_key, algorithm=algorithm)
 
 
 def _make_request(token: str | None = None) -> MagicMock:
@@ -235,7 +220,9 @@ class TestAsymmetricJWTAuthentication:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         public_key = private_key.public_key()
 
-        token = _make_rs256_token(private_key, sub="sup_rs256", email="rs@example.com")
+        token = _make_asymmetric_token(
+            private_key, "RS256", sub="sup_rs256", email="rs@example.com"
+        )
         request = _make_request(token)
 
         mock_signing_key = MagicMock()
@@ -257,7 +244,9 @@ class TestAsymmetricJWTAuthentication:
         private_key = ec.generate_private_key(ec.SECP256R1())
         public_key = private_key.public_key()
 
-        token = _make_es256_token(private_key, sub="sup_es256", email="es@example.com")
+        token = _make_asymmetric_token(
+            private_key, "ES256", sub="sup_es256", email="es@example.com"
+        )
         request = _make_request(token)
 
         mock_signing_key = MagicMock()
@@ -278,7 +267,9 @@ class TestAsymmetricJWTAuthentication:
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         public_key = private_key.public_key()
 
-        token = _make_rs256_token(private_key, sub="sup_expired_rs", exp_delta=timedelta(hours=-1))
+        token = _make_asymmetric_token(
+            private_key, "RS256", sub="sup_expired_rs", exp_delta=timedelta(hours=-1)
+        )
         request = _make_request(token)
 
         mock_signing_key = MagicMock()
@@ -298,7 +289,7 @@ class TestAsymmetricJWTAuthentication:
             public_exponent=65537, key_size=2048
         ).public_key()
 
-        token = _make_rs256_token(private_key, sub="sup_bad_sig")
+        token = _make_asymmetric_token(private_key, "RS256", sub="sup_bad_sig")
         request = _make_request(token)
 
         mock_signing_key = MagicMock()
@@ -314,12 +305,27 @@ class TestAsymmetricJWTAuthentication:
     def test_jwks_client_failure_raises(self):
         """If the JWKS client fails, AuthenticationFailed should be raised."""
         private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        token = _make_rs256_token(private_key, sub="sup_jwks_fail")
+        token = _make_asymmetric_token(private_key, "RS256", sub="sup_jwks_fail")
         request = _make_request(token)
 
         mock_jwks_client = MagicMock()
         mock_jwks_client.get_signing_key_from_jwt.side_effect = jwt.PyJWKClientError(
             "JWKS unreachable"
+        )
+
+        with patch("apps.users.authentication._get_jwks_client", return_value=mock_jwks_client):
+            with pytest.raises(AuthenticationFailed, match="Invalid token"):
+                self.auth.authenticate(request)
+
+    def test_jwks_connection_error_raises(self):
+        """A network ConnectionError during JWKS fetch should raise AuthenticationFailed."""
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        token = _make_asymmetric_token(private_key, "RS256", sub="sup_conn_fail")
+        request = _make_request(token)
+
+        mock_jwks_client = MagicMock()
+        mock_jwks_client.get_signing_key_from_jwt.side_effect = ConnectionError(
+            "Network unreachable"
         )
 
         with patch("apps.users.authentication._get_jwks_client", return_value=mock_jwks_client):
