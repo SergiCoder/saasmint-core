@@ -17,14 +17,19 @@ from apps.users.models import AUTH_USER_CACHE_KEY, User
 logger = logging.getLogger(__name__)
 
 _AUTH_CACHE_TTL = 60  # seconds
-_JWKS_CACHE_KEY = "supabase:jwks"
 _JWKS_CACHE_TTL = 3600  # 1 hour
+_ALLOWED_ASYMMETRIC_ALGS = {"RS256", "ES256"}
+
+_jwks_client: jwt.PyJWKClient | None = None
 
 
 def _get_jwks_client() -> jwt.PyJWKClient:
-    """Return a JWKS client for the Supabase project, using a cached keyset."""
-    jwks_url = f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
-    return jwt.PyJWKClient(jwks_url, cache_keys=True, lifespan=_JWKS_CACHE_TTL)
+    """Return a singleton JWKS client so the key cache persists across requests."""
+    global _jwks_client
+    if _jwks_client is None:
+        jwks_url = f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
+        _jwks_client = jwt.PyJWKClient(jwks_url, cache_keys=True, lifespan=_JWKS_CACHE_TTL)
+    return _jwks_client
 
 
 class SupabaseJWTAuthentication(BaseAuthentication):
@@ -37,36 +42,39 @@ class SupabaseJWTAuthentication(BaseAuthentication):
 
         token = auth_header.split(" ", 1)[1]
 
+        alg = "unknown"
         try:
             # Determine signing algorithm from the token header
             header = jwt.get_unverified_header(token)
             alg = header.get("alg", "HS256")
 
-            if alg.startswith("ES") or alg.startswith("RS"):
+            if alg in _ALLOWED_ASYMMETRIC_ALGS:
                 # Asymmetric algorithm — verify with JWKS public key
                 jwks_client = _get_jwks_client()
                 signing_key = jwks_client.get_signing_key_from_jwt(token)
                 payload: dict[str, object] = jwt.decode(
                     token,
                     signing_key.key,
-                    algorithms=[alg],
+                    algorithms=list(_ALLOWED_ASYMMETRIC_ALGS),
                     audience="authenticated",
                 )
-            else:
-                # Symmetric algorithm (HS256) — verify with shared secret
+            elif alg == "HS256":
+                # Symmetric algorithm — verify with shared secret
                 payload = jwt.decode(
                     token,
                     settings.SUPABASE_JWT_SECRET,
                     algorithms=["HS256"],
                     audience="authenticated",
                 )
+            else:
+                raise AuthenticationFailed("Unsupported token algorithm.")
         except jwt.ExpiredSignatureError as exc:
             raise AuthenticationFailed("Token has expired.") from exc
         except jwt.InvalidTokenError as exc:
-            logger.error("JWT verification failed: %s (alg=%s)", exc, alg)
+            logger.warning("JWT verification failed for alg=%s", alg)
             raise AuthenticationFailed("Invalid token.") from exc
-        except Exception as exc:
-            logger.error("Unexpected auth error: %s", exc)
+        except (jwt.PyJWKClientError, ConnectionError) as exc:
+            logger.error("JWKS fetch error: %s", exc)
             raise AuthenticationFailed("Invalid token.") from exc
 
         supabase_uid = str(payload.get("sub", ""))
