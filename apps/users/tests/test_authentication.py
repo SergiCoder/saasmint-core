@@ -20,12 +20,14 @@ SECRET = settings.SUPABASE_JWT_SECRET
 def _make_token(
     sub: str = "sup_test123",
     email: str = "test@example.com",
+    email_verified: bool = True,
     exp_delta: timedelta | None = None,
     **extra,
 ) -> str:
     payload = {
         "sub": sub,
         "email": email,
+        "user_metadata": {"email_verified": email_verified},
         "aud": "authenticated",
         "exp": datetime.now(UTC) + (exp_delta or timedelta(hours=1)),
         **extra,
@@ -42,6 +44,7 @@ def _make_rs256_token(
     payload = {
         "sub": sub,
         "email": email,
+        "user_metadata": {"email_verified": True},
         "aud": "authenticated",
         "exp": datetime.now(UTC) + (exp_delta or timedelta(hours=1)),
     }
@@ -57,6 +60,7 @@ def _make_es256_token(
     payload = {
         "sub": sub,
         "email": email,
+        "user_metadata": {"email_verified": True},
         "aud": "authenticated",
         "exp": datetime.now(UTC) + (exp_delta or timedelta(hours=1)),
     }
@@ -183,16 +187,25 @@ class TestSupabaseJWTAuthentication:
         request = _make_request()
         assert self.auth.authenticate_header(request) == "Bearer"
 
-    @pytest.mark.django_db
-    def test_unverified_email_no_longer_rejected(self):
-        """email_verified check was removed — tokens without it should authenticate."""
-        User.objects.create_user(email="unverified@example.com", supabase_uid="sup_unverified")
-        token = _make_token(
-            sub="sup_unverified", email="unverified@example.com", email_verified=False
-        )
+    def test_unverified_email_rejected(self):
+        """Tokens with email_verified=False should be rejected."""
+        token = _make_token(email_verified=False)
         request = _make_request(token)
-        result_user, _ = self.auth.authenticate(request)
-        assert result_user.email == "unverified@example.com"
+        with pytest.raises(AuthenticationFailed, match="Email not verified"):
+            self.auth.authenticate(request)
+
+    def test_missing_email_verified_claim_rejected(self):
+        """Tokens without email_verified claim default to rejected."""
+        payload = {
+            "sub": "sup_test123",
+            "email": "test@example.com",
+            "aud": "authenticated",
+            "exp": datetime.now(UTC) + timedelta(hours=1),
+        }
+        token = jwt.encode(payload, SECRET, algorithm="HS256")
+        request = _make_request(token)
+        with pytest.raises(AuthenticationFailed, match="Email not verified"):
+            self.auth.authenticate(request)
 
     def test_unsupported_algorithm_raises(self):
         """A token with an unsupported algorithm should raise AuthenticationFailed."""

@@ -77,6 +77,19 @@ class SupabaseJWTAuthentication(BaseAuthentication):
             logger.error("JWKS fetch error: %s", exc)
             raise AuthenticationFailed("Invalid token.") from exc
 
+        # Defense-in-depth: reject unverified emails even if Supabase is
+        # configured to allow sign-in before verification.
+        # Supabase places email_verified inside user_metadata, not at the top level.
+        user_metadata = payload.get("user_metadata", {})
+        email_verified = user_metadata.get("email_verified", False)
+        if not email_verified:
+            logger.warning(
+                "Rejected token for unverified email: sub=%s email=%s",
+                payload.get("sub", ""),
+                payload.get("email", ""),
+            )
+            raise AuthenticationFailed("Email not verified.")
+
         supabase_uid = str(payload.get("sub", ""))
         if not supabase_uid:
             raise AuthenticationFailed("Token missing 'sub' claim.")
