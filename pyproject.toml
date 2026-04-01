@@ -48,8 +48,9 @@ DJANGO_SETTINGS_MODULE = "config.settings.test"
 testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests", "apps/orgs/tests", "apps/dashboard/tests", "apps/admin_panel/tests", "config/tests", "scripts/tests"]
 filterwarnings = [
     "ignore:No directory at.*staticfiles:UserWarning",
+    "ignore:Error when trying to teardown test databases:pytest.PytestWarning",
 ]
-addopts = "--cov-config=pyproject.toml"
+addopts = "--cov-config=pyproject.toml -p no:cacheprovider"
 
 [tool.mypy]
 python_version = "3.12"
