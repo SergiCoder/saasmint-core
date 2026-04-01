@@ -1,5 +1,4 @@
 {% load static %}
-{% load i18n %}
 {% load rest_framework %}
 <!doctype html>
 <html lang="en">
@@ -71,7 +70,7 @@
 
     {% if extra_actions %}
       <div class="dropdown">
-        <button class="btn btn-default" id="extra-actions-menu" data-toggle="dropdown">{% trans "Extra Actions" %} ▾</button>
+        <button class="btn btn-default" id="extra-actions-menu" data-toggle="dropdown">Extra Actions ▾</button>
         <ul class="dropdown-menu" aria-labelledby="extra-actions-menu">
           {% for action_name, url in extra_actions|items %}<li><a href="{{ url }}">{{ action_name }}</a></li>{% endfor %}
         </ul>
@@ -79,7 +78,7 @@
     {% endif %}
 
     {% if filter_form %}
-      <button data-toggle="modal" data-target="#filtersModal" class="btn btn-default">{% trans "Filters" %}</button>
+      <button data-toggle="modal" data-target="#filtersModal" class="btn btn-default">Filters</button>
     {% endif %}
   </div>
 

@@ -1,5 +1,4 @@
 {% extends "admin/base.html" %}
-{% load i18n %}
 
 {% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
 
@@ -41,7 +40,7 @@
 
 {% block userlinks %}
   {% if site_url %}
-    <a href="{{ site_url }}">{% translate 'View site' %}</a> /
+    <a href="{{ site_url }}">View site</a> /
   {% endif %}
   {# swagger-ui and redoc URL names are only registered when DEBUG=True (see config/urls.py). #}
   {# Without a guard here this will raise NoReverseMatch in production — render only when DEBUG. #}
@@ -50,11 +49,11 @@
   <a href="{% url 'redoc' %}">ReDoc</a> /
   {% endif %}
   {% if user.has_usable_password %}
-    <a href="{% url 'admin:password_change' %}">{% translate 'Change password' %}</a> /
+    <a href="{% url 'admin:password_change' %}">Change password</a> /
   {% endif %}
   <form id="logout-form" method="post" action="{% url 'admin:logout' %}">
     {% csrf_token %}
-    <button type="submit">{% translate 'Log out' %}</button>
+    <button type="submit">Log out</button>
   </form>
   {% include "admin/color_theme_toggle.html" %}
 {% endblock %}
