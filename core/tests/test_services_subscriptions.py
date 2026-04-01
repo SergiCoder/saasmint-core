@@ -69,6 +69,31 @@ async def test_change_plan_without_proration() -> None:
     )
 
 
+@pytest.mark.anyio
+async def test_change_plan_with_quantity() -> None:
+    mock_sub = MagicMock()
+    mock_sub.__getitem__ = MagicMock(
+        side_effect=lambda k: {"items": {"data": [{"id": "si_combo"}]}}[k]
+    )
+
+    with (
+        patch("stripe.Subscription.retrieve", return_value=mock_sub),
+        patch("stripe.Subscription.modify") as mock_modify,
+    ):
+        await change_plan(
+            stripe_subscription_id="sub_abc",
+            new_stripe_price_id="price_new",
+            prorate=True,
+            quantity=5,
+        )
+
+    mock_modify.assert_called_once_with(
+        "sub_abc",
+        items=[{"id": "si_combo", "price": "price_new", "quantity": 5}],
+        proration_behavior="create_prorations",
+    )
+
+
 # ── update_seat_count ─────────────────────────────────────────────────────────
 
 
