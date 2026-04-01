@@ -12,9 +12,7 @@ import sys
 def parse(path: str = "pyproject.toml") -> list[str]:
     with open(path) as f:
         text = f.read()
-    m = re.search(
-        r"^dependencies\s*=\s*\[(.*?)\](?=\s*\n\s*\n|\s*\n\s*\[)", text, re.S | re.M
-    )
+    m = re.search(r"^dependencies\s*=\s*\[(.*?)\](?=\s*\n\s*\n|\s*\n\s*\[)", text, re.S | re.M)
     if not m:
         return []
     names: list[str] = []
