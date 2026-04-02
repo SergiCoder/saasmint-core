@@ -14,7 +14,6 @@ from rest_framework.views import APIView
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.locale import SUPPORTED_LOCALES
 from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES
-from saasmint_core.services.pronouns import SUGGESTED_PRONOUNS
 
 
 class LocaleListView(APIView):
@@ -57,21 +56,6 @@ class PhonePrefixListView(APIView):
     @extend_schema(responses={200: list[dict[str, str]]}, tags=["references"])
     def get(self, request: Request) -> Response:
         return Response(_PHONE_PREFIXES)
-
-
-_PRONOUNS: list[str] = sorted(SUGGESTED_PRONOUNS)
-
-
-class PronounListView(APIView):
-    """GET /api/v1/pronouns/ — list suggested pronouns."""
-
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "references"
-
-    @extend_schema(responses={200: list[str]}, tags=["references"])
-    def get(self, request: Request) -> Response:
-        return Response(_PRONOUNS)
 
 
 _TIMEZONES: list[str] = sorted(available_timezones())

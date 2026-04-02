@@ -10,7 +10,6 @@ from apps.users.views_references import (
     CurrencyListView,
     LocaleListView,
     PhonePrefixListView,
-    PronounListView,
     TimezoneListView,
 )
 
@@ -24,7 +23,6 @@ urlpatterns = [
     path("api/v1/locales/", LocaleListView.as_view(), name="locale-list"),
     path("api/v1/currencies/", CurrencyListView.as_view(), name="currency-list"),
     path("api/v1/phone-prefixes/", PhonePrefixListView.as_view(), name="phone-prefix-list"),
-    path("api/v1/pronouns/", PronounListView.as_view(), name="pronoun-list"),
     path("api/v1/timezones/", TimezoneListView.as_view(), name="timezone-list"),
     path("api/v1/billing/", include("apps.billing.urls")),
     path("api/v1/orgs/", include("apps.orgs.urls")),
