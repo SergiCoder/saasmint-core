@@ -10,16 +10,17 @@ def backfill_full_name(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('users', '0005_add_phone_timezone_job_title_bio'),
+        ("users", "0005_add_phone_timezone_job_title_bio"),
     ]
 
     operations = [
         migrations.RunPython(backfill_full_name, migrations.RunPython.noop),
         migrations.AlterField(
-            model_name='user',
-            name='full_name',
-            field=models.CharField(max_length=255, validators=[django.core.validators.MinLengthValidator(3)]),
+            model_name="user",
+            name="full_name",
+            field=models.CharField(
+                max_length=255, validators=[django.core.validators.MinLengthValidator(3)]
+            ),
         ),
     ]
