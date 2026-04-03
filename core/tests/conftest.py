@@ -46,6 +46,27 @@ class InMemoryUserRepository:
     async def delete(self, user_id: UUID) -> None:
         self._store.pop(user_id, None)
 
+    async def hard_delete(self, user_id: UUID) -> None:
+        self._store.pop(user_id, None)
+
+    async def schedule_deletion(self, user_id: UUID, scheduled_at: datetime) -> None:
+        user = self._store.get(user_id)
+        if user:
+            self._store[user_id] = user.model_copy(update={"scheduled_deletion_at": scheduled_at})
+
+    async def cancel_scheduled_deletion(self, user_id: UUID) -> None:
+        user = self._store.get(user_id)
+        if user:
+            self._store[user_id] = user.model_copy(update={"scheduled_deletion_at": None})
+
+    async def list_pending_deletions(self) -> list[User]:
+        now = datetime.now(UTC)
+        return [
+            u
+            for u in self._store.values()
+            if u.scheduled_deletion_at is not None and u.scheduled_deletion_at <= now
+        ]
+
     async def list_by_org(self, org_id: UUID) -> list[User]:
         return list(self._store.values())
 

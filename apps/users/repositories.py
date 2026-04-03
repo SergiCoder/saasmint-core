@@ -28,6 +28,7 @@ class DjangoUserRepository:
             created_at=obj.created_at,
             updated_at=obj.updated_at,
             deleted_at=obj.deleted_at,
+            scheduled_deletion_at=obj.scheduled_deletion_at,
         )
 
     async def get_by_id(self, user_id: UUID) -> User | None:
@@ -64,6 +65,26 @@ class DjangoUserRepository:
         if obj is not None:
             obj.deleted_at = datetime.now(UTC)
             await obj.asave(update_fields=["deleted_at"])
+
+    async def hard_delete(self, user_id: UUID) -> None:
+        await UserModel.objects.filter(id=user_id).adelete()
+
+    async def schedule_deletion(self, user_id: UUID, scheduled_at: datetime) -> None:
+        await UserModel.objects.filter(id=user_id).aupdate(scheduled_deletion_at=scheduled_at)
+
+    async def cancel_scheduled_deletion(self, user_id: UUID) -> None:
+        await UserModel.objects.filter(id=user_id).aupdate(scheduled_deletion_at=None)
+
+    async def list_pending_deletions(self) -> list[User]:
+        now = datetime.now(UTC)
+        return [
+            self._to_domain(obj)
+            async for obj in UserModel.objects.filter(
+                scheduled_deletion_at__isnull=False,
+                scheduled_deletion_at__lte=now,
+                deleted_at__isnull=True,
+            )
+        ]
 
     async def list_by_org(self, org_id: UUID, *, limit: int = 100, offset: int = 0) -> list[User]:
         from apps.orgs.models import OrgMember  # lazy import — avoids circular

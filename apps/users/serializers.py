@@ -35,6 +35,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "is_verified",
             "created_at",
             "updated_at",
+            "scheduled_deletion_at",
         )
         read_only_fields = fields
 
