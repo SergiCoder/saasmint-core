@@ -9,9 +9,9 @@ from uuid import uuid4
 import pytest
 import stripe
 
-from stripe_saas_core.domain.subscription import SubscriptionStatus
-from stripe_saas_core.exceptions import WebhookDataError, WebhookVerificationError
-from stripe_saas_core.services.webhooks import WebhookRepos, handle_stripe_event
+from saasmint_core.domain.subscription import SubscriptionStatus
+from saasmint_core.exceptions import WebhookDataError, WebhookVerificationError
+from saasmint_core.services.webhooks import WebhookRepos, handle_stripe_event
 from tests.conftest import (
     InMemoryPlanRepository,
     InMemoryStripeCustomerRepository,
@@ -86,7 +86,7 @@ async def test_invalid_signature_raises_webhook_verification_error() -> None:
     repos = _make_repos()
     with patch(
         "stripe.Webhook.construct_event",
-        side_effect=stripe.error.SignatureVerificationError("bad sig", "t=1"),  # type: ignore[no-untyped-call]
+        side_effect=stripe.error.SignatureVerificationError("bad sig", "t=1"),  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation on SignatureVerificationError constructor
     ):
         with pytest.raises(WebhookVerificationError):
             await handle_stripe_event(b"payload", "bad_sig", "secret", repos)
@@ -98,7 +98,7 @@ async def test_duplicate_event_is_no_op() -> None:
     repos = _make_repos(event_repo=event_repo)
 
     # Pre-insert the event so it looks like a duplicate
-    from stripe_saas_core.domain.stripe_event import StripeEvent
+    from saasmint_core.domain.stripe_event import StripeEvent
 
     existing = StripeEvent(
         id=uuid4(),
@@ -164,7 +164,7 @@ async def test_dispatch_failure_marks_event_failed_and_reraises() -> None:
     with (
         patch("stripe.Webhook.construct_event", return_value=mock_event),
         patch(
-            "stripe_saas_core.services.webhooks._dispatch",
+            "saasmint_core.services.webhooks._dispatch",
             side_effect=RuntimeError("dispatch boom"),
         ),
     ):
@@ -502,7 +502,7 @@ async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
         "customer.subscription.created",
         stripe_customer_id="cus_qty",
         price_id="price_qty",
-        quantity=None,  # type: ignore[arg-type]
+        quantity=None,  # type: ignore[arg-type]  # intentional: testing that None quantity is coerced to default value of 1
     )
 
     with patch("stripe.Webhook.construct_event", return_value=event):

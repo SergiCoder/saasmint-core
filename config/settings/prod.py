@@ -2,11 +2,11 @@
 
 from django.core.exceptions import ImproperlyConfigured
 
-from config.settings.base import *  # noqa: F403
+from config.settings.base import *  # noqa: F403  # star import intentional for settings inheritance pattern
 
 DEBUG = False
 
-if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:  # noqa: F405
+if not ALLOWED_HOSTS or "*" in ALLOWED_HOSTS:  # noqa: F405  # ALLOWED_HOSTS imported via star import above; F405 expected
     raise ImproperlyConfigured("ALLOWED_HOSTS must be explicitly set in production (no wildcards).")
 
 SECURE_HSTS_SECONDS = 31536000

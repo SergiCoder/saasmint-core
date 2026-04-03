@@ -1,21 +1,23 @@
-# stripe-django
+# SaasMint Core
 
-A production-ready Django template for building SaaS applications with Stripe billing. Fork it, configure your Stripe keys, and start building.
+A production-ready Django backend for building SaaS applications with Stripe billing. Fork it, configure your Stripe keys, and start building.
 
 ## What you get
 
 - **Stripe integration** — subscriptions, one-time payments, customer portal, and webhook handling
 - **Django backend** — authentication, user management, and admin panel
+- **Admin dashboard** — extended Django admin with subscription status, Stripe event log, and user impersonation via django-hijack
 - **Webhook processing** — idempotent event handling with database-backed deduplication
 - **Organisations** — multi-tenant orgs with role-based membership (owner, admin, member)
 - **Multi-plan support** — free, pro, enterprise (or define your own)
+- **Dev seed data** — one command to populate the database with realistic test users, orgs, and subscriptions
 - **CI/CD** — GitHub Actions for lint, typecheck, and tests out of the box
 
 ## Quick start
 
 ```bash
 # 1. Fork and clone
-gh repo fork SergiCoder/stripe-django --clone
+gh repo fork SergiCoder/saasmint-core --clone
 
 # 2. Install dependencies
 uv sync
@@ -24,12 +26,53 @@ uv sync
 cp .env.base .env.local
 # Edit .env.local with your Stripe keys, Supabase JWT secret, and database URL
 
-# 4. Run migrations
-uv run python manage.py migrate
+# 4. Start the Docker stack (PostgreSQL, Redis, Django, Celery)
+make dev
 
-# 5. Start the dev server
-uv run python manage.py runserver
+# 5. In a separate terminal, run migrations
+make migrate
+
+# 6. (Optional) Seed dev data with test users and orgs
+make seed
 ```
+
+## Local HTTPS
+
+The dev stack includes a [Caddy](https://caddyserver.com/) reverse proxy that terminates TLS at `https://localhost:8443` and forwards to Django. This requires a one-time [mkcert](https://github.com/FiloSottile/mkcert) setup per machine.
+
+**Install mkcert (once per machine):**
+
+| Platform | Command |
+|---|---|
+| macOS | `brew install mkcert` |
+| Ubuntu | `sudo apt install mkcert` |
+| Windows | `winget install FiloSottile.mkcert` or `choco install mkcert` |
+
+**Generate locally-trusted certs:**
+
+```bash
+mkdir -p infra/certs
+mkcert -install
+mkcert -key-file infra/certs/localhost-key.pem -cert-file infra/certs/localhost.pem localhost
+```
+
+After that, `make dev` serves Django at both:
+- `http://localhost:8001` — direct (no TLS)
+- `https://localhost:8443` — via Caddy (TLS, green padlock)
+
+The `infra/certs/` directory is gitignored. Certs are never committed.
+
+> Run `make https-setup` at any time to see these instructions again.
+
+## API documentation
+
+When `DEBUG=True`, interactive API docs are served at:
+
+- `/api/docs/` — Swagger UI
+- `/api/redoc/` — ReDoc
+- `/api/schema/` — raw OpenAPI 3 JSON schema
+
+Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 
 ## Environment variables
 
@@ -48,14 +91,16 @@ uv run python manage.py runserver
 | `ALLOWED_HOSTS` | JSON array of allowed hosts (e.g. `["localhost","127.0.0.1"]`) |
 | `CORS_ALLOWED_ORIGINS` | JSON array of allowed CORS origins |
 | `CORS_ALLOW_ALL_ORIGINS` | Set to `True` to allow all CORS origins (dev only) |
+| `CSRF_TRUSTED_ORIGINS` | JSON array of trusted origins for CSRF (e.g. `["https://localhost:8443"]`) |
+| `DJANGO_SETTINGS_MODULE` | Python dotted path to the Django settings module (e.g. `config.settings.dev`) |
 | `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only) |
 
 ## Project structure
 
 ```
-stripe-django/
-├── core/                # Framework-agnostic shared business logic (stripe-saas-core)
-│   ├── stripe_saas_core/
+saasmint-core/
+├── core/                # Framework-agnostic shared business logic (saasmint-core-lib)
+│   ├── saasmint_core/
 │   │   ├── domain/      # Pydantic domain models (User, Org, Subscription, …)
 │   │   ├── services/    # Business logic (billing, webhooks, GDPR, …)
 │   │   ├── repositories/ # Repository protocols (async, framework-agnostic)
@@ -63,11 +108,17 @@ stripe-django/
 │   └── tests/           # Core unit tests
 ├── config/              # Django settings, URLs, WSGI/ASGI
 ├── apps/                # Django apps
+│   ├── admin_panel/     # Extended Django admin (subscription status column, site_url → /dashboard/)
 │   ├── billing/         # Stripe billing, subscriptions, and webhook processing
+│   ├── dashboard/       # Server-rendered dashboard, hijack impersonation landing views
 │   ├── orgs/            # Organisation management and membership
 │   └── users/           # User auth, Supabase JWT authentication, and profile management
 ├── middleware/           # Django middleware (exception handling, security headers)
+├── infra/               # Docker, Caddy TLS proxy, and dev entrypoint
+├── templates/           # Shared HTML templates (admin overrides, DRF browsable API, topbar)
+├── scripts/             # CI helper scripts (dependency parser)
 ├── .github/             # CI workflows and PR template
+├── helpers.py           # Shared Django helpers (aget_or_none, get_user)
 └── manage.py
 ```
 
@@ -76,6 +127,9 @@ stripe-django/
 - **Python 3.12+** with Django
 - **PostgreSQL** as the database
 - **Stripe** for payments and billing
+- **django-hijack** for admin user impersonation
+- **drf-spectacular** for OpenAPI schema, Swagger UI, and ReDoc
+- **Caddy** as local TLS reverse proxy
 - **uv** for dependency management
 - **Ruff** for linting
 - **mypy** for type checking
@@ -85,19 +139,22 @@ stripe-django/
 
 ```bash
 # Run Django tests
-uv run pytest -v
+make test
 
 # Run core package tests
-cd core && uv run pytest -v
+make test-core
 
 # Lint
-uv run ruff check .
+make lint
 
-# Typecheck
+# Typecheck (django + core)
 make typecheck
 
 # Format
-uv run ruff format .
+make format
+
+# Seed dev data (requires Docker stack running and DEBUG=True)
+make seed
 ```
 
 ## Stripe setup
@@ -124,6 +181,10 @@ This template works with any platform that supports Django:
 
 Make sure to set all environment variables and run migrations in production.
 
+## Plugins
+
+- [Prism](https://github.com/SergiCoder/prism) — Claude Code plugin for multi-profile code review, conventional commits, branching, and PR workflows
+
 ## License
 
-MIT
+[MIT](https://github.com/SergiCoder/saasmint-core/blob/main/LICENSE)

@@ -13,7 +13,7 @@ class UserManager(BaseUserManager["User"]):
         self,
         email: str,
         supabase_uid: str,
-        **extra: Any,  # noqa: ANN401
+        **extra: Any,  # noqa: ANN401  # extra kwargs passed to model constructor; heterogeneous by design
     ) -> User:
         email = self.normalize_email(email)
         user: User = self.model(email=email, supabase_uid=supabase_uid, **extra)
@@ -25,7 +25,7 @@ class UserManager(BaseUserManager["User"]):
         self,
         email: str,
         supabase_uid: str = "superuser",
-        **extra: Any,  # noqa: ANN401
+        **extra: Any,  # noqa: ANN401  # extra kwargs passed to model constructor; heterogeneous by design
     ) -> User:
         extra.setdefault("is_staff", True)
         extra.setdefault("is_superuser", True)

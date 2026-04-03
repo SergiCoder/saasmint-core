@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from stripe_saas_core.exceptions import InvalidPromoCodeError
-from stripe_saas_core.services.coupons import describe_discount, validate_promo_code
+from saasmint_core.exceptions import InvalidPromoCodeError
+from saasmint_core.services.coupons import describe_discount, validate_promo_code
 
 # ── validate_promo_code ───────────────────────────────────────────────────────
 

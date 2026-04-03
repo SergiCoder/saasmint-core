@@ -4,15 +4,14 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('users', '0003_add_partial_index_active_supabase_uid'),
+        ("users", "0003_add_partial_index_active_supabase_uid"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='user',
-            name='updated_at',
+            model_name="user",
+            name="updated_at",
             field=models.DateTimeField(auto_now=True),
         ),
     ]

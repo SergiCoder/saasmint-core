@@ -8,11 +8,11 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from stripe_saas_core.domain.org import Org, OrgMember, OrgRole
-from stripe_saas_core.domain.payment import Invoice, InvoiceStatus, Payment, PaymentStatus
-from stripe_saas_core.domain.stripe_customer import StripeCustomer
-from stripe_saas_core.domain.stripe_event import StripeEvent
-from stripe_saas_core.domain.subscription import (
+from saasmint_core.domain.org import Org, OrgMember, OrgRole
+from saasmint_core.domain.payment import Invoice, InvoiceStatus, Payment, PaymentStatus
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.domain.stripe_event import StripeEvent
+from saasmint_core.domain.subscription import (
     Plan,
     PlanContext,
     PlanInterval,
@@ -20,7 +20,7 @@ from stripe_saas_core.domain.subscription import (
     Subscription,
     SubscriptionStatus,
 )
-from stripe_saas_core.domain.user import AccountType, User
+from saasmint_core.domain.user import AccountType, User
 
 NOW = datetime(2024, 1, 1, tzinfo=UTC)
 
@@ -69,7 +69,7 @@ def test_user_with_all_fields() -> None:
 def test_user_is_frozen() -> None:
     user = User(id=uuid4(), supabase_uid="s", email="a@b.com", created_at=NOW)
     with pytest.raises(ValidationError):
-        user.email = "other@b.com"  # type: ignore[assignment]
+        user.email = "other@b.com"  # type: ignore[misc]  # intentional: testing that frozen dataclass raises ValidationError on mutation
 
 
 def test_account_type_values() -> None:
@@ -116,7 +116,7 @@ def test_org_with_optional_fields() -> None:
 def test_org_is_frozen() -> None:
     org = Org(id=uuid4(), name="X", slug="x", created_by=uuid4(), created_at=NOW)
     with pytest.raises(ValidationError):
-        org.name = "Y"  # type: ignore[assignment]
+        org.name = "Y"  # type: ignore[misc]  # intentional: testing that frozen dataclass raises ValidationError on mutation
 
 
 def test_org_role_values() -> None:

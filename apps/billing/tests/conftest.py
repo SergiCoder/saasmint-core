@@ -91,8 +91,10 @@ _TEST_DRF = {
         "billing": "1000/hour",
         "account": "1000/hour",
         "account_export": "1000/hour",
+        "orgs": "1000/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
 

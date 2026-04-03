@@ -1,4 +1,4 @@
-"""WSGI config for stripe-saas-django."""
+"""WSGI config for saasmint-core."""
 
 import os
 

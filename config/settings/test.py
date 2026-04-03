@@ -15,7 +15,7 @@ _TEST_DEFAULTS = {
 for key, value in _TEST_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
-from config.settings.base import *  # noqa: F403, E402
+from config.settings.base import *  # noqa: F403, E402  # star import intentional for settings inheritance; E402 because env vars must be set before import
 
 DEBUG = True
 CORS_ALLOW_ALL_ORIGINS = True

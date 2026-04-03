@@ -38,15 +38,16 @@ class _Env(BaseSettings):
     supabase_anon_key: str = ""
     supabase_jwt_secret: str
     redis_url: str = "redis://localhost:6379/0"
-    database_url: str = "postgresql://localhost:5432/stripe_saas"
+    database_url: str = "postgresql://localhost:5432/saasmint"
     debug: bool = False
     allowed_hosts: list[str] = []
     cors_allowed_origins: list[str] = []
     cors_allow_all_origins: bool = False
+    csrf_trusted_origins: list[str] = []
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
-env = _Env()  # type: ignore[call-arg]
+env = _Env()  # type: ignore[call-arg]  # pydantic-settings reads fields from env vars at construction; mypy sees no positional args but none are needed
 
 
 def _parse_db_url(url: str) -> dict[str, object]:
@@ -79,12 +80,15 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "drf_spectacular",
     "corsheaders",
     "hijack",
     "hijack.contrib.admin",
     "apps.users",
     "apps.billing",
     "apps.orgs",
+    "apps.admin_panel",
+    "apps.dashboard",
 ]
 
 MIDDLEWARE = [
@@ -97,7 +101,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    # "middleware.security.SecurityHeadersMiddleware",  # TODO: PR 6
+    "middleware.security.SecurityHeadersMiddleware",
     "hijack.middleware.HijackUserMiddleware",
 ]
 
@@ -124,12 +128,13 @@ WSGI_APPLICATION = "config.wsgi.application"
 DATABASES = {"default": _parse_db_url(env.database_url)}
 
 AUTH_USER_MODEL = "users.User"
+LOGIN_URL = "/admin/login/"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"
-USE_I18N = True
+USE_I18N = False
 USE_TZ = True
 
 STATIC_URL = "/static/"
@@ -159,10 +164,30 @@ REST_FRAMEWORK = {
         "orgs": "60/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "SaasMint Core API",
+    "DESCRIPTION": "Django backend API for SaasMint — billing, accounts, and organisations.",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SCHEMA_PATH_PREFIX": "/api/v[0-9]",
+    "COMPONENT_SPLIT_REQUEST": True,
+    "PREPROCESSING_HOOKS": [
+        "config.spectacular_hooks.preprocess_exclude_spectacular_views",
+    ],
+    "EXCLUDE_PATH_REGEX": [
+        r"^/admin/",
+        r"^/hijack/",
+        r"^/dashboard/",
+        r"^/api/v1/webhooks/",
+    ],
 }
 
 CORS_ALLOWED_ORIGINS = env.cors_allowed_origins
 CORS_ALLOW_ALL_ORIGINS = env.cors_allow_all_origins
+CSRF_TRUSTED_ORIGINS = env.csrf_trusted_origins
 
 # Celery
 CELERY_BROKER_URL = env.redis_url

@@ -19,56 +19,56 @@ class TestDomainExceptionHandler:
         return {"view": MagicMock(), "request": MagicMock()}
 
     def test_user_not_found_returns_404(self, context):
-        from stripe_saas_core.exceptions import UserNotFoundError
+        from saasmint_core.exceptions import UserNotFoundError
 
         resp = domain_exception_handler(UserNotFoundError("not found"), context)
         assert resp is not None
         assert resp.status_code == 404
 
     def test_org_not_found_returns_404(self, context):
-        from stripe_saas_core.exceptions import OrgNotFoundError
+        from saasmint_core.exceptions import OrgNotFoundError
 
         resp = domain_exception_handler(OrgNotFoundError("not found"), context)
         assert resp is not None
         assert resp.status_code == 404
 
     def test_subscription_not_found_returns_404(self, context):
-        from stripe_saas_core.exceptions import SubscriptionNotFoundError
+        from saasmint_core.exceptions import SubscriptionNotFoundError
 
         resp = domain_exception_handler(SubscriptionNotFoundError("not found"), context)
         assert resp is not None
         assert resp.status_code == 404
 
     def test_subscription_already_active_returns_409(self, context):
-        from stripe_saas_core.exceptions import SubscriptionAlreadyActiveError
+        from saasmint_core.exceptions import SubscriptionAlreadyActiveError
 
         resp = domain_exception_handler(SubscriptionAlreadyActiveError("active"), context)
         assert resp is not None
         assert resp.status_code == 409
 
     def test_account_type_conflict_returns_409(self, context):
-        from stripe_saas_core.exceptions import AccountTypeConflictError
+        from saasmint_core.exceptions import AccountTypeConflictError
 
         resp = domain_exception_handler(AccountTypeConflictError("conflict"), context)
         assert resp is not None
         assert resp.status_code == 409
 
     def test_invalid_promo_code_returns_422(self, context):
-        from stripe_saas_core.exceptions import InvalidPromoCodeError
+        from saasmint_core.exceptions import InvalidPromoCodeError
 
         resp = domain_exception_handler(InvalidPromoCodeError("bad code"), context)
         assert resp is not None
         assert resp.status_code == 422
 
     def test_insufficient_permission_returns_403(self, context):
-        from stripe_saas_core.exceptions import InsufficientPermissionError
+        from saasmint_core.exceptions import InsufficientPermissionError
 
         resp = domain_exception_handler(InsufficientPermissionError("denied"), context)
         assert resp is not None
         assert resp.status_code == 403
 
     def test_unknown_domain_error_returns_400(self, context):
-        from stripe_saas_core.exceptions import DomainError
+        from saasmint_core.exceptions import DomainError
 
         resp = domain_exception_handler(DomainError("generic"), context)
         assert resp is not None
@@ -138,3 +138,74 @@ class TestSecurityHeadersMiddleware:
         rf = RequestFactory()
         resp = middleware(rf.get("/"))
         assert "Content-Security-Policy" not in resp
+
+    def test_csp_default_for_regular_html_page(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/admin/"))
+        csp = resp["Content-Security-Policy"]
+        assert "default-src 'self'" in csp
+        assert "script-src 'self'" in csp
+        assert "style-src 'self' 'unsafe-inline'" in csp
+        # Default CSP must NOT include CDN sources
+        assert "cdn.jsdelivr.net" not in csp
+
+    def test_csp_relaxed_for_swagger_docs(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/"))
+        csp = resp["Content-Security-Policy"]
+        assert "cdn.jsdelivr.net" in csp
+        assert "fonts.googleapis.com" in csp
+        assert "worker-src blob:" in csp
+
+    def test_csp_relaxed_for_redoc(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/redoc/"))
+        csp = resp["Content-Security-Policy"]
+        assert "cdn.jsdelivr.net" in csp
+        assert "cdn.redoc.ly" in csp
+
+    def test_csp_swagger_includes_unsafe_inline_script(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/"))
+        csp = resp["Content-Security-Policy"]
+        assert "'unsafe-inline'" in csp
+
+    def test_csp_default_does_not_include_unsafe_inline_script(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/dashboard/"))
+        csp = resp["Content-Security-Policy"]
+        # Default CSP has unsafe-inline in style-src but NOT in script-src
+        assert "script-src 'self'" in csp
+        assert "script-src 'self' 'unsafe-inline'" not in csp
+
+    def test_csp_relaxed_for_swagger_subpath(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/extra/"))
+        csp = resp["Content-Security-Policy"]
+        assert "cdn.jsdelivr.net" in csp
+
+    def test_csp_relaxed_for_redoc_subpath(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/redoc/extra/"))
+        csp = resp["Content-Security-Policy"]
+        assert "cdn.jsdelivr.net" in csp
+
+    def test_csp_not_relaxed_for_api_schema(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/schema/"))
+        csp = resp["Content-Security-Policy"]
+        # /api/schema/ is not docs or redoc — should get default CSP
+        assert "cdn.jsdelivr.net" not in csp
+
+    def test_csp_relaxed_includes_connect_src(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/"))
+        csp = resp["Content-Security-Policy"]
+        assert "connect-src 'self'" in csp
+
+    def test_csp_relaxed_includes_font_src(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/api/docs/"))
+        csp = resp["Content-Security-Policy"]
+        assert "font-src 'self'" in csp
+        assert "fonts.gstatic.com" in csp

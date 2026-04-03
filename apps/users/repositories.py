@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from stripe_saas_core.domain.user import AccountType, User
+from saasmint_core.domain.user import AccountType, User
 
 from apps.users.models import User as UserModel
 from helpers import aget_or_none

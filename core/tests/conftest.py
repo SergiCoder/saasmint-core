@@ -1,4 +1,4 @@
-"""Shared fixtures and in-memory test doubles for stripe-saas-core tests."""
+"""Shared fixtures and in-memory test doubles for saasmint-core-lib tests."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from stripe_saas_core.domain.stripe_customer import StripeCustomer
-from stripe_saas_core.domain.stripe_event import StripeEvent
-from stripe_saas_core.domain.subscription import (
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.domain.stripe_event import StripeEvent
+from saasmint_core.domain.subscription import (
     Plan,
     PlanContext,
     PlanInterval,
@@ -18,7 +18,7 @@ from stripe_saas_core.domain.subscription import (
     Subscription,
     SubscriptionStatus,
 )
-from stripe_saas_core.domain.user import AccountType, User
+from saasmint_core.domain.user import AccountType, User
 
 NOW = datetime(2024, 1, 1, tzinfo=UTC)
 

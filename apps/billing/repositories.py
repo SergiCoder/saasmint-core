@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from stripe_saas_core.domain.stripe_customer import StripeCustomer
-from stripe_saas_core.domain.stripe_event import StripeEvent
-from stripe_saas_core.domain.subscription import (
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.domain.stripe_event import StripeEvent
+from saasmint_core.domain.subscription import (
     ACTIVE_SUBSCRIPTION_STATUSES,
     Plan,
     PlanContext,
@@ -27,7 +27,7 @@ from apps.billing.models import Subscription as SubscriptionModel
 from helpers import aget_or_none
 
 if TYPE_CHECKING:
-    from stripe_saas_core.services.webhooks import WebhookRepos
+    from saasmint_core.services.webhooks import WebhookRepos
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class DjangoStripeCustomerRepository:
             id=obj.id,
             stripe_id=obj.stripe_id,
             user_id=obj.user_id,
-            org_id=getattr(obj, "org_id", None),  # org FK added by orgs app (PR 5)
+            org_id=obj.org_id,
             livemode=obj.livemode,
             created_at=obj.created_at,
         )
@@ -57,7 +57,7 @@ class DjangoStripeCustomerRepository:
         return await aget_or_none(StripeCustomerModel, self._to_domain, org_id=org_id)
 
     async def save(self, customer: StripeCustomer) -> StripeCustomer:
-        lookup: dict[str, object] = {}
+        lookup: dict[str, Any] = {}
         if customer.user_id:
             lookup["user_id"] = customer.user_id
         elif customer.org_id:
@@ -68,13 +68,12 @@ class DjangoStripeCustomerRepository:
         defaults: dict[str, object] = {
             "stripe_id": customer.stripe_id,
             "user_id": customer.user_id,
+            "org_id": customer.org_id,
             "livemode": customer.livemode,
         }
-        if hasattr(StripeCustomerModel, "org"):  # org FK added by orgs app (PR 5)
-            defaults["org_id"] = customer.org_id
 
         await StripeCustomerModel.objects.aupdate_or_create(
-            **lookup,  # type: ignore[arg-type]
+            **lookup,
             defaults=defaults,
         )
         return customer
@@ -109,6 +108,19 @@ class DjangoSubscriptionRepository:
     async def get_by_stripe_id(self, stripe_id: str) -> Subscription | None:
         return await aget_or_none(SubscriptionModel, self._to_domain, stripe_id=stripe_id)
 
+    async def _get_latest_active(self, **filter_kwargs: object) -> Subscription | None:
+        try:
+            obj = await SubscriptionModel.objects.filter(
+                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+                **filter_kwargs,
+            ).alatest("created_at")
+            return self._to_domain(obj)
+        except SubscriptionModel.DoesNotExist:
+            return None
+
+    async def get_active_for_user(self, user_id: UUID) -> Subscription | None:
+        return await self._get_latest_active(stripe_customer__user_id=user_id)
+
     async def get_active_for_customer(self, stripe_customer_id: UUID) -> Subscription | None:
         try:
             obj = await SubscriptionModel.objects.aget(
@@ -123,11 +135,7 @@ class DjangoSubscriptionRepository:
                 "Multiple active subscriptions for customer %s — returning latest",
                 stripe_customer_id,
             )
-            obj = await SubscriptionModel.objects.filter(
-                stripe_customer_id=stripe_customer_id,
-                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-            ).alatest("created_at")
-            return self._to_domain(obj)
+            return await self._get_latest_active(stripe_customer_id=stripe_customer_id)
 
     async def save(self, subscription: Subscription) -> Subscription:
         await SubscriptionModel.objects.aupdate_or_create(
@@ -244,16 +252,17 @@ class DjangoStripeEventRepository:
         await StripeEventModel.objects.filter(stripe_id=stripe_id).aupdate(error=error)
 
     async def list_recent(self, limit: int = 50) -> list[StripeEvent]:
+        from asgiref.sync import sync_to_async
+
         capped = min(limit, 100)
-        return [
-            self._to_domain(obj)
-            async for obj in StripeEventModel.objects.order_by("-created_at")[:capped]
-        ]
+        qs = StripeEventModel.objects.order_by("-created_at")[:capped]
+        objs: list[StripeEventModel] = await sync_to_async(lambda: list(qs))()
+        return [self._to_domain(obj) for obj in objs]
 
 
 def get_webhook_repos() -> WebhookRepos:
     """Build the WebhookRepos used by webhook processing (view + Celery task)."""
-    from stripe_saas_core.services.webhooks import WebhookRepos
+    from saasmint_core.services.webhooks import WebhookRepos
 
     return WebhookRepos(
         events=DjangoStripeEventRepository(),

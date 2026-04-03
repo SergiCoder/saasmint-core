@@ -26,7 +26,7 @@ def stripe_webhook(request: HttpRequest) -> HttpResponse:
     # Core's handle_stripe_event also verifies — the duplicate is intentional to
     # avoid filling the Celery queue with unverifiable payloads.
     try:
-        stripe.Webhook.construct_event(payload, signature, settings.STRIPE_WEBHOOK_SECRET)  # type: ignore[no-untyped-call]
+        stripe.Webhook.construct_event(payload, signature, settings.STRIPE_WEBHOOK_SECRET)  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation
     except stripe.SignatureVerificationError:
         logger.error("Stripe webhook signature verification failed")
         return HttpResponse(status=400)

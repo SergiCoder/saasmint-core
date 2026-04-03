@@ -1,0 +1,97 @@
+"""GDPR compliance — right to erasure and right of access."""
+
+from __future__ import annotations
+
+import asyncio
+from uuid import UUID
+
+import stripe
+
+from saasmint_core.domain.stripe_customer import StripeCustomer
+from saasmint_core.domain.user import User
+from saasmint_core.exceptions import UserNotFoundError
+from saasmint_core.repositories.customer import StripeCustomerRepository
+from saasmint_core.repositories.subscription import SubscriptionRepository
+from saasmint_core.repositories.user import UserRepository
+
+
+async def _load_user_and_customer(
+    user_id: UUID,
+    user_repo: UserRepository,
+    customer_repo: StripeCustomerRepository,
+) -> tuple[User, StripeCustomer | None]:
+    """Fetch user and customer in parallel, raising if user doesn't exist."""
+    user, customer = await asyncio.gather(
+        user_repo.get_by_id(user_id),
+        customer_repo.get_by_user_id(user_id),
+    )
+    if user is None:
+        raise UserNotFoundError(f"User {user_id} not found")
+    return user, customer
+
+
+async def delete_user_data(
+    *,
+    user_id: UUID,
+    user_repo: UserRepository,
+    customer_repo: StripeCustomerRepository,
+    subscription_repo: SubscriptionRepository,
+) -> None:
+    """
+    GDPR right to erasure — permanently remove all user data and Stripe resources.
+
+    Sequence:
+    1. Cancel any active Stripe subscription immediately (no grace period).
+    2. Delete the Stripe Customer object (removes stored payment methods).
+    3. Delete our StripeCustomer record.
+    4. Soft-delete the user (sets deleted_at).
+    """
+    _, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
+
+    if customer:
+        active_sub = await subscription_repo.get_active_for_customer(customer.id)
+        if active_sub:
+            try:
+                await asyncio.to_thread(stripe.Subscription.cancel, active_sub.stripe_id)
+            except stripe.InvalidRequestError as exc:
+                if exc.code != "resource_missing":
+                    raise
+
+        try:
+            await asyncio.to_thread(stripe.Customer.delete, customer.stripe_id)
+        except stripe.InvalidRequestError as exc:
+            if exc.code != "resource_missing":
+                raise
+
+        await customer_repo.delete(customer.id)
+
+    await user_repo.delete(user_id)
+
+
+async def export_user_data(
+    *,
+    user_id: UUID,
+    user_repo: UserRepository,
+    customer_repo: StripeCustomerRepository,
+    subscription_repo: SubscriptionRepository,
+) -> dict[str, object]:
+    """
+    GDPR right of access — return all stored user data as a JSON-serialisable dict.
+
+    The response is suitable for sending directly to the user as a file download.
+    """
+    user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
+
+    result: dict[str, object] = {"user": user.model_dump(mode="json")}
+    if customer:
+        result["stripe_customer"] = {
+            "stripe_id": customer.stripe_id,
+            "livemode": customer.livemode,
+            "created_at": customer.created_at.isoformat(),
+        }
+
+        active_sub = await subscription_repo.get_active_for_customer(customer.id)
+        if active_sub:
+            result["subscription"] = active_sub.model_dump(mode="json")
+
+    return result

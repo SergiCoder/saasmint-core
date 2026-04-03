@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from stripe_saas_core.domain.org import OrgRole
-from stripe_saas_core.exceptions import InsufficientPermissionError
-from stripe_saas_core.services.orgs import (
+from saasmint_core.domain.org import OrgRole
+from saasmint_core.exceptions import InsufficientPermissionError
+from saasmint_core.services.orgs import (
     ORG_ROLE_RANK,
     check_can_assign_role,
     check_can_manage_member,

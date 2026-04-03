@@ -69,8 +69,8 @@ def test_get_by_supabase_uid_not_found(repo):
 
 
 def test_save_creates_new(repo):
-    from stripe_saas_core.domain.user import AccountType
-    from stripe_saas_core.domain.user import User as DomainUser
+    from saasmint_core.domain.user import AccountType
+    from saasmint_core.domain.user import User as DomainUser
 
     user_id = uuid4()
     domain_user = DomainUser(

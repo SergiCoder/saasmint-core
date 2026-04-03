@@ -10,6 +10,7 @@ from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.db.utils import OperationalError
 
+from apps.billing.repositories import get_webhook_repos
 from config.celery import app
 
 logger = logging.getLogger(__name__)
@@ -18,10 +19,8 @@ logger = logging.getLogger(__name__)
 @app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]  # celery has no stubs
 def process_stripe_webhook(self: object, payload: str, signature: str) -> None:
     """Process a Stripe webhook event asynchronously with retry on failure."""
-    from stripe_saas_core.exceptions import WebhookVerificationError
-    from stripe_saas_core.services.webhooks import handle_stripe_event
-
-    from apps.billing.repositories import get_webhook_repos
+    from saasmint_core.exceptions import WebhookVerificationError
+    from saasmint_core.services.webhooks import handle_stripe_event
 
     repos = get_webhook_repos()
 
@@ -51,4 +50,4 @@ def process_stripe_webhook(self: object, payload: str, signature: str) -> None:
             event_type,
             exc,
         )
-        raise self.retry(exc=exc, countdown=2**self.request.retries) from exc  # type: ignore[attr-defined]
+        raise self.retry(exc=exc, countdown=2**self.request.retries) from exc  # type: ignore[attr-defined]  # self is typed as object; retry/request attrs are injected by Celery at runtime

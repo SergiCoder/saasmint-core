@@ -80,7 +80,7 @@ class TestStripeWebhook:
 
 
 class TestProcessStripeWebhookTask:
-    @patch("stripe_saas_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
+    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
     @patch("apps.billing.repositories.get_webhook_repos")
     def test_successful_processing(self, mock_repos, mock_handle, settings):
         from apps.billing.tasks import process_stripe_webhook
@@ -90,10 +90,10 @@ class TestProcessStripeWebhookTask:
         process_stripe_webhook(payload, "sig_test")
         mock_handle.assert_called_once()
 
-    @patch("stripe_saas_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
+    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
     @patch("apps.billing.repositories.get_webhook_repos")
     def test_verification_error_not_retried(self, mock_repos, mock_handle, settings):
-        from stripe_saas_core.exceptions import WebhookVerificationError
+        from saasmint_core.exceptions import WebhookVerificationError
 
         from apps.billing.tasks import process_stripe_webhook
 
@@ -104,7 +104,7 @@ class TestProcessStripeWebhookTask:
         with pytest.raises(WebhookVerificationError):
             process_stripe_webhook(payload, "sig_test")
 
-    @patch("stripe_saas_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
+    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
     @patch("apps.billing.repositories.get_webhook_repos")
     def test_malformed_json_still_processes(self, mock_repos, mock_handle, settings):
         from apps.billing.tasks import process_stripe_webhook
@@ -113,3 +113,53 @@ class TestProcessStripeWebhookTask:
         # Malformed JSON — should still attempt processing
         process_stripe_webhook("not json", "sig_test")
         mock_handle.assert_called_once()
+
+    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
+    @patch("apps.billing.repositories.get_webhook_repos")
+    def test_stripe_error_triggers_retry(self, mock_repos, mock_handle, settings):
+        """StripeError should schedule a retry via self.retry."""
+        import stripe
+
+        from apps.billing.tasks import process_stripe_webhook
+
+        mock_repos.return_value = MagicMock()
+        mock_handle.side_effect = stripe.StripeError("network error")
+        payload = json.dumps({"id": "evt_retry", "type": "invoice.paid"})
+
+        # Celery tasks raise self.retry() which itself raises Retry; catch it.
+        from celery.exceptions import Retry
+
+        with pytest.raises((stripe.StripeError, Retry)):
+            process_stripe_webhook(payload, "sig_test")
+
+    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
+    @patch("apps.billing.repositories.get_webhook_repos")
+    def test_connection_error_triggers_retry(self, mock_repos, mock_handle, settings):
+        """ConnectionError should schedule a retry via self.retry."""
+        from apps.billing.tasks import process_stripe_webhook
+
+        mock_repos.return_value = MagicMock()
+        mock_handle.side_effect = ConnectionError("connection refused")
+        payload = json.dumps({"id": "evt_conn", "type": "invoice.paid"})
+
+        from celery.exceptions import Retry
+
+        with pytest.raises((ConnectionError, Retry)):
+            process_stripe_webhook(payload, "sig_test")
+
+    @patch("saasmint_core.services.webhooks.handle_stripe_event", new_callable=AsyncMock)
+    @patch("apps.billing.repositories.get_webhook_repos")
+    def test_operational_error_triggers_retry(self, mock_repos, mock_handle, settings):
+        """OperationalError (DB) should schedule a retry via self.retry."""
+        from django.db.utils import OperationalError
+
+        from apps.billing.tasks import process_stripe_webhook
+
+        mock_repos.return_value = MagicMock()
+        mock_handle.side_effect = OperationalError("db locked")
+        payload = json.dumps({"id": "evt_db", "type": "invoice.paid"})
+
+        from celery.exceptions import Retry
+
+        with pytest.raises((OperationalError, Retry)):
+            process_stripe_webhook(payload, "sig_test")

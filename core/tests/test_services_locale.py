@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from stripe_saas_core.services.locale import SUPPORTED_LOCALES
+from saasmint_core.services.locale import SUPPORTED_LOCALES
 
 
 def test_supported_locales_count() -> None:

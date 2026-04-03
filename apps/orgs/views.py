@@ -8,6 +8,7 @@ from uuid import UUID
 from django.db import IntegrityError, transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.request import Request
@@ -15,9 +16,9 @@ from rest_framework.response import Response
 from rest_framework.serializers import ValidationError
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from stripe_saas_core.domain.org import OrgRole as CoreOrgRole
-from stripe_saas_core.exceptions import InsufficientPermissionError, OrgNotFoundError
-from stripe_saas_core.services.orgs import check_can_assign_role, check_can_manage_member
+from saasmint_core.domain.org import OrgRole as CoreOrgRole
+from saasmint_core.exceptions import InsufficientPermissionError, OrgNotFoundError
+from saasmint_core.services.orgs import check_can_assign_role, check_can_manage_member
 
 from apps.orgs.models import Org, OrgMember, OrgRole
 from apps.orgs.serializers import (
@@ -60,9 +61,17 @@ def _get_org_and_member(
 class OrgListCreateView(APIView):
     """GET /api/v1/orgs/ — list user's orgs; POST — create a new org."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
+    @extend_schema(
+        responses=OrgSerializer(many=True),
+        parameters=[
+            OpenApiParameter("limit", int, description="Page size (max 100)"),
+            OpenApiParameter("offset", int, description="Number of items to skip"),
+        ],
+        tags=["orgs"],
+    )
     def get(self, request: Request) -> Response:
         user = get_user(request)
         orgs = Org.objects.filter(
@@ -75,6 +84,7 @@ class OrgListCreateView(APIView):
         page = paginator.paginate_queryset(orgs, request)
         return paginator.get_paginated_response(OrgSerializer(page, many=True).data)
 
+    @extend_schema(request=CreateOrgSerializer, responses={201: OrgSerializer}, tags=["orgs"])
     def post(self, request: Request) -> Response:
         user = get_user(request)
         ser = CreateOrgSerializer(data=request.data)
@@ -101,14 +111,16 @@ class OrgListCreateView(APIView):
 class OrgDetailView(APIView):
     """GET/PATCH/DELETE /api/v1/orgs/{org_id}/."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
+    @extend_schema(responses=OrgSerializer, tags=["orgs"])
     def get(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         org, _ = _get_org_and_member(user.id, org_id)
         return Response(OrgSerializer(org).data)
 
+    @extend_schema(request=UpdateOrgSerializer, responses=OrgSerializer, tags=["orgs"])
     def patch(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         org, _ = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
@@ -121,6 +133,7 @@ class OrgDetailView(APIView):
         org.save(update_fields=list(ser.validated_data.keys()))
         return Response(OrgSerializer(org).data)
 
+    @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def delete(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         org, _ = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
@@ -132,9 +145,17 @@ class OrgDetailView(APIView):
 class OrgMemberListView(APIView):
     """GET /api/v1/orgs/{org_id}/members/ — list members; POST — add member."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
+    @extend_schema(
+        responses=OrgMemberSerializer(many=True),
+        parameters=[
+            OpenApiParameter("limit", int, description="Page size (max 200)"),
+            OpenApiParameter("offset", int, description="Number of items to skip"),
+        ],
+        tags=["orgs"],
+    )
     def get(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         org, _ = _get_org_and_member(user.id, org_id)
@@ -145,6 +166,11 @@ class OrgMemberListView(APIView):
         page = paginator.paginate_queryset(queryset, request)
         return paginator.get_paginated_response(OrgMemberSerializer(page, many=True).data)
 
+    @extend_schema(
+        request=AddMemberSerializer,
+        responses={200: OrgMemberSerializer, 201: OrgMemberSerializer},
+        tags=["orgs"],
+    )
     def post(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         org, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
@@ -173,9 +199,10 @@ class OrgMemberListView(APIView):
 class OrgMemberDetailView(APIView):
     """PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
 
+    @extend_schema(request=UpdateMemberSerializer, responses=OrgMemberSerializer, tags=["orgs"])
     def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
@@ -207,6 +234,7 @@ class OrgMemberDetailView(APIView):
         target.save(update_fields=list(ser.validated_data.keys()))
         return Response(OrgMemberSerializer(target).data)
 
+    @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def delete(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)

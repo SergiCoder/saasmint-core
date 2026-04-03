@@ -8,7 +8,7 @@ from typing import Any
 import stripe
 from rest_framework.response import Response
 from rest_framework.views import exception_handler
-from stripe_saas_core.exceptions import (
+from saasmint_core.exceptions import (
     AccountTypeConflictError,
     DomainError,
     InsufficientPermissionError,

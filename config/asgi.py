@@ -1,4 +1,4 @@
-"""ASGI config for stripe-saas-django."""
+"""ASGI config for saasmint-core."""
 
 import os
 
