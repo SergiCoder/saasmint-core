@@ -4,5 +4,6 @@ from config.settings.base import *  # noqa: F403  # star import intentional for 
 
 DEBUG = True
 CORS_ALLOW_ALL_ORIGINS = True
-# 127.0.0.1 for local; 172.0.0.0/8 range covers Docker bridge networks
+# Wildcard: treat every IP as internal so django-debug-toolbar works
+# regardless of whether the request comes from localhost or a Docker network.
 INTERNAL_IPS = type("WildcardIPs", (), {"__contains__": lambda self, addr: True})()

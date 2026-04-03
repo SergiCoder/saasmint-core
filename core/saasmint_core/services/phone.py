@@ -1,6 +1,14 @@
 """Phone prefix constants — ITU-T E.164 country calling codes with flags."""
 
+from __future__ import annotations
+
 from types import MappingProxyType
+
+
+def sort_prefix_key(item: tuple[str, str]) -> int:
+    """Sort key for phone prefix tuples — numeric order by calling code."""
+    return int(item[0].lstrip("+"))
+
 
 # Maps calling code to "flag country" label for display in dropdowns.
 SUPPORTED_PHONE_PREFIXES: MappingProxyType[str, str] = MappingProxyType(

@@ -11,7 +11,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.http import HttpRequest
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.locale import SUPPORTED_LOCALES
-from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES
+from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES, sort_prefix_key
 
 from apps.users.models import User
 
@@ -19,12 +19,8 @@ _LOCALE_CHOICES = [("", "---------")] + [(v, v) for v in sorted(SUPPORTED_LOCALE
 _CURRENCY_CHOICES = [("", "---------")] + [(v, v.upper()) for v in sorted(SUPPORTED_CURRENCIES)]
 
 
-def _sort_prefixes(x: tuple[str, str]) -> int:
-    return int(x[0].lstrip("+"))
-
-
 _PHONE_PREFIX_CHOICES = [("", "---------")] + [
-    (k, f"{v} {k}") for k, v in sorted(SUPPORTED_PHONE_PREFIXES.items(), key=_sort_prefixes)
+    (k, f"{v} {k}") for k, v in sorted(SUPPORTED_PHONE_PREFIXES.items(), key=sort_prefix_key)
 ]
 _TIMEZONE_CHOICES = [("", "---------")] + [(v, v) for v in sorted(available_timezones())]
 
@@ -52,6 +48,7 @@ class UserChangeForm(forms.ModelForm):  # type: ignore[type-arg]
             "groups",
             "user_permissions",
             "deleted_at",
+            "scheduled_deletion_at",
         )
         labels: ClassVar[dict[str, str]] = {
             "phone_prefix": "Phone",
@@ -80,7 +77,7 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
     list_filter = ("account_type", "is_active", "is_staff", "is_verified")
     search_fields = ("email", "full_name", "supabase_uid")
     ordering = ("-created_at",)
-    readonly_fields = ("id", "supabase_uid", "created_at", "deleted_at")
+    readonly_fields = ("id", "supabase_uid", "created_at", "deleted_at", "scheduled_deletion_at")
 
     def get_fieldsets(
         self,
@@ -120,7 +117,7 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
             "Permissions",
             {"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions")},
         ),
-        ("Timestamps", {"fields": ("created_at", "deleted_at")}),
+        ("Timestamps", {"fields": ("created_at", "deleted_at", "scheduled_deletion_at")}),
     )
     add_fieldsets = (
         (

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 import stripe
@@ -15,6 +17,15 @@ from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
 from saasmint_core.repositories.user import UserRepository
 from saasmint_core.services.supabase_admin import delete_supabase_avatar, delete_supabase_user
+
+
+async def _stripe_request(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+    """Run a Stripe SDK call in a thread, ignoring 'resource_missing' errors."""
+    try:
+        await asyncio.to_thread(fn, *args, **kwargs)
+    except stripe.InvalidRequestError as exc:
+        if exc.code != "resource_missing":
+            raise
 
 
 async def _load_user_and_customer(
@@ -56,15 +67,11 @@ async def request_account_deletion(
 
     if active_sub:
         # Cancel renewal, schedule deletion for period end
-        try:
-            await asyncio.to_thread(
-                stripe.Subscription.modify,
-                active_sub.stripe_id,
-                cancel_at_period_end=True,
-            )
-        except stripe.InvalidRequestError as exc:
-            if exc.code != "resource_missing":
-                raise
+        await _stripe_request(
+            stripe.Subscription.modify,
+            active_sub.stripe_id,
+            cancel_at_period_end=True,
+        )
 
         scheduled_at = active_sub.current_period_end
         await user_repo.schedule_deletion(user_id, scheduled_at)
@@ -101,7 +108,7 @@ async def execute_account_deletion(
     1. Cancel any active Stripe subscription immediately.
     2. Delete the Stripe Customer object (removes stored payment methods).
     3. Delete our StripeCustomer record.
-    4. Delete the Supabase Auth user.
+    4. Delete the Supabase avatar and Auth user (in parallel).
     5. Hard-delete the user row (cascades to OrgMember, etc.).
     """
     user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
@@ -109,30 +116,23 @@ async def execute_account_deletion(
     if customer:
         active_sub = await subscription_repo.get_active_for_customer(customer.id)
         if active_sub:
-            try:
-                await asyncio.to_thread(stripe.Subscription.cancel, active_sub.stripe_id)
-            except stripe.InvalidRequestError as exc:
-                if exc.code != "resource_missing":
-                    raise
+            await _stripe_request(stripe.Subscription.cancel, active_sub.stripe_id)
 
-        try:
-            await asyncio.to_thread(stripe.Customer.delete, customer.stripe_id)
-        except stripe.InvalidRequestError as exc:
-            if exc.code != "resource_missing":
-                raise
+        await _stripe_request(stripe.Customer.delete, customer.stripe_id)
 
         await customer_repo.delete(customer.id)
 
-    await delete_supabase_avatar(
-        supabase_url=supabase_url,
-        service_role_key=service_role_key,
-        avatar_url=user.avatar_url,
-    )
-
-    await delete_supabase_user(
-        supabase_url=supabase_url,
-        service_role_key=service_role_key,
-        supabase_uid=user.supabase_uid,
+    await asyncio.gather(
+        delete_supabase_avatar(
+            supabase_url=supabase_url,
+            service_role_key=service_role_key,
+            avatar_url=user.avatar_url,
+        ),
+        delete_supabase_user(
+            supabase_url=supabase_url,
+            service_role_key=service_role_key,
+            supabase_uid=user.supabase_uid,
+        ),
     )
 
     await user_repo.hard_delete(user_id)
@@ -159,15 +159,11 @@ async def cancel_account_deletion(
     if customer:
         active_sub = await subscription_repo.get_active_for_customer(customer.id)
         if active_sub:
-            try:
-                await asyncio.to_thread(
-                    stripe.Subscription.modify,
-                    active_sub.stripe_id,
-                    cancel_at_period_end=False,
-                )
-            except stripe.InvalidRequestError as exc:
-                if exc.code != "resource_missing":
-                    raise
+            await _stripe_request(
+                stripe.Subscription.modify,
+                active_sub.stripe_id,
+                cancel_at_period_end=False,
+            )
 
     await user_repo.cancel_scheduled_deletion(user_id)
 

@@ -13,27 +13,27 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.locale import SUPPORTED_LOCALES
-from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES
+from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES, sort_prefix_key
 
 
-class LocaleListView(APIView):
-    """GET /api/v1/locales/ — list supported locales."""
+class _ReferenceView(APIView):
+    """Base class for public, throttled reference-data endpoints."""
 
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "references"
+
+
+class LocaleListView(_ReferenceView):
+    """GET /api/v1/locales/ — list supported locales."""
 
     @extend_schema(responses={200: list[str]}, tags=["references"])
     def get(self, request: Request) -> Response:
         return Response(sorted(SUPPORTED_LOCALES))
 
 
-class CurrencyListView(APIView):
+class CurrencyListView(_ReferenceView):
     """GET /api/v1/currencies/ — list supported currencies."""
-
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "references"
 
     @extend_schema(responses={200: list[str]}, tags=["references"])
     def get(self, request: Request) -> Response:
@@ -42,16 +42,12 @@ class CurrencyListView(APIView):
 
 _PHONE_PREFIXES: list[dict[str, str]] = [
     {"prefix": k, "label": v}
-    for k, v in sorted(SUPPORTED_PHONE_PREFIXES.items(), key=lambda x: int(x[0].lstrip("+")))
+    for k, v in sorted(SUPPORTED_PHONE_PREFIXES.items(), key=sort_prefix_key)
 ]
 
 
-class PhonePrefixListView(APIView):
+class PhonePrefixListView(_ReferenceView):
     """GET /api/v1/phone-prefixes/ — list supported phone prefixes."""
-
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "references"
 
     @extend_schema(responses={200: list[dict[str, str]]}, tags=["references"])
     def get(self, request: Request) -> Response:
@@ -61,12 +57,8 @@ class PhonePrefixListView(APIView):
 _TIMEZONES: list[str] = sorted(available_timezones())
 
 
-class TimezoneListView(APIView):
+class TimezoneListView(_ReferenceView):
     """GET /api/v1/timezones/ — list IANA timezones."""
-
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "references"
 
     @extend_schema(responses={200: list[str]}, tags=["references"])
     def get(self, request: Request) -> Response:

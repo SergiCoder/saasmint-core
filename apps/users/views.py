@@ -106,6 +106,9 @@ class AccountView(APIView):
 class CancelDeletionView(APIView):
     """POST /api/v1/account/cancel-deletion — undo scheduled account deletion."""
 
+    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
+    throttle_scope = "account"
+
     @extend_schema(request=None, responses=UserSerializer, tags=["account"])
     def post(self, request: Request) -> Response:
         customer_repo, subscription_repo = _billing_repos()

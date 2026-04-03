@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 def backfill_full_name(apps, schema_editor):
     User = apps.get_model("users", "User")
-    User.objects.filter(full_name__isnull=True).update(full_name="")
+    User.objects.filter(full_name__isnull=True).update(full_name="Unknown")
 
 
 class Migration(migrations.Migration):

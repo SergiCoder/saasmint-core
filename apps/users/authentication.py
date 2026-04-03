@@ -141,7 +141,7 @@ class SupabaseJWTAuthentication(BaseAuthentication):
                     raise AuthenticationFailed(
                         {"detail": "Account has been deleted.", "code": "account_deleted"}
                     ) from None
-                full_name = str(user_metadata.get("full_name", "")).strip()
+                full_name = str(user_metadata.get("full_name", "")).strip() or "Unknown"
                 pronouns = user_metadata.get("pronouns") or None
                 defaults: dict[str, object] = {
                     "email": email,

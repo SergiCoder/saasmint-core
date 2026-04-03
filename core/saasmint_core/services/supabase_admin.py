@@ -1,4 +1,4 @@
-"""Supabase Admin API — user management via service_role key."""
+"""Supabase Admin API — user and storage management via service_role key."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ from urllib.parse import urlparse
 import httpx
 
 logger = logging.getLogger(__name__)
-
-_STORAGE_BUCKET = "avatars"
 
 
 async def delete_supabase_user(
@@ -111,3 +109,4 @@ async def delete_supabase_avatar(
             resp.status_code,
             resp.text,
         )
+        resp.raise_for_status()
