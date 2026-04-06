@@ -136,7 +136,7 @@ async def cancel_subscription(
     customer.subscription.updated / deleted webhook.
     """
     active = await subscription_repo.get_active_for_customer(stripe_customer_id)
-    if active is None:
+    if active is None or active.stripe_id is None:
         raise SubscriptionNotFoundError("No active subscription found to cancel.")
 
     if at_period_end:

@@ -7,7 +7,6 @@ from uuid import UUID
 
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
-from django.core.exceptions import ObjectDoesNotExist
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
@@ -70,12 +69,16 @@ def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
 async def _get_customer_and_subscription(
     user_id: UUID,
 ) -> tuple[StripeCustomer, Subscription]:
-    """Fetch the Stripe customer and active subscription, or raise NotFound."""
+    """Fetch the Stripe customer and active *paid* subscription, or raise NotFound.
+
+    Free-plan (local) subscriptions are excluded because PATCH/DELETE/promo
+    operations require a real Stripe subscription.
+    """
     customer = await _customer_repo.get_by_user_id(user_id)
     if customer is None:
         raise NotFound("No Stripe customer found.")
     sub = await _subscription_repo.get_active_for_customer(customer.id)
-    if sub is None:
+    if sub is None or sub.is_free:
         raise NotFound("No active subscription found.")
     return customer, sub
 
@@ -211,19 +214,23 @@ class SubscriptionView(APIView):
 
     @extend_schema(responses={200: SubscriptionSerializer, 404: None}, tags=["billing"])
     def get(self, request: Request) -> Response:
+        from django.db.models import Q
+
         user = get_user(request)
+        customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
+
+        q = Q(user=user)
+        if customer_id is not None:
+            q |= Q(stripe_customer_id=customer_id)
+
         try:
-            customer = user.stripe_customer
             sub = (
                 SubscriptionModel.objects.select_related("plan")
-                .filter(
-                    stripe_customer=customer,
-                    status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-                )
+                .filter(q, status__in=ACTIVE_SUBSCRIPTION_STATUSES)
                 .latest("created_at")
             )
             return Response(SubscriptionSerializer(sub).data)
-        except ObjectDoesNotExist:
+        except SubscriptionModel.DoesNotExist:
             return Response(status=status.HTTP_404_NOT_FOUND)
 
     @extend_schema(request=UpdateSubscriptionSerializer, responses={204: None}, tags=["billing"])
@@ -242,16 +249,17 @@ class SubscriptionView(APIView):
 
         async def _do() -> None:
             _, sub = await _get_customer_and_subscription(user.id)
+            stripe_sub_id: str = sub.stripe_id  # type: ignore[assignment]  # guaranteed non-None by _get_customer_and_subscription
             if plan_price:
                 await change_plan(
-                    stripe_subscription_id=sub.stripe_id,
+                    stripe_subscription_id=stripe_sub_id,
                     new_stripe_price_id=data["plan_price_id"],
                     prorate=data["prorate"],
                     quantity=data.get("quantity"),
                 )
             elif "quantity" in data:
                 await update_seat_count(
-                    stripe_subscription_id=sub.stripe_id,
+                    stripe_subscription_id=stripe_sub_id,
                     quantity=data["quantity"],
                 )
 
@@ -288,8 +296,9 @@ class ApplyPromoCodeView(APIView):
 
         async def _do() -> None:
             _, sub = await _get_customer_and_subscription(user.id)
+            stripe_sub_id: str = sub.stripe_id  # type: ignore[assignment]  # guaranteed non-None by _get_customer_and_subscription
             await apply_promo_code(
-                stripe_subscription_id=sub.stripe_id,
+                stripe_subscription_id=stripe_sub_id,
                 promo_code=ser.validated_data["promo_code"],
             )
 
