@@ -3,7 +3,15 @@
 from django.contrib import admin
 from django.http import HttpRequest
 
-from apps.billing.models import Plan, PlanPrice, StripeCustomer, StripeEvent, Subscription
+from apps.billing.models import (
+    Plan,
+    PlanPrice,
+    Product,
+    ProductPrice,
+    StripeCustomer,
+    StripeEvent,
+    Subscription,
+)
 
 
 @admin.register(Plan)
@@ -19,6 +27,21 @@ class PlanPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stub
     list_filter = ("currency",)
     search_fields = ("stripe_price_id",)
     list_select_related = ("plan",)
+
+
+@admin.register(Product)
+class ProductAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+    list_display = ("name", "type", "credits", "is_active")
+    list_filter = ("type", "is_active")
+    search_fields = ("name",)
+
+
+@admin.register(ProductPrice)
+class ProductPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
+    list_display = ("product", "currency", "amount", "stripe_price_id")
+    list_filter = ("currency",)
+    search_fields = ("stripe_price_id",)
+    list_select_related = ("product",)
 
 
 @admin.register(StripeCustomer)

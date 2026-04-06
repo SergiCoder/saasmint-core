@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from django.conf import settings
 from rest_framework import serializers
 
-from apps.billing.models import Plan, PlanPrice, Subscription
+from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, Subscription
 
 
 def _validate_redirect_url(url: str) -> str:
@@ -48,6 +48,22 @@ class PlanSerializer(serializers.ModelSerializer[Plan]):
     class Meta:
         model = Plan
         fields = ("id", "name", "context", "interval", "is_active", "prices")
+        read_only_fields = fields
+
+
+class ProductPriceSerializer(serializers.ModelSerializer[ProductPrice]):
+    class Meta:
+        model = ProductPrice
+        fields = ("id", "currency", "amount")
+        read_only_fields = fields
+
+
+class ProductSerializer(serializers.ModelSerializer[Product]):
+    prices = ProductPriceSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Product
+        fields = ("id", "name", "type", "credits", "is_active", "prices")
         read_only_fields = fields
 
 

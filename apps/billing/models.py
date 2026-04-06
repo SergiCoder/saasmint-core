@@ -142,13 +142,14 @@ class Product(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
     type = models.CharField(max_length=30, choices=ProductType.choices)
+    credits = models.IntegerField(help_text="Number of credits granted on purchase")
     is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = "products"
 
     def __str__(self) -> str:
-        return f"{self.name} ({self.get_type_display()})"
+        return f"{self.name} ({self.credits} credits)"
 
 
 class ProductPrice(models.Model):

@@ -11,7 +11,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -32,6 +32,7 @@ from saasmint_core.services.subscriptions import (
 
 from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, PlanContext, PlanPrice
 from apps.billing.models import Plan as PlanModel
+from apps.billing.models import Product as ProductModel
 from apps.billing.models import Subscription as SubscriptionModel
 from apps.billing.repositories import (
     DjangoStripeCustomerRepository,
@@ -41,14 +42,28 @@ from apps.billing.serializers import (
     CheckoutRequestSerializer,
     PlanSerializer,
     PortalRequestSerializer,
+    ProductSerializer,
     PromoCodeSerializer,
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
 from helpers import get_user
 
+MIN_TEAM_SEATS = 2
+
 _customer_repo = DjangoStripeCustomerRepository()
 _subscription_repo = DjangoSubscriptionRepository()
+
+
+def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
+    """Enforce seat rules: personal plans always 1, team plans >= MIN_TEAM_SEATS."""
+    if plan_price.plan.context == PlanContext.PERSONAL:
+        if quantity != 1:
+            raise ValidationError("Personal plans do not support multiple seats.")
+        return 1
+    if quantity < MIN_TEAM_SEATS:
+        raise ValidationError(f"Team plans require at least {MIN_TEAM_SEATS} seats.")
+    return quantity
 
 
 async def _get_customer_and_subscription(
@@ -89,6 +104,19 @@ class PlanListView(APIView):
         return Response(data)
 
 
+class ProductListView(APIView):
+    """GET /api/v1/billing/products — list active one-time products with prices."""
+
+    @extend_schema(responses=ProductSerializer(many=True), tags=["billing"])
+    def get(self, request: Request) -> Response:
+        data = cache.get("active_products")
+        if data is None:
+            products = ProductModel.objects.filter(is_active=True).prefetch_related("prices")
+            data = ProductSerializer(products, many=True).data
+            cache.set("active_products", data, timeout=300)
+        return Response(data)
+
+
 class CheckoutSessionView(APIView):
     """POST /api/v1/billing/checkout-sessions — create a Stripe Checkout Session."""
 
@@ -107,6 +135,7 @@ class CheckoutSessionView(APIView):
         data = ser.validated_data
 
         plan_price = _get_active_plan_price(data["plan_price_id"])
+        quantity = _validate_quantity_for_plan(plan_price, data["quantity"])
 
         # Orgs are not eligible for trial periods
         trial_period_days = data["trial_period_days"]
@@ -125,7 +154,7 @@ class CheckoutSessionView(APIView):
                 stripe_customer_id=customer.stripe_id,
                 client_reference_id=str(user.id),
                 price_id=data["plan_price_id"],
-                quantity=data["quantity"],
+                quantity=quantity,
                 promo_code=data["promo_code"],
                 locale=user.preferred_locale,
                 success_url=data["success_url"],
@@ -201,12 +230,16 @@ class SubscriptionView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        if "plan_price_id" in data:
-            _get_active_plan_price(data["plan_price_id"])
+        plan_price = (
+            _get_active_plan_price(data["plan_price_id"]) if "plan_price_id" in data else None
+        )
+
+        if plan_price and "quantity" in data:
+            _validate_quantity_for_plan(plan_price, data["quantity"])
 
         async def _do() -> None:
             _, sub = await _get_customer_and_subscription(user.id)
-            if "plan_price_id" in data:
+            if plan_price:
                 await change_plan(
                     stripe_subscription_id=sub.stripe_id,
                     new_stripe_price_id=data["plan_price_id"],

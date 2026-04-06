@@ -209,6 +209,7 @@ class DjangoProductRepository:
             id=obj.id,
             name=obj.name,
             type=ProductType(obj.type),
+            credits=obj.credits,
             is_active=obj.is_active,
         )
 

@@ -14,6 +14,7 @@ class Product(BaseModel):
     id: UUID
     name: str
     type: ProductType
+    credits: int
     is_active: bool = True
 
 

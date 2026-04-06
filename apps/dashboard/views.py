@@ -10,7 +10,11 @@ from django.urls import reverse
 from django.views.generic import TemplateView
 from hijack.views import AcquireUserView, ReleaseUserView
 
-from apps.billing.repositories import DjangoPlanRepository, DjangoSubscriptionRepository
+from apps.billing.repositories import (
+    DjangoPlanRepository,
+    DjangoProductRepository,
+    DjangoSubscriptionRepository,
+)
 from apps.orgs.models import OrgMember
 
 if TYPE_CHECKING:
@@ -50,10 +54,14 @@ class DashboardView(TemplateView):
             if subscription is not None
             else None
         )
+        plans = await DjangoPlanRepository().list_active()
+        products = await DjangoProductRepository().list_active()
         org_memberships = await _get_org_memberships(user)
         ctx = self.get_context_data(
             subscription=subscription,
             plan=plan,
+            plans=plans,
+            products=products,
             org_memberships=org_memberships,
             **kwargs,
         )
