@@ -9,6 +9,7 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 - `config/` — Django settings (base/dev/test/prod), root urls, celery.
 - `middleware/` — custom middleware (security, etc).
 - Django apps implement repository interfaces from core and wire them to DRF views/serializers.
+- Supabase: `SUPABASE_JWT_SECRET` is used both for JWT verification and as the service role key for Admin API calls. Do not add a separate `SUPABASE_SERVICE_ROLE_KEY` setting.
 
 ## Prism commands
 
