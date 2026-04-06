@@ -95,7 +95,7 @@ def _get_active_plan_price(stripe_price_id: str) -> PlanPrice:
 class PlanListView(APIView):
     """GET /api/v1/billing/plans — list active plans with prices (public)."""
 
-    permission_classes = [AllowAny]
+    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]  # DRF declares as instance var; ClassVar needed for RUF012
 
     @extend_schema(responses=PlanSerializer(many=True), tags=["billing"])
     def get(self, request: Request) -> Response:
