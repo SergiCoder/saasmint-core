@@ -111,6 +111,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": "price_team",
+                "quantity": 2,
                 "trial_period_days": 14,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
@@ -348,11 +349,11 @@ class TestUpdateSubscription:
 
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_combined_plan_and_seats_update(
-        self, mock_change, authed_client, subscription, plan_price
+        self, mock_change, authed_client, subscription, team_plan_price
     ):
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
-            {"plan_price_id": "price_test_123", "quantity": 3},
+            {"plan_price_id": "price_team_123", "quantity": 3},
             format="json",
         )
         assert resp.status_code == 204
@@ -361,14 +362,14 @@ class TestUpdateSubscription:
 
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_combined_update_does_not_call_update_seat_count(
-        self, mock_change, authed_client, subscription, plan_price
+        self, mock_change, authed_client, subscription, team_plan_price
     ):
         """When both plan_price_id and quantity are sent, only change_plan is called
         (with quantity kwarg) — update_seat_count must NOT be called separately."""
         with patch("apps.billing.views.update_seat_count", new_callable=AsyncMock) as mock_seats:
             authed_client.patch(
                 "/api/v1/billing/subscription/",
-                {"plan_price_id": "price_test_123", "quantity": 3},
+                {"plan_price_id": "price_team_123", "quantity": 3},
                 format="json",
             )
             mock_seats.assert_not_called()

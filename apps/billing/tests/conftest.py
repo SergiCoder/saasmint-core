@@ -48,6 +48,26 @@ def plan_price(plan):
 
 
 @pytest.fixture
+def team_plan(db):
+    return Plan.objects.create(
+        name="Team Monthly",
+        context="team",
+        interval="month",
+        is_active=True,
+    )
+
+
+@pytest.fixture
+def team_plan_price(team_plan):
+    return PlanPrice.objects.create(
+        plan=team_plan,
+        stripe_price_id="price_team_123",
+        currency="usd",
+        amount=1500,
+    )
+
+
+@pytest.fixture
 def stripe_customer(user):
     return StripeCustomer.objects.create(
         stripe_id="cus_test_123",
