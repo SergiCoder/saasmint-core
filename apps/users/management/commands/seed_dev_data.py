@@ -45,7 +45,7 @@ PERSONAL_USERS = [
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_luke_hobbs",
         "sub_stripe_id": "sub_dev_luke_hobbs",
-        "plan_key": "personal_pro_monthly",
+        "plan_key": "personal_basic_monthly",
         "sub_status": SubscriptionStatus.ACTIVE,
     },
     {
@@ -102,7 +102,7 @@ PERSONAL_USERS = [
         "preferred_currency": "eur",
         "stripe_id": "cus_dev_jason_bourne",
         "sub_stripe_id": "sub_dev_jason_bourne",
-        "plan_key": "personal_pro_monthly",
+        "plan_key": "personal_basic_monthly",
         "sub_status": SubscriptionStatus.ACTIVE,
     },
     {
@@ -209,8 +209,8 @@ PLANS = [
         "interval": PlanInterval.MONTH,
     },
     {
-        "key": "personal_pro_monthly",
-        "name": "Personal Pro",
+        "key": "personal_basic_monthly",
+        "name": "Personal Basic",
         "description": (
             "For power users. Advanced analytics, priority email support, and API access."
         ),
@@ -218,9 +218,20 @@ PLANS = [
         "interval": PlanInterval.MONTH,
     },
     {
+        "key": "personal_pro_monthly",
+        "name": "Personal Pro",
+        "description": (
+            "Everything in Basic plus custom integrations, audit logs, and dedicated support."
+        ),
+        "context": PlanContext.PERSONAL,
+        "interval": PlanInterval.MONTH,
+    },
+    {
         "key": "team_basic_monthly",
         "name": "Team Basic",
-        "description": ("For small teams. Up to 10 seats, shared dashboards, and team analytics."),
+        "description": (
+            "For small teams. Per-seat pricing, shared dashboards, and team analytics."
+        ),
         "context": PlanContext.TEAM,
         "interval": PlanInterval.MONTH,
     },
@@ -228,7 +239,7 @@ PLANS = [
         "key": "team_pro_monthly",
         "name": "Team Pro",
         "description": (
-            "For growing organizations. Unlimited seats, SSO, audit logs, and dedicated support."
+            "For growing organizations. Per-seat pricing, SSO, audit logs, and dedicated support."
         ),
         "context": PlanContext.TEAM,
         "interval": PlanInterval.MONTH,
@@ -240,15 +251,18 @@ PLAN_PRICES = [
     ("personal_free_monthly", "usd", 0, "price_dev_personal_free_usd"),
     ("personal_free_monthly", "eur", 0, "price_dev_personal_free_eur"),
     ("personal_free_monthly", "gbp", 0, "price_dev_personal_free_gbp"),
-    ("personal_pro_monthly", "usd", 1500, "price_dev_personal_pro_usd"),
-    ("personal_pro_monthly", "eur", 1400, "price_dev_personal_pro_eur"),
-    ("personal_pro_monthly", "gbp", 1200, "price_dev_personal_pro_gbp"),
-    ("team_basic_monthly", "usd", 4900, "price_dev_team_basic_usd"),
-    ("team_basic_monthly", "eur", 4500, "price_dev_team_basic_eur"),
-    ("team_basic_monthly", "gbp", 3900, "price_dev_team_basic_gbp"),
-    ("team_pro_monthly", "usd", 9900, "price_dev_team_pro_usd"),
-    ("team_pro_monthly", "eur", 9200, "price_dev_team_pro_eur"),
-    ("team_pro_monthly", "gbp", 7900, "price_dev_team_pro_gbp"),
+    ("personal_basic_monthly", "usd", 1900, "price_dev_personal_basic_usd"),
+    ("personal_basic_monthly", "eur", 1800, "price_dev_personal_basic_eur"),
+    ("personal_basic_monthly", "gbp", 1500, "price_dev_personal_basic_gbp"),
+    ("personal_pro_monthly", "usd", 4900, "price_dev_personal_pro_usd"),
+    ("personal_pro_monthly", "eur", 4600, "price_dev_personal_pro_eur"),
+    ("personal_pro_monthly", "gbp", 3900, "price_dev_personal_pro_gbp"),
+    ("team_basic_monthly", "usd", 1700, "price_dev_team_basic_usd"),
+    ("team_basic_monthly", "eur", 1600, "price_dev_team_basic_eur"),
+    ("team_basic_monthly", "gbp", 1400, "price_dev_team_basic_gbp"),
+    ("team_pro_monthly", "usd", 4500, "price_dev_team_pro_usd"),
+    ("team_pro_monthly", "eur", 4200, "price_dev_team_pro_eur"),
+    ("team_pro_monthly", "gbp", 3600, "price_dev_team_pro_gbp"),
 ]
 
 

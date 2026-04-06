@@ -17,13 +17,13 @@ BOOST_PRICES = [
         "product_id": BOOST_1_ID,
         "stripe_price_id": "price_boost_1_usd",
         "currency": "usd",
-        "amount": 900,
+        "amount": 4900,
     },
     {
         "product_id": BOOST_2_ID,
         "stripe_price_id": "price_boost_2_usd",
         "currency": "usd",
-        "amount": 1900,
+        "amount": 9900,
     },
 ]
 
