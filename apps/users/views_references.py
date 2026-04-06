@@ -24,12 +24,16 @@ class _ReferenceView(APIView):
     throttle_scope = "references"
 
 
+_LOCALES: list[str] = sorted(SUPPORTED_LOCALES)
+_CURRENCIES: list[str] = sorted(SUPPORTED_CURRENCIES)
+
+
 class LocaleListView(_ReferenceView):
     """GET /api/v1/locales/ — list supported locales."""
 
     @extend_schema(responses={200: list[str]}, tags=["references"])
     def get(self, request: Request) -> Response:
-        return Response(sorted(SUPPORTED_LOCALES))
+        return Response(_LOCALES)
 
 
 class CurrencyListView(_ReferenceView):
@@ -37,7 +41,7 @@ class CurrencyListView(_ReferenceView):
 
     @extend_schema(responses={200: list[str]}, tags=["references"])
     def get(self, request: Request) -> Response:
-        return Response(sorted(SUPPORTED_CURRENCIES))
+        return Response(_CURRENCIES)
 
 
 _PHONE_PREFIXES: list[dict[str, str]] = [
