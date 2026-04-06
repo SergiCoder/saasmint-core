@@ -105,6 +105,17 @@ class InMemorySubscriptionRepository:
     async def get_by_stripe_id(self, stripe_id: str) -> Subscription | None:
         return next((s for s in self._store.values() if s.stripe_id == stripe_id), None)
 
+    async def get_active_for_user(self, user_id: UUID) -> Subscription | None:
+        return next(
+            (
+                s
+                for s in self._store.values()
+                if s.user_id == user_id
+                and s.status in (SubscriptionStatus.ACTIVE, SubscriptionStatus.TRIALING)
+            ),
+            None,
+        )
+
     async def get_active_for_customer(self, stripe_customer_id: UUID) -> Subscription | None:
         return next(
             (

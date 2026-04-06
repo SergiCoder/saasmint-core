@@ -102,6 +102,7 @@ async def test_request_deletion_with_active_subscription_schedules() -> None:
     period_end = datetime(2024, 2, 1, tzinfo=UTC)
     sub = make_subscription(
         stripe_customer_id=customer.id,
+        user_id=user.id,
         stripe_id="sub_sched",
         current_period_end=period_end,
     )
@@ -139,6 +140,7 @@ async def test_request_deletion_subscription_already_gone_in_stripe() -> None:
     period_end = datetime(2024, 2, 1, tzinfo=UTC)
     sub = make_subscription(
         stripe_customer_id=customer.id,
+        user_id=user.id,
         stripe_id="sub_gone",
         current_period_end=period_end,
     )
@@ -227,6 +229,7 @@ async def test_request_deletion_non_resource_missing_stripe_error_raises() -> No
     period_end = datetime(2024, 2, 1, tzinfo=UTC)
     sub = make_subscription(
         stripe_customer_id=customer.id,
+        user_id=user.id,
         stripe_id="sub_err",
         current_period_end=period_end,
     )
@@ -286,7 +289,7 @@ async def test_execute_deletion_with_customer_and_subscription() -> None:
     await user_repo.save(user)
     customer = make_stripe_customer(user_id=user.id, stripe_id="cus_exec")
     await customer_repo.save(customer)
-    sub = make_subscription(stripe_customer_id=customer.id, stripe_id="sub_exec")
+    sub = make_subscription(stripe_customer_id=customer.id, user_id=user.id, stripe_id="sub_exec")
     await subscription_repo.save(sub)
 
     with (
@@ -321,7 +324,7 @@ async def test_execute_deletion_stripe_already_gone() -> None:
     await user_repo.save(user)
     customer = make_stripe_customer(user_id=user.id, stripe_id="cus_gone")
     await customer_repo.save(customer)
-    sub = make_subscription(stripe_customer_id=customer.id, stripe_id="sub_gone")
+    sub = make_subscription(stripe_customer_id=customer.id, user_id=user.id, stripe_id="sub_gone")
     await subscription_repo.save(sub)
 
     with (
@@ -365,7 +368,9 @@ async def test_cancel_deletion_clears_schedule_and_reactivates_subscription() ->
     await user_repo.save(user)
     customer = make_stripe_customer(user_id=user.id)
     await customer_repo.save(customer)
-    sub = make_subscription(stripe_customer_id=customer.id, stripe_id="sub_reactivate")
+    sub = make_subscription(
+        stripe_customer_id=customer.id, user_id=user.id, stripe_id="sub_reactivate"
+    )
     await subscription_repo.save(sub)
 
     with patch("stripe.Subscription.modify") as mock_modify:
@@ -408,7 +413,9 @@ async def test_cancel_deletion_stripe_subscription_already_gone() -> None:
     await user_repo.save(user)
     customer = make_stripe_customer(user_id=user.id)
     await customer_repo.save(customer)
-    sub = make_subscription(stripe_customer_id=customer.id, stripe_id="sub_gone_cancel")
+    sub = make_subscription(
+        stripe_customer_id=customer.id, user_id=user.id, stripe_id="sub_gone_cancel"
+    )
     await subscription_repo.save(sub)
 
     with patch(
@@ -440,7 +447,9 @@ async def test_cancel_deletion_stripe_non_resource_missing_raises() -> None:
     await user_repo.save(user)
     customer = make_stripe_customer(user_id=user.id)
     await customer_repo.save(customer)
-    sub = make_subscription(stripe_customer_id=customer.id, stripe_id="sub_err_cancel")
+    sub = make_subscription(
+        stripe_customer_id=customer.id, user_id=user.id, stripe_id="sub_err_cancel"
+    )
     await subscription_repo.save(sub)
 
     with (
@@ -578,7 +587,7 @@ async def test_export_user_data_with_subscription() -> None:
     await user_repo.save(user)
     customer = make_stripe_customer(user_id=user.id)
     await customer_repo.save(customer)
-    sub = make_subscription(stripe_customer_id=customer.id)
+    sub = make_subscription(stripe_customer_id=customer.id, user_id=user.id)
     await subscription_repo.save(sub)
 
     result = await export_user_data(

@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed
 
+from apps.billing.models import Plan, PlanPrice, Subscription
 from apps.users.authentication import SupabaseJWTAuthentication, _get_jwks_client
 from apps.users.models import User
 
@@ -122,6 +123,25 @@ class TestSupabaseJWTAuthentication:
         assert result_user.is_verified is True
         # Verify it was persisted
         assert User.objects.filter(supabase_uid="sup_new_user").exists()
+
+    @pytest.mark.django_db
+    def test_auto_create_assigns_free_plan(self):
+        """New users get a free-plan subscription automatically."""
+        plan = Plan.objects.create(
+            name="Personal Free", context="personal", interval="month", is_active=True
+        )
+        PlanPrice.objects.create(
+            plan=plan, stripe_price_id="price_free_usd", currency="usd", amount=0
+        )
+
+        token = _make_token(sub="sup_free_plan", email="free@example.com")
+        result_user, _ = self.auth.authenticate(_make_request(token))
+
+        sub = Subscription.objects.get(user=result_user)
+        assert sub.status == "active"
+        assert sub.plan == plan
+        assert sub.stripe_id is None
+        assert sub.stripe_customer is None
 
     @pytest.mark.django_db
     def test_missing_email_claim_when_user_not_found_raises(self):

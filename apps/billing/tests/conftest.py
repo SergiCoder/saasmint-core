@@ -90,6 +90,30 @@ def subscription(stripe_customer, plan):
 
 
 @pytest.fixture
+def free_plan(db):
+    plan = Plan.objects.create(
+        name="Personal Free",
+        context="personal",
+        interval="month",
+        is_active=True,
+    )
+    PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", currency="usd", amount=0)
+    return plan
+
+
+@pytest.fixture
+def free_subscription(free_plan, user):
+    return Subscription.objects.create(
+        user=user,
+        status="active",
+        plan=free_plan,
+        quantity=1,
+        current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+        current_period_end=datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
+    )
+
+
+@pytest.fixture
 def authed_client(user):
     from rest_framework.test import APIClient
 
