@@ -10,6 +10,33 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+def _service_role_headers(service_role_key: str) -> dict[str, str]:
+    """Build the auth headers required by Supabase Admin / Storage APIs."""
+    return {
+        "apikey": service_role_key,
+        "Authorization": f"Bearer {service_role_key}",
+    }
+
+
+async def _delete_resource(url: str, headers: dict[str, str], *, resource_label: str) -> None:
+    """Send a DELETE request and handle the standard success/404/error responses."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(url, headers=headers)
+
+    if resp.status_code in (200, 204):
+        logger.info("Deleted %s", resource_label)
+    elif resp.status_code == 404:
+        logger.info("Already deleted: %s", resource_label)
+    else:
+        logger.error(
+            "Failed to delete %s: %s %s",
+            resource_label,
+            resp.status_code,
+            resp.text,
+        )
+        resp.raise_for_status()
+
+
 async def delete_supabase_user(
     *, supabase_url: str, service_role_key: str, supabase_uid: str
 ) -> None:
@@ -26,26 +53,9 @@ async def delete_supabase_user(
         return
 
     url = f"{supabase_url}/auth/v1/admin/users/{supabase_uid}"
-    headers = {
-        "apikey": service_role_key,
-        "Authorization": f"Bearer {service_role_key}",
-    }
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.delete(url, headers=headers)
-
-    if resp.status_code in (200, 204):
-        logger.info("Deleted Supabase user %s", supabase_uid)
-    elif resp.status_code == 404:
-        logger.info("Supabase user %s already deleted", supabase_uid)
-    else:
-        logger.error(
-            "Failed to delete Supabase user %s: %s %s",
-            supabase_uid,
-            resp.status_code,
-            resp.text,
-        )
-        resp.raise_for_status()
+    await _delete_resource(
+        url, _service_role_headers(service_role_key), resource_label=f"Supabase user {supabase_uid}"
+    )
 
 
 def _extract_storage_path(avatar_url: str, supabase_url: str) -> str | None:
@@ -90,23 +100,6 @@ async def delete_supabase_avatar(
         return
 
     url = f"{supabase_url}/storage/v1/object/{bucket}/{path}"
-    headers = {
-        "apikey": service_role_key,
-        "Authorization": f"Bearer {service_role_key}",
-    }
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.delete(url, headers=headers)
-
-    if resp.status_code in (200, 204):
-        logger.info("Deleted avatar from storage: %s", object_path)
-    elif resp.status_code == 404:
-        logger.info("Avatar already deleted from storage: %s", object_path)
-    else:
-        logger.error(
-            "Failed to delete avatar %s: %s %s",
-            object_path,
-            resp.status_code,
-            resp.text,
-        )
-        resp.raise_for_status()
+    await _delete_resource(
+        url, _service_role_headers(service_role_key), resource_label=f"avatar {object_path}"
+    )
