@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
+from saasmint_core.domain.product import Product, ProductPrice, ProductType
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.stripe_event import StripeEvent
 from saasmint_core.domain.subscription import (
@@ -21,6 +22,8 @@ from saasmint_core.domain.subscription import (
 
 from apps.billing.models import Plan as PlanModel
 from apps.billing.models import PlanPrice as PlanPriceModel
+from apps.billing.models import Product as ProductModel
+from apps.billing.models import ProductPrice as ProductPriceModel
 from apps.billing.models import StripeCustomer as StripeCustomerModel
 from apps.billing.models import StripeEvent as StripeEventModel
 from apps.billing.models import Subscription as SubscriptionModel
@@ -196,6 +199,46 @@ class DjangoPlanRepository:
     async def get_price_by_stripe_id(self, stripe_price_id: str) -> PlanPrice | None:
         return await aget_or_none(
             PlanPriceModel, self._price_to_domain, stripe_price_id=stripe_price_id
+        )
+
+
+class DjangoProductRepository:
+    @staticmethod
+    def _product_to_domain(obj: ProductModel) -> Product:
+        return Product(
+            id=obj.id,
+            name=obj.name,
+            type=ProductType(obj.type),
+            is_active=obj.is_active,
+        )
+
+    @staticmethod
+    def _price_to_domain(obj: ProductPriceModel) -> ProductPrice:
+        return ProductPrice(
+            id=obj.id,
+            product_id=obj.product_id,
+            stripe_price_id=obj.stripe_price_id,
+            currency=obj.currency,
+            amount=obj.amount,
+        )
+
+    async def get_by_id(self, product_id: UUID) -> Product | None:
+        return await aget_or_none(ProductModel, self._product_to_domain, id=product_id)
+
+    async def list_active(self) -> list[Product]:
+        return [
+            self._product_to_domain(obj)
+            async for obj in ProductModel.objects.filter(is_active=True)
+        ]
+
+    async def get_price(self, product_id: UUID, currency: str) -> ProductPrice | None:
+        return await aget_or_none(
+            ProductPriceModel, self._price_to_domain, product_id=product_id, currency=currency
+        )
+
+    async def get_price_by_stripe_id(self, stripe_price_id: str) -> ProductPrice | None:
+        return await aget_or_none(
+            ProductPriceModel, self._price_to_domain, stripe_price_id=stripe_price_id
         )
 
 

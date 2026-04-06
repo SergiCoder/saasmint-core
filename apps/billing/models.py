@@ -134,6 +134,42 @@ class Subscription(models.Model):
         return f"{self.stripe_id} ({self.status})"
 
 
+class ProductType(models.TextChoices):
+    ONE_TIME = "one_time", "One-time"
+
+
+class Product(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255)
+    type = models.CharField(max_length=30, choices=ProductType.choices)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "products"
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.get_type_display()})"
+
+
+class ProductPrice(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="prices")
+    stripe_price_id = models.CharField(max_length=255, unique=True)
+    currency = models.CharField(max_length=3)
+    amount = models.IntegerField(help_text="Amount in minor units (cents)")
+
+    class Meta:
+        db_table = "product_prices"
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.UniqueConstraint(
+                fields=["product", "currency"], name="product_prices_product_currency_uniq"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.product.name} — {self.currency.upper()} {self.amount}"
+
+
 class StripeEvent(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     stripe_id = models.CharField(max_length=255, unique=True)
