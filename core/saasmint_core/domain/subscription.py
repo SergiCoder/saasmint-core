@@ -1,8 +1,11 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+# Sentinel current_period_end used for free subscriptions, which never renew.
+FREE_SUBSCRIPTION_PERIOD_END = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
 
 
 class SubscriptionStatus(StrEnum):

@@ -267,6 +267,36 @@ class TestDjangoSubscriptionRepository:
         async_to_sync(repo.delete)(subscription.id)
         assert not Subscription.objects.filter(id=subscription.id).exists()
 
+    def test_delete_free_for_user_removes_only_free_rows(self, repo, user, plan, stripe_customer):
+        # Free placeholder
+        Subscription.objects.create(
+            stripe_id=None,
+            stripe_customer=None,
+            user=user,
+            status="active",
+            plan=plan,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(9999, 12, 31, tzinfo=UTC),
+        )
+        # Paid sub for the same user — must NOT be deleted
+        Subscription.objects.create(
+            stripe_id="sub_paid_keep",
+            stripe_customer=stripe_customer,
+            user=user,
+            status="active",
+            plan=plan,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        deleted = async_to_sync(repo.delete_free_for_user)(user.id)
+        assert deleted == 1
+        assert Subscription.objects.filter(user=user).count() == 1
+        assert Subscription.objects.filter(stripe_id="sub_paid_keep").exists()
+
+    def test_delete_free_for_user_no_op_when_none(self, repo, user):
+        deleted = async_to_sync(repo.delete_free_for_user)(user.id)
+        assert deleted == 0
+
 
 class TestDjangoPlanRepository:
     @pytest.fixture
@@ -301,6 +331,33 @@ class TestDjangoPlanRepository:
         result = async_to_sync(repo.get_price_by_stripe_id)("price_test_123")
         assert result is not None
         assert result.amount == 999
+
+    def test_get_free_plan_returns_zero_priced_personal_plan(self, repo, db, free_plan):
+        result = async_to_sync(repo.get_free_plan)()
+        assert result is not None
+        assert result.id == free_plan.id
+
+    def test_get_free_plan_ignores_paid_plans(self, repo, plan, plan_price):
+        # plan_price has amount=999
+        assert async_to_sync(repo.get_free_plan)() is None
+
+    def test_get_free_plan_ignores_team_context(self, repo, db):
+        team_free = Plan.objects.create(
+            name="Team Free", context="team", interval="month", is_active=True
+        )
+        from apps.billing.models import PlanPrice as PlanPriceModel
+
+        PlanPriceModel.objects.create(plan=team_free, stripe_price_id="price_team_free", amount=0)
+        assert async_to_sync(repo.get_free_plan)() is None
+
+    def test_get_free_plan_ignores_inactive_plans(self, repo, db):
+        inactive = Plan.objects.create(
+            name="Personal Free", context="personal", interval="month", is_active=False
+        )
+        from apps.billing.models import PlanPrice as PlanPriceModel
+
+        PlanPriceModel.objects.create(plan=inactive, stripe_price_id="price_inactive", amount=0)
+        assert async_to_sync(repo.get_free_plan)() is None
 
 
 class TestDjangoStripeEventRepository:

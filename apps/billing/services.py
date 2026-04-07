@@ -5,13 +5,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+from saasmint_core.domain.subscription import FREE_SUBSCRIPTION_PERIOD_END
+
 from apps.billing.models import Plan, Subscription, SubscriptionStatus
 from apps.users.models import User
 
 logger = logging.getLogger(__name__)
-
-# Far-future date used as current_period_end for free subscriptions
-_FREE_PERIOD_END = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
 
 
 def _get_free_plan() -> Plan | None:
@@ -44,5 +43,5 @@ def assign_free_plan(user: User) -> None:
         plan=free_plan,
         quantity=1,
         current_period_start=now,
-        current_period_end=_FREE_PERIOD_END,
+        current_period_end=FREE_SUBSCRIPTION_PERIOD_END,
     )

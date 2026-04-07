@@ -174,6 +174,18 @@ class DjangoSubscriptionRepository:
     async def delete(self, subscription_id: UUID) -> None:
         await SubscriptionModel.objects.filter(id=subscription_id).adelete()
 
+    async def delete_free_for_user(self, user_id: UUID) -> int:
+        """Delete any free (stripe_id IS NULL) subscriptions belonging to *user_id*.
+
+        Used when a user upgrades from free → paid: the placeholder free row is
+        superseded by the new Stripe-backed subscription created via webhook.
+        Returns the number of rows deleted.
+        """
+        deleted, _ = await SubscriptionModel.objects.filter(
+            user_id=user_id, stripe_id__isnull=True
+        ).adelete()
+        return deleted
+
 
 class DjangoPlanRepository:
     @staticmethod
@@ -201,6 +213,14 @@ class DjangoPlanRepository:
 
     async def list_active(self) -> list[Plan]:
         return [self._plan_to_domain(obj) async for obj in PlanModel.objects.filter(is_active=True)]
+
+    async def get_free_plan(self) -> Plan | None:
+        obj = await (
+            PlanModel.objects.filter(is_active=True, context="personal", price__amount=0)
+            .select_related("price")
+            .afirst()
+        )
+        return self._plan_to_domain(obj) if obj is not None else None
 
     async def get_price(self, plan_id: UUID) -> PlanPrice | None:
         return await aget_or_none(PlanPriceModel, self._price_to_domain, plan_id=plan_id)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from saasmint_core.domain.subscription import FREE_SUBSCRIPTION_PERIOD_END
 
 from apps.billing.models import (
     Plan,
@@ -13,7 +14,7 @@ from apps.billing.models import (
     Subscription,
     SubscriptionStatus,
 )
-from apps.billing.services import _FREE_PERIOD_END, assign_free_plan
+from apps.billing.services import assign_free_plan
 from apps.users.models import User
 
 
@@ -49,7 +50,7 @@ class TestAssignFreePlan:
         assert sub.status == SubscriptionStatus.ACTIVE
         assert sub.plan == free_plan
         assert sub.quantity == 1
-        assert sub.current_period_end == _FREE_PERIOD_END
+        assert sub.current_period_end == FREE_SUBSCRIPTION_PERIOD_END
 
     def test_idempotent_when_subscription_exists(self, user, free_plan):
         assign_free_plan(user)
