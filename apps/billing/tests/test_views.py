@@ -10,7 +10,7 @@ import pytest
 from rest_framework.test import APIClient
 from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
 
-from apps.billing.models import Plan, PlanPrice
+from apps.billing.models import Plan, PlanPrice, Product, ProductPrice
 
 
 @pytest.fixture
@@ -246,7 +246,7 @@ class TestSubscriptionView:
         resp = authed_client.get("/api/v1/billing/subscription/")
         assert resp.status_code == 200
         assert resp.data["status"] == "active"
-        assert resp.data["plan"] == free_plan.id
+        assert str(resp.data["plan"]["id"]) == str(free_plan.id)
 
     def test_no_subscription_returns_404(self, authed_client, user):
         resp = authed_client.get("/api/v1/billing/subscription/")
@@ -434,7 +434,7 @@ class TestApplyPromoCodeView:
             {"promo_code": "SAVE20"},
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_promo.assert_called_once()
 
     def test_no_subscription_returns_404(self, authed_client, user):
@@ -457,3 +457,153 @@ class TestApplyPromoCodeView:
             format="json",
         )
         assert resp.status_code in (401, 403)
+
+
+@pytest.mark.django_db
+class TestProductListView:
+    @pytest.fixture
+    def product(self):
+        return Product.objects.create(
+            name="100 Credits",
+            type="one_time",
+            credits=100,
+            is_active=True,
+        )
+
+    @pytest.fixture
+    def product_price(self, product):
+        return ProductPrice.objects.create(
+            product=product,
+            stripe_price_id="price_credits_100",
+            amount=999,
+        )
+
+    def test_returns_active_products(self, authed_client, product, product_price):
+        resp = authed_client.get("/api/v1/billing/products/")
+        assert resp.status_code == 200
+        match = next(p for p in resp.data if p["name"] == "100 Credits")
+        assert match["credits"] == 100
+        assert match["type"] == "one_time"
+        assert match["price"]["amount"] == 999
+
+    def test_excludes_inactive_products(self, authed_client, product, product_price):
+        product.is_active = False
+        product.save()
+        resp = authed_client.get("/api/v1/billing/products/")
+        assert resp.status_code == 200
+        assert not any(p["name"] == "100 Credits" for p in resp.data)
+
+    def test_caches_response(self, authed_client, product, product_price):
+        resp1 = authed_client.get("/api/v1/billing/products/")
+        product.is_active = False
+        product.save()
+        resp2 = authed_client.get("/api/v1/billing/products/")
+        assert resp1.data == resp2.data
+
+    def test_unauthenticated_rejected(self, product, product_price):
+        client = APIClient()
+        resp = client.get("/api/v1/billing/products/")
+        assert resp.status_code in (401, 403)
+
+
+@pytest.mark.django_db
+class TestQuantityValidationOnCheckout:
+    """Tests for _validate_quantity_for_plan via the checkout endpoint."""
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_personal_plan_with_quantity_gt_1_returns_400(
+        self, mock_get_customer, mock_create, authed_client, plan_price, mock_stripe_customer
+    ):
+        mock_get_customer.return_value = mock_stripe_customer
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(plan_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_team_plan_with_quantity_lt_2_returns_400(
+        self, mock_get_customer, mock_create, authed_client, mock_stripe_customer, db
+    ):
+        team_plan = Plan.objects.create(
+            name="Team Mini", context="team", interval="month", is_active=True
+        )
+        team_price = PlanPrice.objects.create(
+            plan=team_plan, stripe_price_id="price_team_mini", amount=1500
+        )
+        mock_get_customer.return_value = mock_stripe_customer
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_price.id),
+                "quantity": 1,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_team_plan_with_min_seats_succeeds(
+        self, mock_get_customer, mock_create, authed_client, mock_stripe_customer, db
+    ):
+        team_plan = Plan.objects.create(
+            name="Team Min", context="team", interval="month", is_active=True
+        )
+        team_price = PlanPrice.objects.create(
+            plan=team_plan, stripe_price_id="price_team_min", amount=2000
+        )
+        mock_get_customer.return_value = mock_stripe_customer
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+            },
+            format="json",
+        )
+        assert resp.status_code == 201
+        assert mock_create.call_args.kwargs["quantity"] == 2
+
+
+@pytest.mark.django_db
+class TestUpdateSubscriptionQuantityValidation:
+    """Quantity-rule validation through PATCH /subscription/."""
+
+    def test_personal_plan_with_quantity_gt_1_returns_400(
+        self, authed_client, subscription, plan_price
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"plan_price_id": str(plan_price.id), "quantity": 2},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_team_plan_with_quantity_lt_2_returns_400(
+        self, authed_client, subscription, team_plan_price
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"plan_price_id": str(team_plan_price.id), "quantity": 1},
+            format="json",
+        )
+        assert resp.status_code == 400

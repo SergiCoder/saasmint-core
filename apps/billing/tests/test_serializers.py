@@ -6,11 +6,14 @@ from uuid import UUID
 
 import pytest
 
+from apps.billing.models import Product, ProductPrice
 from apps.billing.serializers import (
     CheckoutRequestSerializer,
     PlanPriceSerializer,
     PlanSerializer,
     PortalRequestSerializer,
+    ProductPriceSerializer,
+    ProductSerializer,
     PromoCodeSerializer,
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
@@ -265,3 +268,40 @@ class TestPromoCodeSerializer:
     def test_missing(self):
         ser = PromoCodeSerializer(data={})
         assert not ser.is_valid()
+
+
+@pytest.mark.django_db
+class TestProductPriceSerializer:
+    def test_serializes_fields(self):
+        product = Product.objects.create(
+            name="100 Credits", type="one_time", credits=100, is_active=True
+        )
+        price = ProductPrice.objects.create(
+            product=product, stripe_price_id="price_pp_1", amount=999
+        )
+        data = ProductPriceSerializer(price).data
+        assert data["id"] == str(price.id)
+        assert data["amount"] == 999
+
+    def test_all_fields_read_only(self):
+        assert set(ProductPriceSerializer.Meta.read_only_fields) == set(
+            ProductPriceSerializer.Meta.fields
+        )
+
+
+@pytest.mark.django_db
+class TestProductSerializer:
+    def test_serializes_with_price(self):
+        product = Product.objects.create(
+            name="500 Credits", type="one_time", credits=500, is_active=True
+        )
+        ProductPrice.objects.create(product=product, stripe_price_id="price_pp_2", amount=4999)
+        data = ProductSerializer(product).data
+        assert data["name"] == "500 Credits"
+        assert data["type"] == "one_time"
+        assert data["credits"] == 500
+        assert data["is_active"] is True
+        assert data["price"]["amount"] == 4999
+
+    def test_all_fields_read_only(self):
+        assert set(ProductSerializer.Meta.read_only_fields) == set(ProductSerializer.Meta.fields)

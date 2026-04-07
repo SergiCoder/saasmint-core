@@ -516,6 +516,98 @@ async def test_cancel_deletion_no_scheduled_deletion_is_noop() -> None:
 
 
 @pytest.mark.anyio
+async def test_request_deletion_with_free_subscription_deletes_immediately() -> None:
+    """A free subscription has no Stripe backing — treat as no sub and delete now."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user()
+    await user_repo.save(user)
+    free_sub = make_subscription(
+        user_id=user.id,
+        stripe_id=None,
+        stripe_customer_id=None,
+    )
+    await subscription_repo.save(free_sub)
+
+    with (
+        patch("saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock),
+        patch("saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock),
+        patch("stripe.Subscription.modify") as mock_modify,
+    ):
+        result = await request_account_deletion(
+            user_id=user.id,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+            supabase_url=_SUPABASE_URL,
+            service_role_key=_SERVICE_ROLE_KEY,
+        )
+
+    # Free sub → immediate deletion path
+    assert result is None
+    mock_modify.assert_not_called()
+    assert await user_repo.get_by_id(user.id) is None
+
+
+@pytest.mark.anyio
+async def test_execute_deletion_with_free_subscription_skips_stripe_cancel() -> None:
+    """Free subs have no Stripe id; execute_account_deletion must not call Stripe.cancel."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user()
+    await user_repo.save(user)
+    free_sub = make_subscription(user_id=user.id, stripe_id=None, stripe_customer_id=None)
+    await subscription_repo.save(free_sub)
+
+    with (
+        patch("stripe.Subscription.cancel") as mock_cancel,
+        patch("saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock),
+        patch("saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock),
+    ):
+        await execute_account_deletion(
+            user_id=user.id,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+            supabase_url=_SUPABASE_URL,
+            service_role_key=_SERVICE_ROLE_KEY,
+        )
+
+    mock_cancel.assert_not_called()
+    assert await user_repo.get_by_id(user.id) is None
+
+
+@pytest.mark.anyio
+async def test_cancel_deletion_with_free_subscription_skips_stripe_modify() -> None:
+    """Cancelling deletion for a free-sub user must not call Stripe.modify."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user(scheduled_deletion_at=datetime(2024, 2, 1, tzinfo=UTC))
+    await user_repo.save(user)
+    free_sub = make_subscription(user_id=user.id, stripe_id=None, stripe_customer_id=None)
+    await subscription_repo.save(free_sub)
+
+    with patch("stripe.Subscription.modify") as mock_modify:
+        await cancel_account_deletion(
+            user_id=user.id,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+        )
+
+    mock_modify.assert_not_called()
+    stored_user = await user_repo.get_by_id(user.id)
+    assert stored_user is not None
+    assert stored_user.scheduled_deletion_at is None
+
+
+@pytest.mark.anyio
 async def test_export_user_data_user_not_found_raises() -> None:
     user_repo = InMemoryUserRepository()
     customer_repo = InMemoryStripeCustomerRepository()

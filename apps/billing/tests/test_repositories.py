@@ -10,12 +10,15 @@ from asgiref.sync import async_to_sync
 
 from apps.billing.models import (
     Plan,
+    Product,
+    ProductPrice,
     StripeCustomer,
     StripeEvent,
     Subscription,
 )
 from apps.billing.repositories import (
     DjangoPlanRepository,
+    DjangoProductRepository,
     DjangoStripeCustomerRepository,
     DjangoStripeEventRepository,
     DjangoSubscriptionRepository,
@@ -358,6 +361,59 @@ class TestDjangoPlanRepository:
 
         PlanPriceModel.objects.create(plan=inactive, stripe_price_id="price_inactive", amount=0)
         assert async_to_sync(repo.get_free_plan)() is None
+
+
+class TestDjangoProductRepository:
+    @pytest.fixture
+    def repo(self):
+        return DjangoProductRepository()
+
+    @pytest.fixture
+    def product(self, db):
+        return Product.objects.create(
+            name="100 Credits", type="one_time", credits=100, is_active=True
+        )
+
+    @pytest.fixture
+    def product_price(self, product):
+        return ProductPrice.objects.create(
+            product=product, stripe_price_id="price_credits_100", amount=999
+        )
+
+    def test_get_by_id(self, repo, product):
+        result = async_to_sync(repo.get_by_id)(product.id)
+        assert result is not None
+        assert result.name == "100 Credits"
+        assert result.credits == 100
+
+    def test_get_by_id_not_found(self, repo, db):
+        result = async_to_sync(repo.get_by_id)(uuid4())
+        assert result is None
+
+    def test_list_active(self, repo, product, db):
+        Product.objects.create(name="Inactive", type="one_time", credits=50, is_active=False)
+        results = async_to_sync(repo.list_active)()
+        names = [r.name for r in results]
+        assert "100 Credits" in names
+        assert "Inactive" not in names
+
+    def test_get_price(self, repo, product, product_price):
+        result = async_to_sync(repo.get_price)(product.id)
+        assert result is not None
+        assert result.amount == 999
+
+    def test_get_price_not_found(self, repo, product):
+        result = async_to_sync(repo.get_price)(product.id)
+        assert result is None
+
+    def test_get_price_by_stripe_id(self, repo, product_price):
+        result = async_to_sync(repo.get_price_by_stripe_id)("price_credits_100")
+        assert result is not None
+        assert result.amount == 999
+
+    def test_get_price_by_stripe_id_not_found(self, repo, db):
+        result = async_to_sync(repo.get_price_by_stripe_id)("price_missing")
+        assert result is None
 
 
 class TestDjangoStripeEventRepository:

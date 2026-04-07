@@ -329,3 +329,18 @@ async def test_cancel_subscription_no_active_raises() -> None:
             stripe_customer_id=uuid4(),
             subscription_repo=repo,
         )
+
+
+@pytest.mark.anyio
+async def test_cancel_subscription_free_sub_raises() -> None:
+    """A free-plan subscription has no stripe_id and cannot be canceled via Stripe."""
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    free_sub = make_subscription(stripe_customer_id=customer_id, stripe_id=None, user_id=uuid4())
+    await repo.save(free_sub)
+
+    with pytest.raises(SubscriptionNotFoundError):
+        await cancel_subscription(
+            stripe_customer_id=customer_id,
+            subscription_repo=repo,
+        )

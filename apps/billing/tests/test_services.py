@@ -19,18 +19,6 @@ from apps.users.models import User
 
 
 @pytest.fixture
-def free_plan(db):
-    plan = Plan.objects.create(
-        name="Personal Free",
-        context="personal",
-        interval="month",
-        is_active=True,
-    )
-    PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", amount=0)
-    return plan
-
-
-@pytest.fixture
 def user(db):
     return User.objects.create_user(
         email="free@example.com",
