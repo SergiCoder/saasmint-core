@@ -624,9 +624,7 @@ def _seed_free_plan(plan_repo: InMemoryPlanRepository) -> Plan:
     """Insert an active personal free plan + $0 price into *plan_repo*."""
     free_plan = make_plan(name="Personal Free")
     plan_repo._plans[free_plan.id] = free_plan
-    free_price = make_plan_price(
-        plan_id=free_plan.id, stripe_price_id="price_free", amount=0
-    )
+    free_price = make_plan_price(plan_id=free_plan.id, stripe_price_id="price_free", amount=0)
     plan_repo._prices[free_price.id] = free_price
     return free_plan
 
@@ -657,9 +655,7 @@ async def test_upgrade_from_free_removes_orphan_free_subscription() -> None:
     # New paid plan + price
     paid_plan = make_plan(name="Personal Pro")
     plan_repo._plans[paid_plan.id] = paid_plan
-    paid_price = make_plan_price(
-        plan_id=paid_plan.id, stripe_price_id="price_paid", amount=1900
-    )
+    paid_price = make_plan_price(plan_id=paid_plan.id, stripe_price_id="price_paid", amount=1900)
     plan_repo._prices[paid_price.id] = paid_price
 
     repos = _make_repos(
@@ -710,9 +706,7 @@ async def test_org_upgrade_does_not_touch_user_free_subs() -> None:
 
     team_plan = make_plan(name="Team Pro")
     plan_repo._plans[team_plan.id] = team_plan
-    team_price = make_plan_price(
-        plan_id=team_plan.id, stripe_price_id="price_team", amount=2900
-    )
+    team_price = make_plan_price(plan_id=team_plan.id, stripe_price_id="price_team", amount=2900)
     plan_repo._prices[team_price.id] = team_price
 
     repos = _make_repos(
@@ -732,10 +726,73 @@ async def test_org_upgrade_does_not_touch_user_free_subs() -> None:
 
     # Other user's free sub is untouched
     assert other_free_sub.id in subscription_repo._store
-    new_team = next(
-        s for s in subscription_repo._store.values() if s.stripe_id == "sub_team_new"
-    )
+    new_team = next(s for s in subscription_repo._store.values() if s.stripe_id == "sub_team_new")
     assert new_team.user_id is None  # org sub
+
+
+@pytest.mark.anyio
+async def test_retry_after_crash_still_prunes_free_subscription() -> None:
+    """Regression: if a prior run saved the paid sub but crashed before pruning
+    the free row, a retried created/updated event must still prune it.
+
+    Previously the cleanup was guarded by `existing is None`, so a retry would
+    see the paid sub already saved and skip the cleanup forever, leaving the
+    user with two active subscriptions.
+    """
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user_id = uuid4()
+
+    # Seed: the free placeholder survived from a previous crashed run
+    free_plan = _seed_free_plan(plan_repo)
+    free_sub = make_subscription(
+        stripe_id=None,
+        stripe_customer_id=None,
+        user_id=user_id,
+        plan_id=free_plan.id,
+    )
+    await subscription_repo.save(free_sub)
+
+    customer = make_stripe_customer(user_id=user_id, stripe_id="cus_retry")
+    await customer_repo.save(customer)
+
+    paid_plan = make_plan(name="Personal Pro")
+    plan_repo._plans[paid_plan.id] = paid_plan
+    paid_price = make_plan_price(
+        plan_id=paid_plan.id, stripe_price_id="price_paid_retry", amount=1900
+    )
+    plan_repo._prices[paid_price.id] = paid_price
+
+    # Seed: the paid sub from the previous (crashed) run is already persisted
+    already_saved_paid = make_subscription(
+        stripe_id="sub_retry",
+        stripe_customer_id=customer.id,
+        user_id=user_id,
+        plan_id=paid_plan.id,
+    )
+    await subscription_repo.save(already_saved_paid)
+
+    repos = _make_repos(
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _sub_event(
+        "customer.subscription.created",
+        stripe_sub_id="sub_retry",
+        stripe_customer_id="cus_retry",
+        price_id="price_paid_retry",
+    )
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    subs = list(subscription_repo._store.values())
+    assert len(subs) == 1
+    assert subs[0].stripe_id == "sub_retry"
+    assert free_sub.id not in subscription_repo._store
 
 
 @pytest.mark.anyio
@@ -771,9 +828,7 @@ async def test_paid_cancellation_creates_fresh_free_subscription() -> None:
 
     # A new free sub now exists for the same user
     free_subs = [
-        s
-        for s in subscription_repo._store.values()
-        if s.stripe_id is None and s.user_id == user_id
+        s for s in subscription_repo._store.values() if s.stripe_id is None and s.user_id == user_id
     ]
     assert len(free_subs) == 1
     new_free = free_subs[0]
