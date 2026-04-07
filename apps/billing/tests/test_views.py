@@ -68,7 +68,7 @@ class TestCheckoutSessionView:
         resp = authed_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
-                "plan_price_id": "price_test_123",
+                "plan_price_id": str(plan_price.id),
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
             },
@@ -76,18 +76,33 @@ class TestCheckoutSessionView:
         )
         assert resp.status_code == 201
         assert resp.data["url"] == "https://checkout.stripe.com/session"
+        # The view must resolve the UUID to the underlying Stripe price ID
+        # before calling Stripe.
+        assert mock_create.call_args.kwargs["price_id"] == plan_price.stripe_price_id
 
     def test_invalid_plan_price_returns_404(self, authed_client):
         resp = authed_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
-                "plan_price_id": "price_nonexistent",
+                "plan_price_id": str(uuid4()),
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
             },
             format="json",
         )
         assert resp.status_code == 404
+
+    def test_malformed_plan_price_id_returns_400(self, authed_client):
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": "not-a-uuid",
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
 
     def test_missing_fields_returns_400(self, authed_client):
         resp = authed_client.post("/api/v1/billing/checkout-sessions/", {}, format="json")
@@ -101,14 +116,16 @@ class TestCheckoutSessionView:
         team_plan = Plan.objects.create(
             name="Team Monthly", context="team", interval="month", is_active=True
         )
-        PlanPrice.objects.create(plan=team_plan, stripe_price_id="price_team", amount=2999)
+        team_price = PlanPrice.objects.create(
+            plan=team_plan, stripe_price_id="price_team", amount=2999
+        )
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         authed_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
-                "plan_price_id": "price_team",
+                "plan_price_id": str(team_price.id),
                 "quantity": 2,
                 "trial_period_days": 14,
                 "success_url": "https://localhost/success",
@@ -130,7 +147,7 @@ class TestCheckoutSessionView:
         authed_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
-                "plan_price_id": "price_test_123",
+                "plan_price_id": str(plan_price.id),
                 "trial_period_days": 7,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
@@ -151,7 +168,7 @@ class TestCheckoutSessionView:
         resp = authed_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
-                "plan_price_id": "price_test_123",
+                "plan_price_id": str(plan_price.id),
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
             },
@@ -275,11 +292,13 @@ class TestUpdateSubscription:
     def test_changes_plan(self, mock_change, authed_client, subscription, plan_price):
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
-            {"plan_price_id": "price_test_123"},
+            {"plan_price_id": str(plan_price.id)},
             format="json",
         )
         assert resp.status_code == 204
         mock_change.assert_called_once()
+        # The view must resolve the UUID to the underlying Stripe price ID.
+        assert mock_change.call_args.kwargs["new_stripe_price_id"] == plan_price.stripe_price_id
 
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_plan_only_does_not_call_update_seat_count(
@@ -288,7 +307,7 @@ class TestUpdateSubscription:
         with patch("apps.billing.views.update_seat_count", new_callable=AsyncMock) as mock_seats:
             authed_client.patch(
                 "/api/v1/billing/subscription/",
-                {"plan_price_id": "price_test_123"},
+                {"plan_price_id": str(plan_price.id)},
                 format="json",
             )
             mock_seats.assert_not_called()
@@ -298,7 +317,7 @@ class TestUpdateSubscription:
         """Cannot change plan on a free subscription — must go through checkout."""
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
-            {"plan_price_id": "price_test_123"},
+            {"plan_price_id": str(plan_price.id)},
             format="json",
         )
         assert resp.status_code == 404
@@ -306,7 +325,7 @@ class TestUpdateSubscription:
     def test_invalid_plan_returns_404(self, authed_client, subscription):
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
-            {"plan_price_id": "price_nonexistent"},
+            {"plan_price_id": str(uuid4())},
             format="json",
         )
         assert resp.status_code == 404
@@ -367,7 +386,7 @@ class TestUpdateSubscription:
     ):
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
-            {"plan_price_id": "price_team_123", "quantity": 3},
+            {"plan_price_id": str(team_plan_price.id), "quantity": 3},
             format="json",
         )
         assert resp.status_code == 204
@@ -383,7 +402,7 @@ class TestUpdateSubscription:
         with patch("apps.billing.views.update_seat_count", new_callable=AsyncMock) as mock_seats:
             authed_client.patch(
                 "/api/v1/billing/subscription/",
-                {"plan_price_id": "price_team_123", "quantity": 3},
+                {"plan_price_id": str(team_plan_price.id), "quantity": 3},
                 format="json",
             )
             mock_seats.assert_not_called()
@@ -395,7 +414,7 @@ class TestUpdateSubscription:
     ):
         authed_client.patch(
             "/api/v1/billing/subscription/",
-            {"plan_price_id": "price_test_123", "prorate": False},
+            {"plan_price_id": str(plan_price.id), "prorate": False},
             format="json",
         )
         assert mock_change.call_args.kwargs["prorate"] is False

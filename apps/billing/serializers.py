@@ -87,7 +87,7 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
 
 
 class CheckoutRequestSerializer(serializers.Serializer[object]):
-    plan_price_id = serializers.CharField(max_length=255)
+    plan_price_id = serializers.UUIDField()
     quantity = serializers.IntegerField(default=1, min_value=1, max_value=10000)
     promo_code = serializers.CharField(
         required=False, allow_null=True, default=None, max_length=255
@@ -113,7 +113,7 @@ class PortalRequestSerializer(serializers.Serializer[object]):
 
 
 class UpdateSubscriptionSerializer(serializers.Serializer[object]):
-    plan_price_id = serializers.CharField(max_length=255, required=False)
+    plan_price_id = serializers.UUIDField(required=False)
     prorate = serializers.BooleanField(default=True)
     quantity = serializers.IntegerField(min_value=1, max_value=10000, required=False)
 

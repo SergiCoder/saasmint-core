@@ -83,11 +83,11 @@ async def _get_customer_and_subscription(
     return customer, sub
 
 
-def _get_active_plan_price(stripe_price_id: str) -> PlanPrice:
-    """Validate a plan_price_id exists in DB and belongs to an active plan."""
+def _get_active_plan_price(plan_price_id: UUID) -> PlanPrice:
+    """Validate a PlanPrice with *plan_price_id* exists and belongs to an active plan."""
     plan_price = (
         PlanPrice.objects.select_related("plan")
-        .filter(stripe_price_id=stripe_price_id, plan__is_active=True)
+        .filter(id=plan_price_id, plan__is_active=True)
         .first()
     )
     if plan_price is None:
@@ -159,7 +159,7 @@ class CheckoutSessionView(APIView):
             return await create_checkout_session(
                 stripe_customer_id=customer.stripe_id,
                 client_reference_id=str(user.id),
-                price_id=data["plan_price_id"],
+                price_id=plan_price.stripe_price_id,
                 quantity=quantity,
                 promo_code=data["promo_code"],
                 locale=user.preferred_locale,
@@ -253,7 +253,7 @@ class SubscriptionView(APIView):
             if plan_price:
                 await change_plan(
                     stripe_subscription_id=stripe_sub_id,
-                    new_stripe_price_id=data["plan_price_id"],
+                    new_stripe_price_id=plan_price.stripe_price_id,
                     prorate=data["prorate"],
                     quantity=data.get("quantity"),
                 )
