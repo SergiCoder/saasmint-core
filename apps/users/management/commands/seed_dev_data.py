@@ -6,7 +6,8 @@ import secrets
 import string
 from datetime import UTC, datetime, timedelta
 
-from django.core.management.base import BaseCommand
+from django.core.management import call_command
+from django.core.management.base import BaseCommand, CommandParser
 from django.db import transaction
 
 from apps.billing.models import (
@@ -252,7 +253,7 @@ PLANS = [
     },
     {
         "key": "personal_basic_yearly",
-        "name": "Personal Basic (Yearly)",
+        "name": "Personal Basic",
         "description": (
             "For power users. Advanced analytics, priority email support, and API access. "
             "Billed annually — two months free."
@@ -263,7 +264,7 @@ PLANS = [
     },
     {
         "key": "personal_pro_yearly",
-        "name": "Personal Pro (Yearly)",
+        "name": "Personal Pro",
         "description": (
             "Everything in Basic plus custom integrations, audit logs, and dedicated support. "
             "Billed annually — two months free."
@@ -274,7 +275,7 @@ PLANS = [
     },
     {
         "key": "team_basic_yearly",
-        "name": "Team Basic (Yearly)",
+        "name": "Team Basic",
         "description": (
             "For small teams. Per-seat pricing, shared dashboards, and team analytics. "
             "Billed annually — two months free."
@@ -285,7 +286,7 @@ PLANS = [
     },
     {
         "key": "team_pro_yearly",
-        "name": "Team Pro (Yearly)",
+        "name": "Team Pro",
         "description": (
             "For growing organizations. Per-seat pricing, SSO, audit logs, and dedicated support. "
             "Billed annually — two months free."
@@ -314,6 +315,13 @@ PLAN_PRICES = [
 class Command(BaseCommand):
     help = "Seed the database with action-movie dev/test data. Safe to run multiple times."
 
+    def add_arguments(self, parser: CommandParser) -> None:
+        parser.add_argument(
+            "--sync-stripe",
+            action="store_true",
+            help="After seeding, run sync_stripe_catalog to push plans/products to Stripe.",
+        )
+
     def handle(self, *args: object, **options: object) -> None:
         from django.conf import settings
 
@@ -337,6 +345,10 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS("Dev data seeded successfully."))
         self.stdout.write(f"  Seed password (all users): {self._seed_password}")
+
+        if options.get("sync_stripe"):
+            self.stdout.write("Running sync_stripe_catalog...")
+            call_command("sync_stripe_catalog")
 
     # ------------------------------------------------------------------
 
