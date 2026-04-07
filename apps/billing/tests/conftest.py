@@ -92,6 +92,7 @@ def free_plan(db):
     plan = Plan.objects.create(
         name="Personal Free",
         context="personal",
+        tier="free",
         interval="month",
         is_active=True,
     )

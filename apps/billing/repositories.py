@@ -17,6 +17,7 @@ from saasmint_core.domain.subscription import (
     PlanContext,
     PlanInterval,
     PlanPrice,
+    PlanTier,
     Subscription,
     SubscriptionStatus,
 )
@@ -194,6 +195,7 @@ class DjangoPlanRepository:
             name=obj.name,
             description=obj.description,
             context=PlanContext(obj.context),
+            tier=PlanTier(obj.tier),
             interval=PlanInterval(obj.interval),
             is_active=obj.is_active,
         )

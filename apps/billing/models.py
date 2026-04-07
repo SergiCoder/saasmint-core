@@ -20,6 +20,12 @@ class PlanInterval(models.TextChoices):
     YEAR = "year", "Yearly"
 
 
+class PlanTier(models.TextChoices):
+    FREE = "free", "Free"
+    BASIC = "basic", "Basic"
+    PRO = "pro", "Pro"
+
+
 class SubscriptionStatus(models.TextChoices):
     ACTIVE = "active", "Active"
     TRIALING = "trialing", "Trialing"
@@ -39,20 +45,29 @@ class Plan(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(default="", blank=True)
     context = models.CharField(max_length=20, choices=PlanContext.choices)
+    tier = models.CharField(max_length=10, choices=PlanTier.choices, default=PlanTier.BASIC)
     interval = models.CharField(max_length=10, choices=PlanInterval.choices)
     is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = "plans"
+        ordering = ("context", "tier", "interval")
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.UniqueConstraint(
+                fields=("context", "tier", "interval"),
+                condition=models.Q(is_active=True),
+                name="uniq_active_plan_per_context_tier_interval",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.interval})"
 
     @classmethod
     def free_plans(cls) -> models.QuerySet[Plan]:
-        """Queryset of active personal plans whose price is $0."""
+        """Queryset of active personal plans on the free tier."""
         return cls.objects.filter(
-            is_active=True, context=PlanContext.PERSONAL, price__amount=0
+            is_active=True, context=PlanContext.PERSONAL, tier=PlanTier.FREE
         ).select_related("price")
 
 

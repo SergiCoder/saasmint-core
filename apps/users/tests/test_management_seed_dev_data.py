@@ -47,7 +47,8 @@ class TestSeedDevDataCreatesExpectedObjects:
 
         settings.DEBUG = True
         call_command("seed_dev_data", stdout=StringIO())
-        assert PlanPrice.objects.count() == 5  # one per plan
+        # one per plan: 5 monthly (free + basic/pro for personal/team) + 4 yearly (paid only)
+        assert PlanPrice.objects.count() == 9
 
     def test_creates_personal_users(self, settings):
         from apps.users.models import User

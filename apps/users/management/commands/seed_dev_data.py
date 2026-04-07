@@ -14,6 +14,7 @@ from apps.billing.models import (
     PlanContext,
     PlanInterval,
     PlanPrice,
+    PlanTier,
     StripeCustomer,
     Subscription,
     SubscriptionStatus,
@@ -206,6 +207,7 @@ PLANS = [
             "For individuals getting started. Includes basic analytics and community support."
         ),
         "context": PlanContext.PERSONAL,
+        "tier": PlanTier.FREE,
         "interval": PlanInterval.MONTH,
     },
     {
@@ -215,6 +217,7 @@ PLANS = [
             "For power users. Advanced analytics, priority email support, and API access."
         ),
         "context": PlanContext.PERSONAL,
+        "tier": PlanTier.BASIC,
         "interval": PlanInterval.MONTH,
     },
     {
@@ -224,6 +227,7 @@ PLANS = [
             "Everything in Basic plus custom integrations, audit logs, and dedicated support."
         ),
         "context": PlanContext.PERSONAL,
+        "tier": PlanTier.PRO,
         "interval": PlanInterval.MONTH,
     },
     {
@@ -233,6 +237,7 @@ PLANS = [
             "For small teams. Per-seat pricing, shared dashboards, and team analytics."
         ),
         "context": PlanContext.TEAM,
+        "tier": PlanTier.BASIC,
         "interval": PlanInterval.MONTH,
     },
     {
@@ -242,6 +247,7 @@ PLANS = [
             "For growing organizations. Per-seat pricing, SSO, audit logs, and dedicated support."
         ),
         "context": PlanContext.TEAM,
+        "tier": PlanTier.PRO,
         "interval": PlanInterval.MONTH,
     },
     {
@@ -252,6 +258,7 @@ PLANS = [
             "Billed annually — two months free."
         ),
         "context": PlanContext.PERSONAL,
+        "tier": PlanTier.BASIC,
         "interval": PlanInterval.YEAR,
     },
     {
@@ -262,6 +269,7 @@ PLANS = [
             "Billed annually — two months free."
         ),
         "context": PlanContext.PERSONAL,
+        "tier": PlanTier.PRO,
         "interval": PlanInterval.YEAR,
     },
     {
@@ -272,6 +280,7 @@ PLANS = [
             "Billed annually — two months free."
         ),
         "context": PlanContext.TEAM,
+        "tier": PlanTier.BASIC,
         "interval": PlanInterval.YEAR,
     },
     {
@@ -282,6 +291,7 @@ PLANS = [
             "Billed annually — two months free."
         ),
         "context": PlanContext.TEAM,
+        "tier": PlanTier.PRO,
         "interval": PlanInterval.YEAR,
     },
 ]
@@ -337,6 +347,7 @@ class Command(BaseCommand):
                 name=p["name"],
                 description=p["description"],
                 context=p["context"],
+                tier=p["tier"],
                 interval=p["interval"],
                 is_active=True,
             )

@@ -17,6 +17,7 @@ from saasmint_core.domain.subscription import (
     PlanContext,
     PlanInterval,
     PlanPrice,
+    PlanTier,
     Subscription,
     SubscriptionStatus,
 )
@@ -227,6 +228,33 @@ def test_plan_interval_values() -> None:
 def test_plan_context_values() -> None:
     assert PlanContext.PERSONAL == "personal"
     assert PlanContext.TEAM == "team"
+
+
+def test_plan_tier_values() -> None:
+    assert PlanTier.FREE == "free"
+    assert PlanTier.BASIC == "basic"
+    assert PlanTier.PRO == "pro"
+
+
+def test_plan_default_tier_is_basic() -> None:
+    plan = Plan(
+        id=uuid4(),
+        name="Starter",
+        context=PlanContext.PERSONAL,
+        interval=PlanInterval.MONTH,
+    )
+    assert plan.tier == PlanTier.BASIC
+
+
+def test_plan_explicit_free_tier() -> None:
+    plan = Plan(
+        id=uuid4(),
+        name="Personal Free",
+        context=PlanContext.PERSONAL,
+        tier=PlanTier.FREE,
+        interval=PlanInterval.MONTH,
+    )
+    assert plan.tier == PlanTier.FREE
 
 
 def test_plan_creation() -> None:

@@ -73,7 +73,11 @@ class TestAssignFreePlan:
     def test_skips_inactive_free_plan(self, user, db):
         """Inactive free plans are not assigned."""
         plan = Plan.objects.create(
-            name="Personal Free", context="personal", interval="month", is_active=False
+            name="Personal Free",
+            context="personal",
+            tier="free",
+            interval="month",
+            is_active=False,
         )
         PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", amount=0)
 
@@ -81,11 +85,15 @@ class TestAssignFreePlan:
         assert not Subscription.objects.filter(user=user).exists()
 
     def test_does_not_pick_paid_plan(self, user, db):
-        """Plans with non-zero prices should not be selected as the free plan."""
+        """Non-free-tier plans should not be selected as the free plan."""
         paid_plan = Plan.objects.create(
-            name="Personal Pro", context="personal", interval="month", is_active=True
+            name="Personal Basic",
+            context="personal",
+            tier="basic",
+            interval="month",
+            is_active=True,
         )
-        PlanPrice.objects.create(plan=paid_plan, stripe_price_id="price_pro_usd", amount=1900)
+        PlanPrice.objects.create(plan=paid_plan, stripe_price_id="price_basic_usd", amount=1900)
 
         assign_free_plan(user)
         assert not Subscription.objects.filter(user=user).exists()

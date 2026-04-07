@@ -128,7 +128,11 @@ class TestSupabaseJWTAuthentication:
     def test_auto_create_assigns_free_plan(self):
         """New users get a free-plan subscription automatically."""
         plan = Plan.objects.create(
-            name="Personal Free", context="personal", interval="month", is_active=True
+            name="Personal Free",
+            context="personal",
+            tier="free",
+            interval="month",
+            is_active=True,
         )
         PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", amount=0)
 

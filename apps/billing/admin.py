@@ -16,8 +16,8 @@ from apps.billing.models import (
 
 @admin.register(Plan)
 class PlanAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
-    list_display = ("name", "context", "interval", "is_active")
-    list_filter = ("context", "interval", "is_active")
+    list_display = ("name", "context", "tier", "interval", "is_active")
+    list_filter = ("context", "tier", "interval", "is_active")
     search_fields = ("name",)
 
 

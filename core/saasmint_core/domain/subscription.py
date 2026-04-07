@@ -38,6 +38,12 @@ class PlanContext(StrEnum):
     TEAM = "team"
 
 
+class PlanTier(StrEnum):
+    FREE = "free"
+    BASIC = "basic"
+    PRO = "pro"
+
+
 class Plan(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -45,6 +51,7 @@ class Plan(BaseModel):
     name: str
     description: str = ""
     context: PlanContext
+    tier: PlanTier = PlanTier.BASIC
     interval: PlanInterval
     is_active: bool = True
 

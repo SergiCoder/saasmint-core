@@ -335,18 +335,18 @@ class TestDjangoPlanRepository:
         assert result is not None
         assert result.amount == 999
 
-    def test_get_free_plan_returns_zero_priced_personal_plan(self, repo, db, free_plan):
+    def test_get_free_plan_returns_free_tier_personal_plan(self, repo, db, free_plan):
         result = async_to_sync(repo.get_free_plan)()
         assert result is not None
         assert result.id == free_plan.id
 
     def test_get_free_plan_ignores_paid_plans(self, repo, plan, plan_price):
-        # plan_price has amount=999
+        # `plan` fixture defaults to tier=basic
         assert async_to_sync(repo.get_free_plan)() is None
 
     def test_get_free_plan_ignores_team_context(self, repo, db):
         team_free = Plan.objects.create(
-            name="Team Free", context="team", interval="month", is_active=True
+            name="Team Free", context="team", tier="free", interval="month", is_active=True
         )
         from apps.billing.models import PlanPrice as PlanPriceModel
 
@@ -355,7 +355,11 @@ class TestDjangoPlanRepository:
 
     def test_get_free_plan_ignores_inactive_plans(self, repo, db):
         inactive = Plan.objects.create(
-            name="Personal Free", context="personal", interval="month", is_active=False
+            name="Personal Free",
+            context="personal",
+            tier="free",
+            interval="month",
+            is_active=False,
         )
         from apps.billing.models import PlanPrice as PlanPriceModel
 
