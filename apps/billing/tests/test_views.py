@@ -101,9 +101,7 @@ class TestCheckoutSessionView:
         team_plan = Plan.objects.create(
             name="Team Monthly", context="team", interval="month", is_active=True
         )
-        PlanPrice.objects.create(
-            plan=team_plan, stripe_price_id="price_team", amount=2999
-        )
+        PlanPrice.objects.create(plan=team_plan, stripe_price_id="price_team", amount=2999)
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 

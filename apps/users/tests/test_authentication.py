@@ -130,9 +130,7 @@ class TestSupabaseJWTAuthentication:
         plan = Plan.objects.create(
             name="Personal Free", context="personal", interval="month", is_active=True
         )
-        PlanPrice.objects.create(
-            plan=plan, stripe_price_id="price_free_usd", amount=0
-        )
+        PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", amount=0)
 
         token = _make_token(sub="sup_free_plan", email="free@example.com")
         result_user, _ = self.auth.authenticate(_make_request(token))
