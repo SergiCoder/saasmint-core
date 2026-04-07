@@ -45,11 +45,11 @@ class ProductPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-s
 
 @admin.register(StripeCustomer)
 class StripeCustomerAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
-    list_display = ("stripe_id", "user", "livemode", "created_at")
+    list_display = ("stripe_id", "user", "org", "livemode", "created_at")
     list_filter = ("livemode",)
     search_fields = ("stripe_id",)
     readonly_fields = ("id", "stripe_id", "created_at")
-    list_select_related = ("user",)
+    list_select_related = ("user", "org")
 
 
 @admin.register(Subscription)
