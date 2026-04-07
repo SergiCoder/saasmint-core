@@ -193,7 +193,6 @@ class DjangoPlanRepository:
             id=obj.id,
             plan_id=obj.plan_id,
             stripe_price_id=obj.stripe_price_id,
-            currency=obj.currency,
             amount=obj.amount,
         )
 
@@ -203,10 +202,8 @@ class DjangoPlanRepository:
     async def list_active(self) -> list[Plan]:
         return [self._plan_to_domain(obj) async for obj in PlanModel.objects.filter(is_active=True)]
 
-    async def get_price(self, plan_id: UUID, currency: str) -> PlanPrice | None:
-        return await aget_or_none(
-            PlanPriceModel, self._price_to_domain, plan_id=plan_id, currency=currency
-        )
+    async def get_price(self, plan_id: UUID) -> PlanPrice | None:
+        return await aget_or_none(PlanPriceModel, self._price_to_domain, plan_id=plan_id)
 
     async def get_price_by_stripe_id(self, stripe_price_id: str) -> PlanPrice | None:
         return await aget_or_none(
@@ -231,7 +228,6 @@ class DjangoProductRepository:
             id=obj.id,
             product_id=obj.product_id,
             stripe_price_id=obj.stripe_price_id,
-            currency=obj.currency,
             amount=obj.amount,
         )
 
@@ -244,10 +240,8 @@ class DjangoProductRepository:
             async for obj in ProductModel.objects.filter(is_active=True)
         ]
 
-    async def get_price(self, product_id: UUID, currency: str) -> ProductPrice | None:
-        return await aget_or_none(
-            ProductPriceModel, self._price_to_domain, product_id=product_id, currency=currency
-        )
+    async def get_price(self, product_id: UUID) -> ProductPrice | None:
+        return await aget_or_none(ProductPriceModel, self._price_to_domain, product_id=product_id)
 
     async def get_price_by_stripe_id(self, stripe_price_id: str) -> ProductPrice | None:
         return await aget_or_none(

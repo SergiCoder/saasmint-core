@@ -23,10 +23,10 @@ class PlanAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs Mod
 
 @admin.register(PlanPrice)
 class PlanPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
-    list_display = ("plan", "currency", "amount", "stripe_price_id")
-    list_filter = ("currency",)
+    list_display = ("plan", "amount", "stripe_price_id")
     search_fields = ("stripe_price_id",)
     list_select_related = ("plan",)
+    ordering = ("plan__name",)
 
 
 @admin.register(Product)
@@ -38,8 +38,7 @@ class ProductAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs 
 
 @admin.register(ProductPrice)
 class ProductPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic; no type param needed at runtime
-    list_display = ("product", "currency", "amount", "stripe_price_id")
-    list_filter = ("currency",)
+    list_display = ("product", "amount", "stripe_price_id")
     search_fields = ("stripe_price_id",)
     list_select_related = ("product",)
 

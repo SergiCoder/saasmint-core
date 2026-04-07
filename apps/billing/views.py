@@ -104,7 +104,7 @@ class PlanListView(APIView):
     def get(self, request: Request) -> Response:
         data = cache.get("active_plans")
         if data is None:
-            plans = PlanModel.objects.filter(is_active=True).prefetch_related("prices")
+            plans = PlanModel.objects.filter(is_active=True).select_related("price")
             data = PlanSerializer(plans, many=True).data
             cache.set("active_plans", data, timeout=300)
         return Response(data)
@@ -117,7 +117,7 @@ class ProductListView(APIView):
     def get(self, request: Request) -> Response:
         data = cache.get("active_products")
         if data is None:
-            products = ProductModel.objects.filter(is_active=True).prefetch_related("prices")
+            products = ProductModel.objects.filter(is_active=True).select_related("price")
             data = ProductSerializer(products, many=True).data
             cache.set("active_products", data, timeout=300)
         return Response(data)

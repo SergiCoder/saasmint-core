@@ -32,7 +32,7 @@ class TestPlanListView:
         assert resp.status_code == 200
         assert len(resp.data) == 1
         assert resp.data[0]["name"] == "Personal Monthly"
-        assert len(resp.data[0]["prices"]) == 1
+        assert resp.data[0]["price"]["amount"] == 999
 
     def test_excludes_inactive_plans(self, authed_client, plan, plan_price):
         plan.is_active = False
@@ -102,7 +102,7 @@ class TestCheckoutSessionView:
             name="Team Monthly", context="team", interval="month", is_active=True
         )
         PlanPrice.objects.create(
-            plan=team_plan, stripe_price_id="price_team", currency="usd", amount=2999
+            plan=team_plan, stripe_price_id="price_team", amount=2999
         )
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"

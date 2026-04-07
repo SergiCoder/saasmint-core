@@ -25,7 +25,7 @@ def free_plan(db):
         interval="month",
         is_active=True,
     )
-    PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", currency="usd", amount=0)
+    PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", amount=0)
     return plan
 
 
@@ -87,7 +87,7 @@ class TestAssignFreePlan:
             name="Personal Free", context="personal", interval="month", is_active=False
         )
         PlanPrice.objects.create(
-            plan=plan, stripe_price_id="price_free_usd", currency="usd", amount=0
+            plan=plan, stripe_price_id="price_free_usd", amount=0
         )
 
         assign_free_plan(user)
@@ -99,7 +99,7 @@ class TestAssignFreePlan:
             name="Personal Pro", context="personal", interval="month", is_active=True
         )
         PlanPrice.objects.create(
-            plan=paid_plan, stripe_price_id="price_pro_usd", currency="usd", amount=1900
+            plan=paid_plan, stripe_price_id="price_pro_usd", amount=1900
         )
 
         assign_free_plan(user)

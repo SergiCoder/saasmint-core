@@ -20,7 +20,6 @@ class TestPlanPriceSerializer:
     def test_serializes_fields(self, plan_price):
         data = PlanPriceSerializer(plan_price).data
         assert data["id"] == str(plan_price.id)
-        assert data["currency"] == "usd"
         assert data["amount"] == 999
 
     def test_all_fields_read_only(self):
@@ -31,13 +30,12 @@ class TestPlanPriceSerializer:
 
 @pytest.mark.django_db
 class TestPlanSerializer:
-    def test_serializes_with_prices(self, plan, plan_price):
+    def test_serializes_with_price(self, plan, plan_price):
         data = PlanSerializer(plan).data
         assert data["name"] == "Personal Monthly"
         assert data["context"] == "personal"
         assert data["interval"] == "month"
-        assert len(data["prices"]) == 1
-        assert data["prices"][0]["currency"] == "usd"
+        assert data["price"]["amount"] == 999
 
     def test_all_fields_read_only(self):
         assert set(PlanSerializer.Meta.read_only_fields) == set(PlanSerializer.Meta.fields)

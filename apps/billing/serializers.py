@@ -38,32 +38,32 @@ def _validate_redirect_url(url: str) -> str:
 class PlanPriceSerializer(serializers.ModelSerializer[PlanPrice]):
     class Meta:
         model = PlanPrice
-        fields = ("id", "currency", "amount")
+        fields = ("id", "amount")
         read_only_fields = fields
 
 
 class PlanSerializer(serializers.ModelSerializer[Plan]):
-    prices = PlanPriceSerializer(many=True, read_only=True)
+    price = PlanPriceSerializer(read_only=True)
 
     class Meta:
         model = Plan
-        fields = ("id", "name", "description", "context", "interval", "is_active", "prices")
+        fields = ("id", "name", "description", "context", "interval", "is_active", "price")
         read_only_fields = fields
 
 
 class ProductPriceSerializer(serializers.ModelSerializer[ProductPrice]):
     class Meta:
         model = ProductPrice
-        fields = ("id", "currency", "amount")
+        fields = ("id", "amount")
         read_only_fields = fields
 
 
 class ProductSerializer(serializers.ModelSerializer[Product]):
-    prices = ProductPriceSerializer(many=True, read_only=True)
+    price = ProductPriceSerializer(read_only=True)
 
     class Meta:
         model = Product
-        fields = ("id", "name", "type", "credits", "is_active", "prices")
+        fields = ("id", "name", "type", "credits", "is_active", "price")
         read_only_fields = fields
 
 

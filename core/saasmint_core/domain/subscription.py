@@ -52,8 +52,7 @@ class PlanPrice(BaseModel):
     id: UUID
     plan_id: UUID
     stripe_price_id: str
-    currency: str
-    amount: int  # minor units (cents)
+    amount: int  # USD cents
 
 
 class Subscription(BaseModel):

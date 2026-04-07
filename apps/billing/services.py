@@ -17,10 +17,8 @@ _FREE_PERIOD_END = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
 def _get_free_plan() -> Plan | None:
     """Return the active personal plan where every price is $0, or None."""
     return (
-        Plan.objects.filter(is_active=True, context="personal")
-        .exclude(prices__amount__gt=0)
-        .filter(prices__isnull=False)
-        .distinct()
+        Plan.objects.filter(is_active=True, context="personal", price__amount=0)
+        .select_related("price")
         .first()
     )
 

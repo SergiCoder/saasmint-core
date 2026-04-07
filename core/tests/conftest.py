@@ -174,9 +174,9 @@ class InMemoryPlanRepository:
     async def list_active(self) -> list[Plan]:
         return [p for p in self._plans.values() if p.is_active]
 
-    async def get_price(self, plan_id: UUID, currency: str) -> PlanPrice | None:
+    async def get_price(self, plan_id: UUID) -> PlanPrice | None:
         return next(
-            (p for p in self._prices.values() if p.plan_id == plan_id and p.currency == currency),
+            (p for p in self._prices.values() if p.plan_id == plan_id),
             None,
         )
 
@@ -290,7 +290,6 @@ def make_plan_price(
         "id": uuid4(),
         "plan_id": plan_id,
         "stripe_price_id": stripe_price_id,
-        "currency": "usd",
         "amount": 999,
     }
     fields.update(overrides)

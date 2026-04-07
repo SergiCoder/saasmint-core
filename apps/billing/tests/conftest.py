@@ -42,7 +42,6 @@ def plan_price(plan):
     return PlanPrice.objects.create(
         plan=plan,
         stripe_price_id="price_test_123",
-        currency="usd",
         amount=999,
     )
 
@@ -62,7 +61,6 @@ def team_plan_price(team_plan):
     return PlanPrice.objects.create(
         plan=team_plan,
         stripe_price_id="price_team_123",
-        currency="usd",
         amount=1500,
     )
 
@@ -97,7 +95,7 @@ def free_plan(db):
         interval="month",
         is_active=True,
     )
-    PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", currency="usd", amount=0)
+    PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", amount=0)
     return plan
 
 

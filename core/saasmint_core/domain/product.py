@@ -24,5 +24,4 @@ class ProductPrice(BaseModel):
     id: UUID
     product_id: UUID
     stripe_price_id: str
-    currency: str
-    amount: int  # minor units (cents)
+    amount: int  # USD cents

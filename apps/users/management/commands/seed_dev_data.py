@@ -246,23 +246,13 @@ PLANS = [
     },
 ]
 
-# (plan_key, currency, amount_cents, stripe_price_id)
+# (plan_key, amount_usd_cents, stripe_price_id)
 PLAN_PRICES = [
-    ("personal_free_monthly", "usd", 0, "price_dev_personal_free_usd"),
-    ("personal_free_monthly", "eur", 0, "price_dev_personal_free_eur"),
-    ("personal_free_monthly", "gbp", 0, "price_dev_personal_free_gbp"),
-    ("personal_basic_monthly", "usd", 1900, "price_dev_personal_basic_usd"),
-    ("personal_basic_monthly", "eur", 1800, "price_dev_personal_basic_eur"),
-    ("personal_basic_monthly", "gbp", 1500, "price_dev_personal_basic_gbp"),
-    ("personal_pro_monthly", "usd", 4900, "price_dev_personal_pro_usd"),
-    ("personal_pro_monthly", "eur", 4600, "price_dev_personal_pro_eur"),
-    ("personal_pro_monthly", "gbp", 3900, "price_dev_personal_pro_gbp"),
-    ("team_basic_monthly", "usd", 1700, "price_dev_team_basic_usd"),
-    ("team_basic_monthly", "eur", 1600, "price_dev_team_basic_eur"),
-    ("team_basic_monthly", "gbp", 1400, "price_dev_team_basic_gbp"),
-    ("team_pro_monthly", "usd", 4500, "price_dev_team_pro_usd"),
-    ("team_pro_monthly", "eur", 4200, "price_dev_team_pro_eur"),
-    ("team_pro_monthly", "gbp", 3600, "price_dev_team_pro_gbp"),
+    ("personal_free_monthly", 0, "price_dev_personal_free_usd"),
+    ("personal_basic_monthly", 1900, "price_dev_personal_basic_usd"),
+    ("personal_pro_monthly", 4900, "price_dev_personal_pro_usd"),
+    ("team_basic_monthly", 1700, "price_dev_team_basic_usd"),
+    ("team_pro_monthly", 4500, "price_dev_team_pro_usd"),
 ]
 
 
@@ -319,18 +309,17 @@ class Command(BaseCommand):
         return plan_map
 
     def _seed_plan_prices(self, plan_map: dict[str, Plan]) -> None:
-        existing_prices = set(
-            PlanPrice.objects.filter(plan__in=plan_map.values()).values_list("plan_id", "currency")
+        existing_plan_ids = set(
+            PlanPrice.objects.filter(plan__in=plan_map.values()).values_list("plan_id", flat=True)
         )
         new_prices = [
             PlanPrice(
                 plan=plan_map[plan_key],
-                currency=currency,
                 stripe_price_id=stripe_price_id,
                 amount=amount,
             )
-            for plan_key, currency, amount, stripe_price_id in PLAN_PRICES
-            if (plan_map[plan_key].pk, currency) not in existing_prices
+            for plan_key, amount, stripe_price_id in PLAN_PRICES
+            if plan_map[plan_key].pk not in existing_plan_ids
         ]
         if new_prices:
             PlanPrice.objects.bulk_create(new_prices)

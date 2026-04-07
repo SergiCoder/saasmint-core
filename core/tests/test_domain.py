@@ -255,11 +255,9 @@ def test_plan_price_creation() -> None:
         id=uuid4(),
         plan_id=uuid4(),
         stripe_price_id="price_abc",
-        currency="usd",
         amount=999,
     )
     assert price.amount == 999
-    assert price.currency == "usd"
 
 
 def test_subscription_creation() -> None:

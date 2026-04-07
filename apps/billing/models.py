@@ -51,21 +51,15 @@ class Plan(models.Model):
 
 class PlanPrice(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    plan = models.ForeignKey(Plan, on_delete=models.CASCADE, related_name="prices")
+    plan = models.OneToOneField(Plan, on_delete=models.CASCADE, related_name="price")
     stripe_price_id = models.CharField(max_length=255, unique=True)
-    currency = models.CharField(max_length=3)
-    amount = models.IntegerField(help_text="Amount in minor units (cents)")
+    amount = models.IntegerField(help_text="Amount in USD cents")
 
     class Meta:
         db_table = "plan_prices"
-        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
-            models.UniqueConstraint(
-                fields=["plan", "currency"], name="plan_prices_plan_currency_uniq"
-            ),
-        ]
 
     def __str__(self) -> str:
-        return f"{self.plan.name} — {self.currency.upper()} {self.amount}"
+        return f"{self.plan.name} — ${self.amount / 100:.2f}"
 
 
 class StripeCustomer(models.Model):
@@ -166,21 +160,15 @@ class Product(models.Model):
 
 class ProductPrice(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name="prices")
+    product = models.OneToOneField(Product, on_delete=models.CASCADE, related_name="price")
     stripe_price_id = models.CharField(max_length=255, unique=True)
-    currency = models.CharField(max_length=3)
-    amount = models.IntegerField(help_text="Amount in minor units (cents)")
+    amount = models.IntegerField(help_text="Amount in USD cents")
 
     class Meta:
         db_table = "product_prices"
-        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
-            models.UniqueConstraint(
-                fields=["product", "currency"], name="product_prices_product_currency_uniq"
-            ),
-        ]
 
     def __str__(self) -> str:
-        return f"{self.product.name} — {self.currency.upper()} {self.amount}"
+        return f"{self.product.name} — ${self.amount / 100:.2f}"
 
 
 class StripeEvent(models.Model):

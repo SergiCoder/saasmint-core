@@ -289,18 +289,18 @@ class TestDjangoPlanRepository:
         assert results[0].name == "Personal Monthly"
 
     def test_get_price(self, repo, plan, plan_price):
-        result = async_to_sync(repo.get_price)(plan.id, "usd")
+        result = async_to_sync(repo.get_price)(plan.id)
         assert result is not None
         assert result.amount == 999
 
     def test_get_price_not_found(self, repo, plan):
-        result = async_to_sync(repo.get_price)(plan.id, "eur")
+        result = async_to_sync(repo.get_price)(plan.id)
         assert result is None
 
     def test_get_price_by_stripe_id(self, repo, plan_price):
         result = async_to_sync(repo.get_price_by_stripe_id)("price_test_123")
         assert result is not None
-        assert result.currency == "usd"
+        assert result.amount == 999
 
 
 class TestDjangoStripeEventRepository:

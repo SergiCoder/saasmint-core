@@ -28,15 +28,13 @@ class TestPlan:
 @pytest.mark.django_db
 class TestPlanPrice:
     def test_str(self, plan_price):
-        assert "USD" in str(plan_price)
-        assert "999" in str(plan_price)
+        assert "$9.99" in str(plan_price)
 
-    def test_unique_plan_currency(self, plan, plan_price):
+    def test_unique_plan(self, plan, plan_price):
         with pytest.raises(IntegrityError):
             PlanPrice.objects.create(
                 plan=plan,
                 stripe_price_id="price_dup",
-                currency="usd",
                 amount=1999,
             )
 
