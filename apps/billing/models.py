@@ -48,6 +48,13 @@ class Plan(models.Model):
     def __str__(self) -> str:
         return f"{self.name} ({self.interval})"
 
+    @classmethod
+    def free_plans(cls) -> models.QuerySet[Plan]:
+        """Queryset of active personal plans whose price is $0."""
+        return cls.objects.filter(
+            is_active=True, context=PlanContext.PERSONAL, price__amount=0
+        ).select_related("price")
+
 
 class PlanPrice(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -134,6 +141,7 @@ class Subscription(models.Model):
         get_latest_by = "created_at"
         indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.Index(fields=["stripe_customer", "status"], name="idx_sub_customer_status"),
+            models.Index(fields=["user", "status"], name="idx_sub_user_status"),
         ]
 
     def __str__(self) -> str:
