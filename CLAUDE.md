@@ -11,6 +11,18 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 - Django apps implement repository interfaces from core and wire them to DRF views/serializers.
 - Supabase: `SUPABASE_JWT_SECRET` is used both for JWT verification and as the service role key for Admin API calls. Do not add a separate `SUPABASE_SERVICE_ROLE_KEY` setting.
 
+## Billing model
+
+- Single-currency (USD) catalog. `PlanPrice` / `ProductPrice` store `amount` in cents, no `currency` column.
+- `Plan` has `(context, tier, interval)` — `context` is `personal` or `team`, `tier` is `free`/`basic`/`pro`. Active rows are unique on that triple.
+- `Subscription` covers two shapes:
+  - Paid: `stripe_id` + `stripe_customer_id` set, lifecycle synced via webhooks.
+  - Free: `stripe_id IS NULL`, `user_id` set directly. Created on signup (`apps.billing.services.assign_free_plan`) and on personal subscription cancellation (auto-fallback in `_on_subscription_deleted`). `Subscription.is_free` distinguishes them.
+- `current_period_end` for free subs is the sentinel `FREE_SUBSCRIPTION_PERIOD_END` (year 9999) — they never renew.
+- `Product` / `ProductPrice` are one-time purchases (credit packs / Boost), separate from subscription plans.
+- Stripe API version is pinned to `2025-03-31.basil`. Notable: `cancel_at_period_end=True` is replaced by `cancel_at="min_period_end"` (clear with `cancel_at=""`); the singular `subscription.discount` is replaced by `discounts[]`; `current_period_start/end` live on subscription items, not the subscription itself.
+- `make sync-stripe` (runs `manage.py sync_stripe_catalog`) is the source of truth for pushing local Plans/Products into Stripe. It should run after every `migrate` in deploy pipelines so Stripe matches the DB; it is idempotent via Stripe `lookup_key`s.
+
 ## Prism commands
 
 Use Prism for all workflow operations — it is the source of truth for branching, reviews, and shipping:
