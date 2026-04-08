@@ -225,7 +225,7 @@ class SubscriptionView(APIView):
 
         try:
             sub = (
-                SubscriptionModel.objects.select_related("plan")
+                SubscriptionModel.objects.select_related("plan__price")
                 .filter(q, status__in=ACTIVE_SUBSCRIPTION_STATUSES)
                 .latest("created_at")
             )
