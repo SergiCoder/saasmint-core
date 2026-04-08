@@ -331,7 +331,7 @@ class TestUpdateSubscription:
         assert resp.status_code == 404
 
     @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
-    def test_updates_seats(self, mock_seats, authed_client, subscription):
+    def test_updates_seats(self, mock_seats, authed_client, team_subscription):
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
             {"quantity": 5},
@@ -342,7 +342,9 @@ class TestUpdateSubscription:
         assert mock_seats.call_args.kwargs["quantity"] == 5
 
     @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
-    def test_seats_only_does_not_call_change_plan(self, mock_seats, authed_client, subscription):
+    def test_seats_only_does_not_call_change_plan(
+        self, mock_seats, authed_client, team_subscription
+    ):
         with patch("apps.billing.views.change_plan", new_callable=AsyncMock) as mock_change:
             authed_client.patch(
                 "/api/v1/billing/subscription/",
@@ -351,6 +353,32 @@ class TestUpdateSubscription:
             )
             mock_change.assert_not_called()
         mock_seats.assert_called_once()
+
+    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
+    def test_seats_only_rejected_on_personal_plan(
+        self, mock_seats, authed_client, subscription
+    ):
+        """Personal plans must not accept multi-seat updates via the seat-only path."""
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"quantity": 5},
+            format="json",
+        )
+        assert resp.status_code == 400
+        mock_seats.assert_not_called()
+
+    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
+    def test_seats_only_rejected_below_team_minimum(
+        self, mock_seats, authed_client, team_subscription
+    ):
+        """Team plans must reject seat updates below the minimum seat count."""
+        resp = authed_client.patch(
+            "/api/v1/billing/subscription/",
+            {"quantity": 1},
+            format="json",
+        )
+        assert resp.status_code == 400
+        mock_seats.assert_not_called()
 
     def test_invalid_quantity_returns_400(self, authed_client, subscription):
         resp = authed_client.patch(

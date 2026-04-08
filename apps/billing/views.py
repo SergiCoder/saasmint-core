@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, cast
+from typing import ClassVar
 from uuid import UUID
 
 from asgiref.sync import async_to_sync
@@ -68,21 +68,23 @@ def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
     return quantity
 
 
-async def _get_customer_and_subscription(
+async def _get_customer_and_paid_subscription(
     user_id: UUID,
-) -> tuple[StripeCustomer, Subscription]:
-    """Fetch the Stripe customer and active *paid* subscription, or raise NotFound.
+) -> tuple[StripeCustomer, Subscription, str]:
+    """Fetch the Stripe customer, active *paid* subscription, and its stripe_id.
 
     Free-plan (local) subscriptions are excluded because PATCH/DELETE/promo
-    operations require a real Stripe subscription.
+    operations require a real Stripe subscription. Returning ``stripe_sub_id``
+    as a non-optional ``str`` lets callers avoid re-checking for ``None``.
+    Raises NotFound when the customer or paid sub is missing.
     """
     customer = await _customer_repo.get_by_user_id(user_id)
     if customer is None:
         raise NotFound("No Stripe customer found.")
     sub = await _subscription_repo.get_active_for_customer(customer.id)
-    if sub is None or sub.is_free:
+    if sub is None or sub.stripe_id is None:
         raise NotFound("No active subscription found.")
-    return customer, sub
+    return customer, sub, sub.stripe_id
 
 
 def _get_active_plan_price(plan_price_id: UUID) -> PlanPrice:
@@ -214,7 +216,7 @@ class SubscriptionView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
-    @extend_schema(responses={200: SubscriptionSerializer, 404: None}, tags=["billing"])
+    @extend_schema(responses={200: SubscriptionSerializer}, tags=["billing"])
     def get(self, request: Request) -> Response:
         user = get_user(request)
         customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
@@ -248,9 +250,7 @@ class SubscriptionView(APIView):
             _validate_quantity_for_plan(plan_price, data["quantity"])
 
         async def _do() -> None:
-            customer, sub = await _get_customer_and_subscription(user.id)
-            # _get_customer_and_subscription rejects free subs, so stripe_id is always set.
-            stripe_sub_id = cast(str, sub.stripe_id)
+            customer, sub, stripe_sub_id = await _get_customer_and_paid_subscription(user.id)
             if "cancel_at_period_end" in data:
                 if data["cancel_at_period_end"]:
                     await cancel_subscription(
@@ -271,6 +271,13 @@ class SubscriptionView(APIView):
                     quantity=data.get("quantity"),
                 )
             elif "quantity" in data:
+                # Seat-only update: enforce per-context seat rules against the
+                # current subscription's plan, otherwise a personal sub could
+                # be bumped to N seats and a team sub down to 1.
+                current_price = await PlanPrice.objects.select_related("plan").aget(
+                    plan_id=sub.plan_id
+                )
+                _validate_quantity_for_plan(current_price, data["quantity"])
                 await update_seat_count(
                     stripe_subscription_id=stripe_sub_id,
                     quantity=data["quantity"],
@@ -284,7 +291,7 @@ class SubscriptionView(APIView):
         user = get_user(request)
 
         async def _do() -> None:
-            customer, _ = await _get_customer_and_subscription(user.id)
+            customer, _, _ = await _get_customer_and_paid_subscription(user.id)
             await cancel_subscription(
                 stripe_customer_id=customer.id,
                 at_period_end=True,
@@ -308,9 +315,7 @@ class ApplyPromoCodeView(APIView):
         ser.is_valid(raise_exception=True)
 
         async def _do() -> None:
-            _, sub = await _get_customer_and_subscription(user.id)
-            # _get_customer_and_subscription rejects free subs, so stripe_id is always set.
-            stripe_sub_id = cast(str, sub.stripe_id)
+            _, _, stripe_sub_id = await _get_customer_and_paid_subscription(user.id)
             await apply_promo_code(
                 stripe_subscription_id=stripe_sub_id,
                 promo_code=ser.validated_data["promo_code"],

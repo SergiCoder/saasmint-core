@@ -75,13 +75,26 @@ def stripe_customer(user):
 
 
 @pytest.fixture
-def subscription(stripe_customer, plan):
+def subscription(stripe_customer, plan, plan_price):
     return Subscription.objects.create(
         stripe_id="sub_test_123",
         stripe_customer=stripe_customer,
         status="active",
         plan=plan,
         quantity=1,
+        current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+        current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+    )
+
+
+@pytest.fixture
+def team_subscription(stripe_customer, team_plan, team_plan_price):
+    return Subscription.objects.create(
+        stripe_id="sub_team_test_123",
+        stripe_customer=stripe_customer,
+        status="active",
+        plan=team_plan,
+        quantity=2,
         current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
         current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
     )
