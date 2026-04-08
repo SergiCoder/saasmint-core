@@ -13,4 +13,5 @@ echo "==> Starting Django dev server..."
 exec uv run uvicorn config.asgi:application \
     --host 0.0.0.0 \
     --port "${DJANGO_PORT:-8001}" \
+    --log-config /app/infra/uvicorn-log-config.json \
     --reload
