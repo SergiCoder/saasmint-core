@@ -355,12 +355,14 @@ class Command(BaseCommand):
     def _seed_plans(self) -> dict[str, Plan]:
         # Identity is (context, tier, interval) — multiple plans can share a name
         # (e.g. monthly and yearly variants).
-        def identity(p: dict[str, str]) -> tuple[str, str, str]:
+        def identity_obj(p: Plan) -> tuple[str, str, str]:
+            return (p.context, p.tier, p.interval)
+
+        def identity_spec(p: dict[str, str]) -> tuple[str, str, str]:
             return (p["context"], p["tier"], p["interval"])
 
-        existing = {
-            (p.context, p.tier, p.interval): p
-            for p in Plan.objects.filter(is_active=True)
+        all_plans: dict[tuple[str, str, str], Plan] = {
+            identity_obj(p): p for p in Plan.objects.filter(is_active=True)
         }
         new_plans = [
             Plan(
@@ -372,18 +374,15 @@ class Command(BaseCommand):
                 is_active=True,
             )
             for p in PLANS
-            if identity(p) not in existing
+            if identity_spec(p) not in all_plans
         ]
         if new_plans:
             Plan.objects.bulk_create(new_plans)
             for p in new_plans:
                 self.stdout.write(f"  + Plan: {p.name}")
+                all_plans[identity_obj(p)] = p
 
-        all_plans = {
-            (p.context, p.tier, p.interval): p
-            for p in Plan.objects.filter(is_active=True)
-        }
-        plan_map: dict[str, Plan] = {p["key"]: all_plans[identity(p)] for p in PLANS}
+        plan_map: dict[str, Plan] = {p["key"]: all_plans[identity_spec(p)] for p in PLANS}
         self._seed_plan_prices(plan_map)
         return plan_map
 
