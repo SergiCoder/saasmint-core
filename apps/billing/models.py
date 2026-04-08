@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 from saasmint_core.domain.subscription import (
     ACTIVE_SUBSCRIPTION_STATUSES as _CORE_ACTIVE_STATUSES,
@@ -199,7 +200,9 @@ class StripeEvent(models.Model):
     stripe_id = models.CharField(max_length=255, unique=True)
     type = models.CharField(max_length=255)
     livemode = models.BooleanField()
-    payload = models.JSONField()
+    # DjangoJSONEncoder handles Decimal (Stripe sends `unit_amount_decimal`
+    # and similar as Decimal after `to_dict()`), datetime, UUID, etc.
+    payload = models.JSONField(encoder=DjangoJSONEncoder)
     processed_at = models.DateTimeField(null=True, blank=True)
     error = models.TextField(null=True, blank=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no error (distinguishable from empty string)
     created_at = models.DateTimeField(auto_now_add=True)

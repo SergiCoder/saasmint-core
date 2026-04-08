@@ -48,10 +48,18 @@ async def handle_stripe_event(
     from saasmint_core.exceptions import WebhookVerificationError
 
     try:
-        event = stripe.Webhook.construct_event(payload, signature, webhook_secret)  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation
+        stripe_event = stripe.Webhook.construct_event(payload, signature, webhook_secret)  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation
     except stripe.SignatureVerificationError as exc:
         raise WebhookVerificationError("Invalid Stripe webhook signature") from exc
 
+    # Convert StripeObject → plain nested dict at the boundary. Newer
+    # stripe-python versions don't inherit StripeObject from dict, so it
+    # has no `.get()` and `dict(event)` raises KeyError. `.to_dict()`
+    # recurses into nested StripeObjects. Tests stub construct_event to
+    # return a plain dict directly, so accept that case as-is.
+    event: dict[str, Any] = (
+        stripe_event.to_dict() if hasattr(stripe_event, "to_dict") else stripe_event
+    )
     stripe_id: str = event["id"]
 
     is_new = await repos.events.save_if_new(
@@ -60,7 +68,7 @@ async def handle_stripe_event(
             stripe_id=stripe_id,
             type=event["type"],
             livemode=event["livemode"],
-            payload=dict(event),
+            payload=event,
             created_at=datetime.now(UTC),
         )
     )
@@ -77,7 +85,7 @@ async def handle_stripe_event(
         raise
 
 
-async def _dispatch(event: stripe.Event, repos: WebhookRepos) -> None:
+async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
     match event["type"]:
         case "customer.subscription.created" | "customer.subscription.updated":
             await _sync_subscription(event["data"]["object"], repos)
