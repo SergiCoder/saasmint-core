@@ -37,9 +37,6 @@ class InMemoryUserRepository:
     async def get_by_email(self, email: str) -> User | None:
         return next((u for u in self._store.values() if u.email == email), None)
 
-    async def get_by_supabase_uid(self, supabase_uid: str) -> User | None:
-        return next((u for u in self._store.values() if u.supabase_uid == supabase_uid), None)
-
     async def save(self, user: User) -> User:
         self._store[user.id] = user
         return user
@@ -245,7 +242,6 @@ def plan_repo() -> InMemoryPlanRepository:
 def make_user(**overrides: Any) -> User:
     fields: dict[str, Any] = {
         "id": uuid4(),
-        "supabase_uid": "sup_abc123",
         "email": "test@example.com",
         "full_name": "Test User",
         "account_type": AccountType.PERSONAL,

@@ -23,7 +23,6 @@ def repo():
 def orm_user(db):
     return User.objects.create_user(
         email="repo@example.com",
-        supabase_uid="sup_repo",
         full_name="Repo User",
     )
 
@@ -49,22 +48,11 @@ def test_get_by_id_excludes_soft_deleted(repo, orm_user):
 def test_get_by_email(repo, orm_user):
     domain_user = async_to_sync(repo.get_by_email)("repo@example.com")
     assert domain_user is not None
-    assert domain_user.supabase_uid == "sup_repo"
+    assert domain_user.email == "repo@example.com"
 
 
 def test_get_by_email_not_found(repo):
     result = async_to_sync(repo.get_by_email)("nobody@example.com")
-    assert result is None
-
-
-def test_get_by_supabase_uid(repo, orm_user):
-    domain_user = async_to_sync(repo.get_by_supabase_uid)("sup_repo")
-    assert domain_user is not None
-    assert domain_user.email == "repo@example.com"
-
-
-def test_get_by_supabase_uid_not_found(repo):
-    result = async_to_sync(repo.get_by_supabase_uid)("nonexistent")
     assert result is None
 
 
@@ -75,7 +63,6 @@ def test_save_creates_new(repo):
     user_id = uuid4()
     domain_user = DomainUser(
         id=user_id,
-        supabase_uid="sup_save_new",
         email="save_new@example.com",
         full_name="Save New",
         account_type=AccountType.PERSONAL,
@@ -112,13 +99,6 @@ def test_get_by_email_excludes_soft_deleted(repo, orm_user):
     orm_user.deleted_at = datetime.now(UTC)
     orm_user.save()
     result = async_to_sync(repo.get_by_email)(orm_user.email)
-    assert result is None
-
-
-def test_get_by_supabase_uid_excludes_soft_deleted(repo, orm_user):
-    orm_user.deleted_at = datetime.now(UTC)
-    orm_user.save()
-    result = async_to_sync(repo.get_by_supabase_uid)(orm_user.supabase_uid)
     assert result is None
 
 
@@ -225,7 +205,6 @@ class TestListByOrg:
         for i in range(3):
             u = User.objects.create_user(
                 email=f"member{i}@example.com",
-                supabase_uid=f"sup_member{i}",
                 full_name=f"Member {i}",
             )
             OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)

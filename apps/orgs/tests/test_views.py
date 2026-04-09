@@ -665,7 +665,6 @@ class TestOrgMemberListPagination:
         for i in range(5):
             u = User.objects.create_user(
                 email=f"pag{i}@example.com",
-                supabase_uid=f"sup_pag{i}",
                 full_name=f"Pag{i}",
             )
             OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)
@@ -678,7 +677,6 @@ class TestOrgMemberListPagination:
         for i in range(3):
             u = User.objects.create_user(
                 email=f"off{i}@example.com",
-                supabase_uid=f"sup_off{i}",
                 full_name=f"Off{i}",
             )
             OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)

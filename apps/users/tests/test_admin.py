@@ -1,4 +1,4 @@
-"""Tests for the UserAdmin customisation — get_fieldsets password hiding."""
+"""Tests for the UserAdmin customisation."""
 
 from __future__ import annotations
 
@@ -22,23 +22,22 @@ def rf():
 
 @pytest.mark.django_db
 class TestUserAdminGetFieldsets:
-    def test_non_staff_user_hides_password_field(self, admin_site, rf):
-        """For non-staff (Supabase-only) users, the password field should be hidden."""
+    def test_all_users_show_password_field(self, admin_site, rf):
+        """All users should have the password field visible (Django manages passwords now)."""
         user = User.objects.create_user(
             email="regular@example.com",
-            supabase_uid="sup_regular",
+            full_name="Regular User",
             is_staff=False,
         )
         request = rf.get("/admin/users/user/")
         fieldsets = admin_site.get_fieldsets(request, obj=user)
         all_fields = [f for _name, opts in fieldsets for f in opts["fields"]]
-        assert "password" not in all_fields
+        assert "password" in all_fields
 
     def test_staff_user_shows_password_field(self, admin_site, rf):
-        """For staff users, the password field should remain visible."""
         user = User.objects.create_user(
             email="staff@example.com",
-            supabase_uid="sup_staff",
+            full_name="Staff User",
             is_staff=True,
         )
         request = rf.get("/admin/users/user/")
@@ -50,22 +49,18 @@ class TestUserAdminGetFieldsets:
         """When obj is None (add form), get_fieldsets returns add_fieldsets unchanged."""
         request = rf.get("/admin/users/user/add/")
         fieldsets = admin_site.get_fieldsets(request, obj=None)
-        # add_fieldsets has email and supabase_uid, no password
         all_fields = [f for _name, opts in fieldsets for f in opts["fields"]]
         assert "email" in all_fields
-        assert "supabase_uid" in all_fields
+        assert "full_name" in all_fields
 
-    def test_non_staff_preserves_other_fields(self, admin_site, rf):
-        """Hiding password should not remove other fields from the first fieldset."""
+    def test_fieldsets_contain_expected_fields(self, admin_site, rf):
         user = User.objects.create_user(
             email="check@example.com",
-            supabase_uid="sup_check",
-            is_staff=False,
+            full_name="Check User",
         )
         request = rf.get("/admin/users/user/")
         fieldsets = admin_site.get_fieldsets(request, obj=user)
         all_fields = [f for _name, opts in fieldsets for f in opts["fields"]]
-        # These fields from the first fieldset should survive
         assert "email" in all_fields
-        assert "supabase_uid" in all_fields
         assert "id" in all_fields
+        assert "password" in all_fields

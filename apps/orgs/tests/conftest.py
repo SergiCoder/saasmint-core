@@ -21,7 +21,6 @@ def _clear_cache():
 def user(db):
     return User.objects.create_user(
         email="orgowner@example.com",
-        supabase_uid="sup_orgowner",
         full_name="Org Owner",
     )
 
@@ -30,7 +29,6 @@ def user(db):
 def other_user(db):
     return User.objects.create_user(
         email="other@example.com",
-        supabase_uid="sup_other",
         full_name="Other User",
     )
 
@@ -57,7 +55,6 @@ def owner_membership(org, user):
 def admin_user(db):
     return User.objects.create_user(
         email="admin@example.com",
-        supabase_uid="sup_admin",
         full_name="Admin User",
     )
 
@@ -75,7 +72,6 @@ def admin_membership(org, admin_user):
 def member_user(db):
     return User.objects.create_user(
         email="member@example.com",
-        supabase_uid="sup_member",
         full_name="Member User",
     )
 
@@ -123,7 +119,6 @@ def soft_deleted_org(org):
 def second_admin_user(db):
     return User.objects.create_user(
         email="admin2@example.com",
-        supabase_uid="sup_admin2",
         full_name="Admin2",
     )
 

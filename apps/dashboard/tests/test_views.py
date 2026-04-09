@@ -261,7 +261,6 @@ class TestHijackAcquireView:
     def test_acquire_requires_staff(self, logged_in_client, user):
         other = User.objects.create_user(
             email="target@example.com",
-            supabase_uid="sup_target",
         )
         resp = logged_in_client.post(
             "/hijack/acquire/",

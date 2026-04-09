@@ -15,7 +15,6 @@ def user_pending_deletion(db) -> User:
     """Create a user whose scheduled_deletion_at has passed."""
     user = User.objects.create_user(
         email="pending@example.com",
-        supabase_uid="sup_pending",
         full_name="Pending User",
     )
     user.scheduled_deletion_at = datetime.now(UTC) - timedelta(hours=1)

@@ -32,7 +32,6 @@ NOW = datetime(2024, 1, 1, tzinfo=UTC)
 def test_user_creation() -> None:
     user = User(
         id=uuid4(),
-        supabase_uid="sup_123",
         email="alice@example.com",
         full_name="Alice Example",
         created_at=NOW,
@@ -51,7 +50,6 @@ def test_user_with_all_fields() -> None:
     uid = uuid4()
     user = User(
         id=uid,
-        supabase_uid="sup_xyz",
         email="bob@example.com",
         full_name="Bob Smith",
         avatar_url="https://example.com/avatar.png",
@@ -69,7 +67,7 @@ def test_user_with_all_fields() -> None:
 
 
 def test_user_is_frozen() -> None:
-    user = User(id=uuid4(), supabase_uid="s", email="a@b.com", full_name="Test", created_at=NOW)
+    user = User(id=uuid4(), email="a@b.com", full_name="Test", created_at=NOW)
     with pytest.raises(ValidationError):
         user.email = "other@b.com"  # type: ignore[misc]  # intentional: testing that frozen dataclass raises ValidationError on mutation
 
@@ -81,7 +79,7 @@ def test_account_type_values() -> None:
 
 def test_user_invalid_email() -> None:
     with pytest.raises(ValidationError):
-        User(id=uuid4(), supabase_uid="s", email="not-an-email", full_name="Test", created_at=NOW)
+        User(id=uuid4(), email="not-an-email", full_name="Test", created_at=NOW)
 
 
 # ── Org ───────────────────────────────────────────────────────────────────────

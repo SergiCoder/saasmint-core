@@ -22,7 +22,6 @@ def _clear_cache():
 def user(db):
     return User.objects.create_user(
         email="billing@example.com",
-        supabase_uid="sup_billing",
         full_name="Billing User",
     )
 

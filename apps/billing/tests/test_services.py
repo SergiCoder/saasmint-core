@@ -22,7 +22,6 @@ from apps.users.models import User
 def user(db):
     return User.objects.create_user(
         email="free@example.com",
-        supabase_uid="sup_free",
         full_name="Free User",
     )
 

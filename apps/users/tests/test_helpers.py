@@ -25,7 +25,6 @@ class TestAgetOrNone:
     def test_returns_converted_object(self):
         user = User.objects.create(
             email="helper@example.com",
-            supabase_uid="sup_helper",
         )
 
         def to_dict(obj):
@@ -42,12 +41,10 @@ class TestAgetOrNone:
         """aget_or_none should propagate MultipleObjectsReturned (data integrity bug)."""
         User.objects.create(
             email="dup1@example.com",
-            supabase_uid="sup_dup1",
             full_name="Duplicate",
         )
         User.objects.create(
             email="dup2@example.com",
-            supabase_uid="sup_dup2",
             full_name="Duplicate",
         )
         with pytest.raises(User.MultipleObjectsReturned):

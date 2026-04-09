@@ -30,7 +30,6 @@ _TEST_DRF = {
 def user(db):
     return User.objects.create_user(
         email="view@example.com",
-        supabase_uid="sup_view",
         full_name="View User",
     )
 

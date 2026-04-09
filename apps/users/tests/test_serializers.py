@@ -13,7 +13,6 @@ class TestUserSerializer:
     def test_serializes_expected_fields(self):
         user = User.objects.create_user(
             email="ser@example.com",
-            supabase_uid="sup_ser",
             full_name="Ser User",
         )
         data = UserSerializer(user).data
@@ -23,7 +22,6 @@ class TestUserSerializer:
         assert "created_at" in data
         # Sensitive fields should not leak
         assert "password" not in data
-        assert "supabase_uid" not in data
         assert "deleted_at" not in data
         assert "is_active" not in data
         assert "is_staff" not in data
@@ -35,7 +33,6 @@ class TestUserSerializer:
     def test_new_profile_fields_serialized(self):
         user = User.objects.create_user(
             email="profile@example.com",
-            supabase_uid="sup_profile",
             full_name="Profile User",
             phone_prefix="+34",
             phone="612345678",
@@ -57,7 +54,6 @@ class TestUserSerializer:
         """When phone_prefix and phone are both None, phone should serialize as None."""
         user = User.objects.create_user(
             email="nophone@example.com",
-            supabase_uid="sup_nophone",
             full_name="No Phone",
         )
         data = UserSerializer(user).data
@@ -67,7 +63,6 @@ class TestUserSerializer:
         """When phone_prefix is set, phone should serialize as an object."""
         user = User.objects.create_user(
             email="hasphone@example.com",
-            supabase_uid="sup_hasphone",
             full_name="Has Phone",
             phone_prefix="+1",
             phone="5551234567",

@@ -1,32 +1,31 @@
-"""Tests for the drf-spectacular SupabaseJWT authentication extension."""
+"""Tests for the drf-spectacular JWT authentication extension."""
 
 from __future__ import annotations
 
-from apps.users.authentication import SupabaseJWTAuthentication
-from apps.users.schema import SupabaseJWTAuthenticationScheme
+from apps.users.authentication import JWTAuthentication
+from apps.users.schema import JWTAuthenticationScheme
 
 
-class TestSupabaseJWTAuthenticationScheme:
+class TestJWTAuthenticationScheme:
     def test_target_class_is_correct(self):
-        target = SupabaseJWTAuthenticationScheme.target_class
-        # drf-spectacular may resolve the dotted-path string to the actual class
+        target = JWTAuthenticationScheme.target_class
         if isinstance(target, str):
-            assert target == "apps.users.authentication.SupabaseJWTAuthentication"
+            assert target == "apps.users.authentication.JWTAuthentication"
         else:
-            assert target is SupabaseJWTAuthentication
+            assert target is JWTAuthentication
 
-    def test_name_is_supabase_jwt(self):
-        assert SupabaseJWTAuthenticationScheme.name == "SupabaseJWT"
+    def test_name_is_jwt(self):
+        assert JWTAuthenticationScheme.name == "JWT"
 
     def test_get_security_definition_returns_bearer_scheme(self):
-        extension = SupabaseJWTAuthenticationScheme(target=None)
+        extension = JWTAuthenticationScheme(target=None)
         defn = extension.get_security_definition(auto_schema=None)
         assert defn["type"] == "http"
         assert defn["scheme"] == "bearer"
         assert defn["bearerFormat"] == "JWT"
 
     def test_get_security_definition_includes_description(self):
-        extension = SupabaseJWTAuthenticationScheme(target=None)
+        extension = JWTAuthenticationScheme(target=None)
         defn = extension.get_security_definition(auto_schema=None)
         assert "description" in defn
-        assert "Supabase" in defn["description"]
+        assert "Django" in defn["description"]

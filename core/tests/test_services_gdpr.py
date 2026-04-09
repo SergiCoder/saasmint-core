@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -25,10 +25,6 @@ from tests.conftest import (
     make_user,
 )
 
-_SUPABASE_URL = "http://localhost:54321"
-_SERVICE_ROLE_KEY = "test-service-role-key"
-
-
 # ── request_account_deletion ─────────────────────────────────────────────────
 
 
@@ -44,8 +40,6 @@ async def test_request_deletion_user_not_found_raises() -> None:
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
 
@@ -58,35 +52,15 @@ async def test_request_deletion_no_subscription_deletes_immediately() -> None:
     user = make_user()
     await user_repo.save(user)
 
-    with (
-        patch(
-            "saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock
-        ) as mock_supa,
-        patch(
-            "saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock
-        ) as mock_avatar,
-    ):
-        result = await request_account_deletion(
-            user_id=user.id,
-            user_repo=user_repo,
-            customer_repo=customer_repo,
-            subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
-        )
+    result = await request_account_deletion(
+        user_id=user.id,
+        user_repo=user_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+    )
 
     assert result is None
     assert await user_repo.get_by_id(user.id) is None
-    mock_supa.assert_called_once_with(
-        supabase_url=_SUPABASE_URL,
-        service_role_key=_SERVICE_ROLE_KEY,
-        supabase_uid=user.supabase_uid,
-    )
-    mock_avatar.assert_called_once_with(
-        supabase_url=_SUPABASE_URL,
-        service_role_key=_SERVICE_ROLE_KEY,
-        avatar_url=user.avatar_url,
-    )
 
 
 @pytest.mark.anyio
@@ -114,8 +88,6 @@ async def test_request_deletion_with_active_subscription_schedules() -> None:
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
     assert result == period_end
@@ -157,8 +129,6 @@ async def test_request_deletion_subscription_already_gone_in_stripe() -> None:
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
     assert result == period_end
@@ -179,8 +149,6 @@ async def test_execute_deletion_user_not_found_raises() -> None:
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
 
@@ -196,18 +164,12 @@ async def test_execute_deletion_customer_no_active_sub() -> None:
     customer = make_stripe_customer(user_id=user.id, stripe_id="cus_no_sub")
     await customer_repo.save(customer)
 
-    with (
-        patch("stripe.Customer.delete") as mock_cust_del,
-        patch("saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock),
-        patch("saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock),
-    ):
+    with patch("stripe.Customer.delete") as mock_cust_del:
         await execute_account_deletion(
             user_id=user.id,
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
     mock_cust_del.assert_called_once_with("cus_no_sub")
@@ -249,8 +211,6 @@ async def test_request_deletion_non_resource_missing_stripe_error_raises() -> No
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
 
@@ -263,18 +223,12 @@ async def test_execute_deletion_no_customer() -> None:
     user = make_user()
     await user_repo.save(user)
 
-    with (
-        patch("saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock),
-        patch("saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock),
-    ):
-        await execute_account_deletion(
-            user_id=user.id,
-            user_repo=user_repo,
-            customer_repo=customer_repo,
-            subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
-        )
+    await execute_account_deletion(
+        user_id=user.id,
+        user_repo=user_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+    )
 
     assert await user_repo.get_by_id(user.id) is None
 
@@ -295,16 +249,12 @@ async def test_execute_deletion_with_customer_and_subscription() -> None:
     with (
         patch("stripe.Subscription.cancel") as mock_cancel,
         patch("stripe.Customer.delete") as mock_cust_del,
-        patch("saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock),
-        patch("saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock),
     ):
         await execute_account_deletion(
             user_id=user.id,
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
     mock_cancel.assert_called_once_with("sub_exec")
@@ -340,16 +290,12 @@ async def test_execute_deletion_stripe_already_gone() -> None:
                 "no such customer", param="id", code="resource_missing"
             ),  # type: ignore[no-untyped-call]
         ),
-        patch("saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock),
-        patch("saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock),
     ):
         await execute_account_deletion(
             user_id=user.id,
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
     assert await user_repo.get_by_id(user.id) is None
@@ -531,18 +477,12 @@ async def test_request_deletion_with_free_subscription_deletes_immediately() -> 
     )
     await subscription_repo.save(free_sub)
 
-    with (
-        patch("saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock),
-        patch("saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock),
-        patch("stripe.Subscription.modify") as mock_modify,
-    ):
+    with patch("stripe.Subscription.modify") as mock_modify:
         result = await request_account_deletion(
             user_id=user.id,
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
     # Free sub → immediate deletion path
@@ -563,18 +503,12 @@ async def test_execute_deletion_with_free_subscription_skips_stripe_cancel() -> 
     free_sub = make_subscription(user_id=user.id, stripe_id=None, stripe_customer_id=None)
     await subscription_repo.save(free_sub)
 
-    with (
-        patch("stripe.Subscription.cancel") as mock_cancel,
-        patch("saasmint_core.services.gdpr.delete_supabase_user", new_callable=AsyncMock),
-        patch("saasmint_core.services.gdpr.delete_supabase_avatar", new_callable=AsyncMock),
-    ):
+    with patch("stripe.Subscription.cancel") as mock_cancel:
         await execute_account_deletion(
             user_id=user.id,
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=_SUPABASE_URL,
-            service_role_key=_SERVICE_ROLE_KEY,
         )
 
     mock_cancel.assert_not_called()

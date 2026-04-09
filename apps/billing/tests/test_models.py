@@ -60,9 +60,7 @@ class TestStripeCustomer:
         from apps.orgs.models import Org
         from apps.users.models import User
 
-        user = User.objects.create_user(
-            email="constraint_user@example.com", supabase_uid="sup_constraint"
-        )
+        user = User.objects.create_user(email="constraint_user@example.com")
         org = Org.objects.create(name="Constraint Org", slug="constraint-org", created_by=user)
         with pytest.raises(IntegrityError):
             StripeCustomer.objects.create(
