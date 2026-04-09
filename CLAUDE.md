@@ -55,7 +55,10 @@ make lint        # ruff check
 make format      # ruff format
 make typecheck   # mypy
 make migrate     # run migrations (stack running)
+docker compose exec django uv run python manage.py spectacular --file schema.yml  # regenerate OpenAPI schema
 ```
+
+After modifying any endpoint (views, serializers, URL routes), regenerate `schema.yml` so the OpenAPI spec stays in sync.
 
 ## Code style
 
