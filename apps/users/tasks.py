@@ -12,6 +12,22 @@ logger = logging.getLogger(__name__)
 
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def send_verification_email_task(email: str, token: str) -> None:
+    """Send email verification link via Resend (async-safe)."""
+    from apps.users.email import send_verification_email
+
+    send_verification_email(email, token)
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def send_password_reset_email_task(email: str, token: str) -> None:
+    """Send password reset link via Resend (async-safe)."""
+    from apps.users.email import send_password_reset_email
+
+    send_password_reset_email(email, token)
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
 def process_scheduled_deletions() -> None:
     """Hard-delete users whose scheduled_deletion_at has passed."""
     from saasmint_core.services.gdpr import execute_account_deletion
