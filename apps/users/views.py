@@ -195,7 +195,7 @@ class AvatarView(APIView):
         ext = file.name.rsplit(".", 1)[-1] if "." in file.name else "jpg"
         path = f"avatars/{user.id}/{uuid.uuid4().hex}.{ext}"
         saved_path = default_storage.save(path, file)
-        avatar_url = f"{settings.MEDIA_URL}{saved_path}"
+        avatar_url = request.build_absolute_uri(f"{settings.MEDIA_URL}{saved_path}")
 
         user.avatar_url = avatar_url
         user.save(update_fields=["avatar_url", "updated_at"])
