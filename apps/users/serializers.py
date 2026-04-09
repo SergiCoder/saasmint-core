@@ -54,7 +54,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
 
 class _PhoneWriteSerializer(serializers.Serializer[User]):
     prefix = serializers.CharField(max_length=5, required=True)
-    number = serializers.CharField(max_length=15, required=True)
+    number = serializers.CharField(min_length=4, max_length=15, required=True)
 
     def validate_prefix(self, value: str) -> str:
         from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES
