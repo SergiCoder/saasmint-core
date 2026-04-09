@@ -100,7 +100,7 @@ setup: install https-setup ## Full first-time project setup
 	@cp -n .env.base .env.local 2>/dev/null || true
 	@echo ""
 	@echo "Setup complete. Next steps:"
-	@echo "  1. Fill in .env.local with your Supabase and Stripe test keys"
+	@echo "  1. Fill in .env.local with your Stripe test keys"
 	@echo "  2. Follow the mkcert instructions above to enable local HTTPS"
 	@echo "  3. make dev"
 

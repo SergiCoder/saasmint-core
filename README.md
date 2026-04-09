@@ -25,7 +25,7 @@ uv sync
 
 # 3. Set up environment variables
 cp .env.base .env.local
-# Edit .env.local with your Stripe keys, Supabase JWT secret, and database URL
+# Edit .env.local with your Stripe keys and database URL
 
 # 4. Start the Docker stack (PostgreSQL, Redis, Django, Celery)
 make dev
@@ -84,9 +84,6 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 | `DATABASE_URL` | PostgreSQL connection string |
 | `STRIPE_SECRET_KEY` | Stripe API secret key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
-| `SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_ANON_KEY` | Supabase anonymous/public key |
-| `SUPABASE_JWT_SECRET` | Supabase JWT signing secret (used for auth) |
 | `REDIS_URL` | Redis connection string (defaults to `redis://localhost:6379/0`) |
 | `DEBUG` | Set to `True` for local development |
 | `ALLOWED_HOSTS` | JSON array of allowed hosts (e.g. `["localhost","127.0.0.1"]`) |
@@ -113,7 +110,7 @@ saasmint-core/
 │   ├── billing/         # Stripe billing, subscriptions, and webhook processing
 │   ├── dashboard/       # Server-rendered dashboard, hijack impersonation landing views
 │   ├── orgs/            # Organisation management and membership
-│   └── users/           # User auth, Supabase JWT authentication, and profile management
+│   └── users/           # User auth, Django JWT authentication, and profile management
 ├── middleware/           # Django middleware (exception handling, security headers)
 ├── infra/               # Docker, Caddy TLS proxy, and dev entrypoint
 ├── templates/           # Shared HTML templates (admin overrides, DRF browsable API, topbar)
