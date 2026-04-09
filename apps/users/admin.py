@@ -8,7 +8,9 @@ from zoneinfo import available_timezones
 from django import forms
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.forms import UserChangeForm as BaseUserChangeForm
 from django.http import HttpRequest
+from django.utils.safestring import SafeString, mark_safe
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.locale import SUPPORTED_LOCALES
 from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES, sort_prefix_key
@@ -25,11 +27,34 @@ _PHONE_PREFIX_CHOICES = [("", "---------")] + [
 _TIMEZONE_CHOICES = [("", "---------")] + [(v, v) for v in sorted(available_timezones())]
 
 
-class UserChangeForm(forms.ModelForm):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
+class _PasswordWidget(forms.Widget):
+    """Show 'Password set' with a reset link instead of the hash breakdown."""
+
+    def render(
+        self,
+        name: str,
+        value: Any,  # noqa: ANN401
+        attrs: dict[str, Any] | None = None,
+        renderer: Any = None,  # noqa: ANN401
+    ) -> SafeString:
+        return mark_safe(
+            '<a href="../password/" class="button" style="text-decoration:none">Reset password</a>'
+        )
+
+
+class UserChangeForm(BaseUserChangeForm):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        super().__init__(*args, **kwargs)
+        password_field = self.fields.get("password")
+        if password_field:
+            password_field.widget = _PasswordWidget()
+            password_field.help_text = ""
+
     class Meta:
         model = User
         fields = (
             "email",
+            "password",
             "full_name",
             "avatar_url",
             "account_type",
