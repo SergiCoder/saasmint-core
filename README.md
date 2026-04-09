@@ -169,7 +169,7 @@ make seed
 
 1. Create a [Stripe account](https://dashboard.stripe.com/register)
 2. Get your API keys from the [Stripe Dashboard](https://dashboard.stripe.com/apikeys) and put them in `.env.local`
-3. Define your catalog locally — edit `apps/billing/migrations/0005_seed_boost_products.py` and `0007_update_plans_and_prices.py` (or add new migrations) to set the plans/products you want, then run `make migrate`
+3. Define your catalog locally — add a data migration under `apps/billing/migrations/` to seed the plans and products you want, then run `make migrate`
 4. Push the local catalog to Stripe with `make sync-stripe` — this creates Stripe Products/Prices via `python manage.py sync_stripe_catalog` and writes the resulting `stripe_price_id` back onto `PlanPrice` / `ProductPrice`. The command is idempotent (uses Stripe `lookup_key`s) and should also be run after every deploy.
 5. Webhook forwarding for local development is handled automatically by the bundled `stripe-cli` service in `docker-compose.yml`. Run `stripe login` once on the host (its config is mounted into the container), then `make dev` will start the forwarder alongside Django. Tail it with `make stripe-logs`.
 6. In production, set up a webhook endpoint pointing to `/api/v1/webhooks/stripe` with these events:
