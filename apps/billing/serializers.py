@@ -6,8 +6,15 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 from rest_framework import serializers
+from saasmint_core.services.currency import format_amount
 
 from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, Subscription
+
+
+def _convert_amount(amount: int, currency: str, rate: float) -> float:
+    """Convert a USD-cents amount to a display amount in the target currency."""
+    converted = round(amount * rate)
+    return format_amount(int(converted), currency)
 
 
 def _validate_redirect_url(url: str) -> str:
@@ -43,10 +50,23 @@ def _validate_redirect_url(url: str) -> str:
 
 
 class PlanPriceSerializer(serializers.ModelSerializer[PlanPrice]):
+    display_amount = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
+
     class Meta:
         model = PlanPrice
-        fields = ("id", "amount")
-        read_only_fields = fields
+        fields = ("id", "amount", "display_amount", "currency")
+        read_only_fields = ("id", "amount")
+
+    def get_display_amount(self, obj: PlanPrice) -> float:
+        return _convert_amount(
+            obj.amount,
+            self.context.get("currency", "usd"),
+            self.context.get("rate", 1.0),
+        )
+
+    def get_currency(self, obj: PlanPrice) -> str:
+        return str(self.context.get("currency", "usd"))
 
 
 class PlanSerializer(serializers.ModelSerializer[Plan]):
@@ -68,10 +88,23 @@ class PlanSerializer(serializers.ModelSerializer[Plan]):
 
 
 class ProductPriceSerializer(serializers.ModelSerializer[ProductPrice]):
+    display_amount = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
+
     class Meta:
         model = ProductPrice
-        fields = ("id", "amount")
-        read_only_fields = fields
+        fields = ("id", "amount", "display_amount", "currency")
+        read_only_fields = ("id", "amount")
+
+    def get_display_amount(self, obj: ProductPrice) -> float:
+        return _convert_amount(
+            obj.amount,
+            self.context.get("currency", "usd"),
+            self.context.get("rate", 1.0),
+        )
+
+    def get_currency(self, obj: ProductPrice) -> str:
+        return str(self.context.get("currency", "usd"))
 
 
 class ProductSerializer(serializers.ModelSerializer[Product]):

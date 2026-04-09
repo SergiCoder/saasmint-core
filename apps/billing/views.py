@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from typing import ClassVar
 from uuid import UUID
 
 from asgiref.sync import async_to_sync
-from django.core.cache import cache
 from django.db.models import Q
-from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
@@ -26,12 +26,13 @@ from saasmint_core.services.billing import (
     get_or_create_customer,
     resume_subscription,
 )
+from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.subscriptions import (
     change_plan,
     update_seat_count,
 )
 
-from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, PlanContext, PlanPrice
+from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, ExchangeRate, PlanContext, PlanPrice
 from apps.billing.models import Plan as PlanModel
 from apps.billing.models import Product as ProductModel
 from apps.billing.models import Subscription as SubscriptionModel
@@ -49,7 +50,50 @@ from apps.billing.serializers import (
 )
 from helpers import get_user
 
+logger = logging.getLogger(__name__)
+
 MIN_TEAM_SEATS = 2
+
+
+def _resolve_display_currency(request: Request) -> str:
+    """Resolve the display currency for a request.
+
+    Priority for anonymous: ``?currency=`` query param → ``"usd"``.
+    Priority for authenticated: ``?currency=`` → ``user.preferred_currency`` → ``"usd"``.
+    """
+    qp = request.query_params.get("currency", "").lower()
+    if qp in SUPPORTED_CURRENCIES:
+        return qp
+
+    user = getattr(request, "user", None)
+    if user is not None and getattr(user, "is_authenticated", False):
+        preferred: str | None = getattr(user, "preferred_currency", None)
+        if preferred and preferred.lower() in SUPPORTED_CURRENCIES:
+            return preferred.lower()
+
+    return "usd"
+
+
+def _get_exchange_rate(currency: str) -> tuple[str, float]:
+    """Return ``(currency, rate)`` for conversion from USD.
+
+    Falls back to ``("usd", 1.0)`` if the rate is unavailable.
+    """
+    if currency == "usd":
+        return "usd", 1.0
+    try:
+        er = ExchangeRate.objects.get(currency=currency)
+        return currency, float(er.rate)
+    except ExchangeRate.DoesNotExist:
+        logger.warning("No exchange rate found for %s, falling back to USD", currency)
+        return "usd", 1.0
+
+
+def _currency_context(request: Request) -> dict[str, object]:
+    """Build serializer context dict with currency and rate."""
+    currency, rate = _get_exchange_rate(_resolve_display_currency(request))
+    return {"currency": currency, "rate": rate}
+
 
 _customer_repo = DjangoStripeCustomerRepository()
 _subscription_repo = DjangoSubscriptionRepository()
@@ -103,6 +147,14 @@ class PlanListView(APIView):
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]  # DRF declares as instance var; ClassVar needed for RUF012
 
     @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="currency",
+                description="ISO 4217 currency code (e.g. 'eur'). Overrides user preference.",
+                required=False,
+                type=str,
+            ),
+        ],
         responses=PlanSerializer(many=True),
         description=(
             "List all active plans with prices. Not paginated"
@@ -111,11 +163,8 @@ class PlanListView(APIView):
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
-        data = cache.get("active_plans")
-        if data is None:
-            plans = PlanModel.objects.filter(is_active=True).select_related("price")
-            data = PlanSerializer(plans, many=True).data
-            cache.set("active_plans", data, timeout=300)
+        plans = PlanModel.objects.filter(is_active=True).select_related("price")
+        data = PlanSerializer(plans, many=True, context=_currency_context(request)).data
         return Response(data)
 
 
@@ -123,6 +172,14 @@ class ProductListView(APIView):
     """GET /api/v1/billing/products — list active one-time products with prices."""
 
     @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="currency",
+                description="ISO 4217 currency code (e.g. 'eur'). Overrides user preference.",
+                required=False,
+                type=str,
+            ),
+        ],
         responses=ProductSerializer(many=True),
         description=(
             "List all active one-time products with prices. Not paginated"
@@ -131,11 +188,8 @@ class ProductListView(APIView):
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
-        data = cache.get("active_products")
-        if data is None:
-            products = ProductModel.objects.filter(is_active=True).select_related("price")
-            data = ProductSerializer(products, many=True).data
-            cache.set("active_products", data, timeout=300)
+        products = ProductModel.objects.filter(is_active=True).select_related("price")
+        data = ProductSerializer(products, many=True, context=_currency_context(request)).data
         return Response(data)
 
 
@@ -244,7 +298,7 @@ class SubscriptionView(APIView):
             )
         except SubscriptionModel.DoesNotExist as exc:
             raise NotFound("No active subscription found.") from exc
-        return Response(SubscriptionSerializer(sub).data)
+        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
     @extend_schema(request=UpdateSubscriptionSerializer, responses={204: None}, tags=["billing"])
     def patch(self, request: Request) -> Response:

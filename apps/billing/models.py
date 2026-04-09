@@ -198,6 +198,24 @@ class ProductPrice(models.Model):
         return f"{self.product.name} — ${self.amount / 100:.2f}"
 
 
+class ExchangeRate(models.Model):
+    """USD-based exchange rate for display-currency conversion.
+
+    Synced hourly from Stripe by the ``sync_exchange_rates`` Celery task.
+    One row per supported currency (excluding USD).
+    """
+
+    currency = models.CharField(max_length=3, unique=True)
+    rate = models.DecimalField(max_digits=18, decimal_places=8)
+    fetched_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "exchange_rates"
+
+    def __str__(self) -> str:
+        return f"{self.currency.upper()}: {self.rate}"
+
+
 class StripeEvent(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     stripe_id = models.CharField(max_length=255, unique=True)

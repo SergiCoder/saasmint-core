@@ -211,6 +211,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.users.tasks.process_scheduled_deletions",
         "schedule": 3600,  # every hour
     },
+    "sync-exchange-rates": {
+        "task": "apps.billing.tasks.sync_exchange_rates",
+        "schedule": 3600,  # every hour
+    },
 }
 
 # Stripe

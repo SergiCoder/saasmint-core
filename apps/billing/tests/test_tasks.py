@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from stripe import StripeError
 
-from apps.billing.tasks import process_stripe_webhook
+from apps.billing.tasks import process_stripe_webhook, sync_exchange_rates
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -158,3 +158,51 @@ class TestProcessStripeWebhookMalformedPayload:
 
         # handle_stripe_event still called — task did not abort early
         mock_handle.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# sync_exchange_rates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestSyncExchangeRates:
+    def test_creates_exchange_rate_rows(self):
+        from apps.billing.models import ExchangeRate
+
+        mock_obj = MagicMock()
+        mock_obj.rates = {"eur": 0.91, "gbp": 0.79, "jpy": 149.5}
+
+        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj):
+            sync_exchange_rates.apply().get()
+
+        assert ExchangeRate.objects.filter(currency="eur").exists()
+        assert ExchangeRate.objects.filter(currency="gbp").exists()
+        assert ExchangeRate.objects.filter(currency="jpy").exists()
+
+    def test_updates_existing_rates_on_second_run(self):
+        from decimal import Decimal
+
+        from apps.billing.models import ExchangeRate
+
+        mock_obj_1 = MagicMock()
+        mock_obj_1.rates = {"eur": 0.91}
+        mock_obj_2 = MagicMock()
+        mock_obj_2.rates = {"eur": 0.95}
+
+        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj_1):
+            sync_exchange_rates.apply().get()
+
+        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj_2):
+            sync_exchange_rates.apply().get()
+
+        assert ExchangeRate.objects.count() == 1
+        assert ExchangeRate.objects.get(currency="eur").rate == Decimal("0.95")
+
+    def test_handles_stripe_error_gracefully(self):
+        from apps.billing.models import ExchangeRate
+
+        with patch("stripe.ExchangeRate.retrieve", side_effect=StripeError("fail")):
+            sync_exchange_rates.apply().get()
+
+        assert ExchangeRate.objects.count() == 0

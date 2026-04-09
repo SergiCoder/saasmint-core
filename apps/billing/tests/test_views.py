@@ -10,7 +10,7 @@ import pytest
 from rest_framework.test import APIClient
 from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
 
-from apps.billing.models import Plan, PlanPrice, Product, ProductPrice
+from apps.billing.models import ExchangeRate, Plan, PlanPrice, Product, ProductPrice
 
 
 @pytest.fixture
@@ -41,13 +41,11 @@ class TestPlanListView:
         assert resp.status_code == 200
         assert len(resp.data) == 0
 
-    def test_caches_response(self, authed_client, plan, plan_price):
-        resp1 = authed_client.get("/api/v1/billing/plans/")
-        # Deactivate plan — cached response should still return it
-        plan.is_active = False
-        plan.save()
-        resp2 = authed_client.get("/api/v1/billing/plans/")
-        assert resp1.data == resp2.data
+    def test_response_includes_display_amount_and_currency(self, authed_client, plan, plan_price):
+        resp = authed_client.get("/api/v1/billing/plans/")
+        price = resp.data[0]["price"]
+        assert price["currency"] == "usd"
+        assert price["display_amount"] == 9.99
 
     def test_unauthenticated_allowed(self, plan, plan_price):
         client = APIClient()
@@ -541,12 +539,13 @@ class TestProductListView:
         assert resp.status_code == 200
         assert not any(p["name"] == "100 Credits" for p in resp.data)
 
-    def test_caches_response(self, authed_client, product, product_price):
-        resp1 = authed_client.get("/api/v1/billing/products/")
-        product.is_active = False
-        product.save()
-        resp2 = authed_client.get("/api/v1/billing/products/")
-        assert resp1.data == resp2.data
+    def test_response_includes_display_amount_and_currency(
+        self, authed_client, product, product_price
+    ):
+        resp = authed_client.get("/api/v1/billing/products/")
+        price = resp.data[0]["price"]
+        assert price["currency"] == "usd"
+        assert price["display_amount"] == 9.99
 
     def test_unauthenticated_rejected(self, product, product_price):
         client = APIClient()
@@ -655,3 +654,82 @@ class TestUpdateSubscriptionQuantityValidation:
             format="json",
         )
         assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+class TestCurrencyConversion:
+    """Display-currency conversion on plan/product/subscription endpoints."""
+
+    def test_currency_query_param_converts_amount(self, plan, plan_price):
+        ExchangeRate.objects.create(
+            currency="eur",
+            rate="0.91",
+            fetched_at=datetime.now(UTC),
+        )
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=eur")
+        price = resp.data[0]["price"]
+        assert price["currency"] == "eur"
+        # 999 cents * 0.91 = 909.09 → round → 909 minor units → 9.09
+        assert price["display_amount"] == 9.09
+        # Original USD cents still present
+        assert price["amount"] == 999
+
+    def test_falls_back_to_usd_when_rate_missing(self, plan, plan_price):
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=eur")
+        price = resp.data[0]["price"]
+        # No ExchangeRate for EUR → fallback to USD
+        assert price["currency"] == "usd"
+        assert price["display_amount"] == 9.99
+
+    def test_invalid_currency_param_ignored(self, plan, plan_price):
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=xyz")
+        assert resp.data[0]["price"]["currency"] == "usd"
+
+    def test_authenticated_user_preferred_currency(self, authed_client, user, plan, plan_price):
+        ExchangeRate.objects.create(
+            currency="gbp",
+            rate="0.79",
+            fetched_at=datetime.now(UTC),
+        )
+        user.preferred_currency = "gbp"
+        user.save()
+        resp = authed_client.get("/api/v1/billing/plans/")
+        assert resp.data[0]["price"]["currency"] == "gbp"
+
+    def test_query_param_overrides_user_preference(self, authed_client, user, plan, plan_price):
+        ExchangeRate.objects.create(
+            currency="eur",
+            rate="0.91",
+            fetched_at=datetime.now(UTC),
+        )
+        ExchangeRate.objects.create(
+            currency="gbp",
+            rate="0.79",
+            fetched_at=datetime.now(UTC),
+        )
+        user.preferred_currency = "gbp"
+        user.save()
+        resp = authed_client.get("/api/v1/billing/plans/?currency=eur")
+        assert resp.data[0]["price"]["currency"] == "eur"
+
+    def test_zero_decimal_currency_conversion(self, plan, plan_price):
+        ExchangeRate.objects.create(
+            currency="jpy",
+            rate="149.5",
+            fetched_at=datetime.now(UTC),
+        )
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=jpy")
+        price = resp.data[0]["price"]
+        assert price["currency"] == "jpy"
+        # 999 * 149.5 = 149350.5 → round → 149350 (banker's rounding) → JPY zero-decimal → 149350.0
+        assert price["display_amount"] == 149350.0
+
+    def test_subscription_includes_currency(self, authed_client, subscription):
+        resp = authed_client.get("/api/v1/billing/subscription/")
+        price = resp.data["plan"]["price"]
+        assert "currency" in price
+        assert "display_amount" in price

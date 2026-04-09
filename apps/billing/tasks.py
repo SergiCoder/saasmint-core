@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 
 import stripe
 from asgiref.sync import async_to_sync
@@ -14,6 +15,38 @@ from apps.billing.repositories import get_webhook_repos
 from config.celery import app
 
 logger = logging.getLogger(__name__)
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def sync_exchange_rates() -> None:
+    """Fetch USD-based exchange rates from Stripe and persist to DB."""
+    from saasmint_core.services.currency import SUPPORTED_CURRENCIES
+
+    from apps.billing.models import ExchangeRate
+
+    try:
+        rates_obj = stripe.ExchangeRate.retrieve("usd")
+    except stripe.StripeError:
+        logger.exception("Failed to fetch exchange rates from Stripe")
+        return
+
+    now = datetime.now(UTC)
+    rates: dict[str, object] = dict(rates_obj.rates)  # type: ignore[arg-type]  # Stripe stubs type mismatch
+
+    updated = 0
+    for currency in SUPPORTED_CURRENCIES:
+        if currency == "usd":
+            continue
+        rate = rates.get(currency)
+        if rate is None:
+            logger.warning("No rate returned by Stripe for currency: %s", currency)
+            continue
+        ExchangeRate.objects.update_or_create(
+            currency=currency,
+            defaults={"rate": rate, "fetched_at": now},
+        )
+        updated += 1
+    logger.info("Exchange rates synced: %d currencies updated", updated)
 
 
 @app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]  # celery has no stubs
