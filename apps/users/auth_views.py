@@ -326,7 +326,7 @@ class OAuthCallbackView(APIView):
         state = request.query_params.get("state")
         error = request.query_params.get("error")
 
-        frontend_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000")
+        frontend_url: str = settings.FRONTEND_URL
 
         if error:
             return Response(
