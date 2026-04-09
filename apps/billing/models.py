@@ -159,6 +159,12 @@ class Subscription(models.Model):
             models.Index(fields=["stripe_customer", "status"], name="idx_sub_customer_status"),
             models.Index(fields=["user", "status"], name="idx_sub_user_status"),
         ]
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.CheckConstraint(
+                condition=(models.Q(user__isnull=False) | models.Q(stripe_customer__isnull=False)),
+                name="subscription_has_owner",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.stripe_id} ({self.status})"
