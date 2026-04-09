@@ -16,7 +16,6 @@ class DjangoUserRepository:
     def _to_domain(obj: UserModel) -> User:
         return User(
             id=obj.id,
-            supabase_uid=obj.supabase_uid,
             email=obj.email,
             full_name=obj.full_name,
             avatar_url=obj.avatar_url,
@@ -37,16 +36,10 @@ class DjangoUserRepository:
     async def get_by_email(self, email: str) -> User | None:
         return await aget_or_none(UserModel, self._to_domain, email=email, deleted_at__isnull=True)
 
-    async def get_by_supabase_uid(self, supabase_uid: str) -> User | None:
-        return await aget_or_none(
-            UserModel, self._to_domain, supabase_uid=supabase_uid, deleted_at__isnull=True
-        )
-
     async def save(self, user: User) -> User:
         await UserModel.objects.aupdate_or_create(
             id=user.id,
             defaults={
-                "supabase_uid": user.supabase_uid,
                 "email": str(user.email),
                 "full_name": user.full_name,
                 "avatar_url": user.avatar_url,

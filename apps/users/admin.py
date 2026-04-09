@@ -75,26 +75,19 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
 
     list_display = ("email", "full_name", "account_type", "is_verified", "is_active", "created_at")
     list_filter = ("account_type", "is_active", "is_staff", "is_verified")
-    search_fields = ("email", "full_name", "supabase_uid")
+    search_fields = ("email", "full_name")
     ordering = ("-created_at",)
-    readonly_fields = ("id", "supabase_uid", "created_at", "deleted_at", "scheduled_deletion_at")
+    readonly_fields = ("id", "created_at", "deleted_at", "scheduled_deletion_at")
 
     def get_fieldsets(
         self,
         request: HttpRequest,
         obj: Any = None,  # noqa: ANN401
     ) -> _FieldsetSpec:
-        fieldsets = list(super().get_fieldsets(request, obj))
-        if obj and not obj.is_staff:
-            # Hide password field for non-staff (Supabase-only) users
-            fieldsets = [
-                (name, {**opts, "fields": tuple(f for f in opts["fields"] if f != "password")})
-                for name, opts in fieldsets
-            ]
-        return fieldsets
+        return list(super().get_fieldsets(request, obj))
 
     fieldsets = (
-        (None, {"fields": ("id", "email", "supabase_uid", "password")}),
+        (None, {"fields": ("id", "email", "password")}),
         (
             "Profile",
             {
@@ -124,7 +117,7 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs ModelA
             None,
             {
                 "classes": ("wide",),
-                "fields": ("email", "supabase_uid"),
+                "fields": ("email", "full_name", "password1", "password2"),
             },
         ),
     )

@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 
 from asgiref.sync import async_to_sync
-from django.conf import settings
 
 from config.celery import app
 
@@ -36,8 +35,6 @@ def process_scheduled_deletions() -> None:
                 user_repo=user_repo,
                 customer_repo=customer_repo,
                 subscription_repo=subscription_repo,
-                supabase_url=settings.SUPABASE_URL,
-                service_role_key=settings.SUPABASE_JWT_SECRET,
             )
             logger.info("Executed scheduled deletion for user %s", user.id)
         except Exception:

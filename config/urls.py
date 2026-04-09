@@ -19,6 +19,7 @@ urlpatterns = [
     path("hijack/release/", HijackReleaseView.as_view(), name="hijack-release"),
     path("hijack/", include("hijack.urls")),
     path("dashboard/", include("apps.dashboard.urls")),
+    path("api/v1/auth/", include("apps.users.auth_urls")),
     path("api/v1/account/", include("apps.users.urls")),
     path("api/v1/locales/", LocaleListView.as_view(), name="locale-list"),
     path("api/v1/currencies/", CurrencyListView.as_view(), name="currency-list"),

@@ -34,9 +34,6 @@ class _Env(BaseSettings):
     django_secret_key: str
     stripe_secret_key: str
     stripe_webhook_secret: str
-    supabase_url: str = ""
-    supabase_anon_key: str = ""
-    supabase_jwt_secret: str
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://localhost:5432/saasmint"
     debug: bool = False
@@ -141,7 +138,7 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
-_auth_classes = ["apps.users.authentication.SupabaseJWTAuthentication"]
+_auth_classes = ["apps.users.authentication.JWTAuthentication"]
 if env.enable_session_auth:
     _auth_classes.append("rest_framework.authentication.SessionAuthentication")
 
@@ -207,11 +204,6 @@ CELERY_BEAT_SCHEDULE = {
 # Stripe
 STRIPE_SECRET_KEY = env.stripe_secret_key
 STRIPE_WEBHOOK_SECRET = env.stripe_webhook_secret
-
-# Supabase
-SUPABASE_URL = env.supabase_url
-SUPABASE_ANON_KEY = env.supabase_anon_key
-SUPABASE_JWT_SECRET = env.supabase_jwt_secret
 
 # django-hijack
 HIJACK_REGISTER_ADMIN_ACTIONS = True

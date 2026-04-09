@@ -14,7 +14,6 @@ class User(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: UUID
-    supabase_uid: str
     email: EmailStr
     full_name: str = Field(max_length=255)
     avatar_url: str | None = None

@@ -22,7 +22,6 @@ class AccountType(models.TextChoices):
 
 class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    supabase_uid = models.CharField(max_length=255, unique=True)
     email = models.EmailField(unique=True)
     full_name = models.CharField(max_length=255, validators=[MinLengthValidator(3)])
     avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no avatar set (distinguishable from empty string)
@@ -48,23 +47,16 @@ class User(AbstractBaseUser, PermissionsMixin):
     scheduled_deletion_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS: ClassVar[list[str]] = ["supabase_uid"]
+    REQUIRED_FIELDS: ClassVar[list[str]] = ["full_name"]
 
     objects: UserManager = UserManager()
 
     class Meta:
         db_table = "users"
-        indexes: ClassVar[list[models.Index]] = [
-            models.Index(
-                fields=["supabase_uid"],
-                condition=models.Q(deleted_at__isnull=True),
-                name="ix_users_supabase_active",
-            ),
-        ]
 
     def save(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401  # *args/**kwargs forwarded to super().save(); heterogeneous by design
         super().save(*args, **kwargs)
-        cache.delete(AUTH_USER_CACHE_KEY.format(self.supabase_uid))
+        cache.delete(AUTH_USER_CACHE_KEY.format(self.id))
 
     def __str__(self) -> str:
         return self.email

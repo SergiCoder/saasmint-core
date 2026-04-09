@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     )
 
 from asgiref.sync import async_to_sync
-from django.conf import settings
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.request import Request
@@ -92,8 +91,6 @@ class AccountView(APIView):
             user_repo=_user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
-            supabase_url=settings.SUPABASE_URL,
-            service_role_key=settings.SUPABASE_JWT_SECRET,
         )
         if scheduled_at is not None:
             return Response(

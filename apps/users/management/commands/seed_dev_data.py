@@ -31,7 +31,6 @@ PERSONAL_USERS = [
     {
         "email": "jack.bauer@ctu.gov",
         "full_name": "Jack Bauer",
-        "supabase_uid": "sbuid_jack_bauer",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_jack_bauer",
@@ -42,7 +41,6 @@ PERSONAL_USERS = [
     {
         "email": "luke.hobbs@dss.gov",
         "full_name": "Luke Hobbs",
-        "supabase_uid": "sbuid_luke_hobbs",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_luke_hobbs",
@@ -53,7 +51,6 @@ PERSONAL_USERS = [
     {
         "email": "deckard.shaw@shaw-security.com",
         "full_name": "Deckard Shaw",
-        "supabase_uid": "sbuid_deckard_shaw",
         "preferred_locale": "en",
         "preferred_currency": "gbp",
         "stripe_id": "cus_dev_deckard_shaw",
@@ -65,7 +62,6 @@ PERSONAL_USERS = [
     {
         "email": "ethan.hunt@imf.gov",
         "full_name": "Ethan Hunt",
-        "supabase_uid": "sbuid_ethan_hunt",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_ethan_hunt",
@@ -76,7 +72,6 @@ PERSONAL_USERS = [
     {
         "email": "james.bond@mi6.gov.uk",
         "full_name": "James Bond",
-        "supabase_uid": "sbuid_james_bond",
         "preferred_locale": "en",
         "preferred_currency": "gbp",
         "stripe_id": "cus_dev_james_bond",
@@ -87,7 +82,6 @@ PERSONAL_USERS = [
     {
         "email": "john.mcclane@nypd.gov",
         "full_name": "John McClane",
-        "supabase_uid": "sbuid_john_mcclane",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_john_mcclane",
@@ -99,7 +93,6 @@ PERSONAL_USERS = [
     {
         "email": "jason.bourne@treadstone.com",
         "full_name": "Jason Bourne",
-        "supabase_uid": "sbuid_jason_bourne",
         "preferred_locale": "en",
         "preferred_currency": "eur",
         "stripe_id": "cus_dev_jason_bourne",
@@ -110,7 +103,6 @@ PERSONAL_USERS = [
     {
         "email": "bryan.mills@retired.com",
         "full_name": "Bryan Mills",
-        "supabase_uid": "sbuid_bryan_mills",
         "preferred_locale": "fr",
         "preferred_currency": "eur",
         "stripe_id": "cus_dev_bryan_mills",
@@ -122,7 +114,6 @@ PERSONAL_USERS = [
     {
         "email": "john.wick@continental.com",
         "full_name": "John Wick",
-        "supabase_uid": "sbuid_john_wick",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_john_wick",
@@ -133,7 +124,6 @@ PERSONAL_USERS = [
     {
         "email": "dominic.toretto@teamtoretto.com",
         "full_name": "Dominic Toretto",
-        "supabase_uid": "sbuid_dom_toretto",
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "stripe_id": "cus_dev_dom_toretto",
@@ -408,7 +398,6 @@ class Command(BaseCommand):
             user, created = User.objects.get_or_create(
                 email=u["email"],
                 defaults={
-                    "supabase_uid": u["supabase_uid"],
                     "full_name": u["full_name"],
                     "account_type": AccountType.PERSONAL,
                     "preferred_locale": u["preferred_locale"],
