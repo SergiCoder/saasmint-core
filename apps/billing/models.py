@@ -144,7 +144,7 @@ class Subscription(models.Model):
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="subscriptions")
     quantity = models.IntegerField(default=1)
     promotion_code_id = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001  # nullable CharField intentional: NULL means no promo code applied (distinguishable from empty string)
-    discount_percent = models.IntegerField(null=True, blank=True)
+    discount_percent = models.FloatField(null=True, blank=True)
     discount_end_at = models.DateTimeField(null=True, blank=True)
     trial_ends_at = models.DateTimeField(null=True, blank=True)
     current_period_start = models.DateTimeField()

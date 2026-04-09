@@ -101,7 +101,7 @@ class Migration(migrations.Migration):
                 ),
                 ("quantity", models.IntegerField(default=1)),
                 ("promotion_code_id", models.CharField(blank=True, max_length=255, null=True)),
-                ("discount_percent", models.IntegerField(blank=True, null=True)),
+                ("discount_percent", models.FloatField(blank=True, null=True)),
                 ("discount_end_at", models.DateTimeField(blank=True, null=True)),
                 ("trial_ends_at", models.DateTimeField(blank=True, null=True)),
                 ("current_period_start", models.DateTimeField()),
