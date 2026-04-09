@@ -357,37 +357,9 @@ class OAuthCallbackView(APIView):
                 headers={"Location": f"{frontend_url}/auth/error?error=exchange_failed"},
             )
 
-        # Find or create user via three-step lookup:
-        # 1. By SocialAccount (returning OAuth user)
-        # 2. By email (existing user, first OAuth login — auto-link)
-        # 3. Brand new user
-        from apps.users.models import SocialAccount
+        from apps.users.services import resolve_oauth_user
 
-        try:
-            social = SocialAccount.objects.select_related("user").get(
-                provider=provider,
-                provider_user_id=user_info.provider_user_id,
-            )
-            user = social.user
-        except SocialAccount.DoesNotExist:
-            try:
-                user = User.objects.get(email=user_info.email)
-            except User.DoesNotExist:
-                user = User.objects.create_user(
-                    email=user_info.email,
-                    full_name=user_info.full_name,
-                    avatar_url=user_info.avatar_url,
-                    is_verified=True,
-                    registration_method=provider,
-                )
-                assign_free_plan(user)
-
-            # Auto-link provider for steps 2 and 3
-            SocialAccount.objects.get_or_create(
-                provider=provider,
-                provider_user_id=user_info.provider_user_id,
-                defaults={"user": user},
-            )
+        user = resolve_oauth_user(provider, user_info)
 
         if not user.is_active:
             return Response(

@@ -66,7 +66,7 @@ class TestOAuthCallbackNewUser:
     def test_assigns_free_plan(self, client, _oauth_state):
         with (
             patch("apps.users.oauth.exchange_code", return_value=_mock_exchange()),
-            patch("apps.users.auth_views.assign_free_plan") as mock_plan,
+            patch("apps.users.services.assign_free_plan") as mock_plan,
         ):
             client.get(
                 "/api/v1/auth/oauth/google/callback/",
