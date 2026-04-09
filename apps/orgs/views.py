@@ -199,7 +199,15 @@ class OrgMemberListView(APIView):
             },
         )
         code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-        return Response(OrgMemberSerializer(member).data, status=code)
+        headers = {}
+        if created:
+            headers["Location"] = request.build_absolute_uri(
+                reverse(
+                    "org-member-detail",
+                    kwargs={"org_id": org.id, "member_user_id": target_user.id},
+                )
+            )
+        return Response(OrgMemberSerializer(member).data, status=code, headers=headers)
 
 
 class OrgMemberDetailView(APIView):
