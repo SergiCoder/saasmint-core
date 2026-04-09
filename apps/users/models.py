@@ -9,6 +9,7 @@ from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.core.cache import cache
 from django.core.validators import MinLengthValidator
 from django.db import models
+from django.db.models import Index
 
 from apps.users.managers import UserManager
 
@@ -60,3 +61,63 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self) -> str:
         return self.email
+
+
+class RefreshToken(models.Model):
+    """Server-side refresh token supporting revocation and rotation."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="refresh_tokens")
+    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "refresh_tokens"
+        indexes: ClassVar[list[Index]] = [
+            models.Index(fields=["user", "-created_at"], name="idx_refresh_user_created"),
+        ]
+
+    def __str__(self) -> str:
+        return f"RefreshToken({self.id}, user={self.user_id})"
+
+    @property
+    def is_valid(self) -> bool:
+        from datetime import UTC, datetime
+
+        return self.revoked_at is None and self.expires_at > datetime.now(UTC)
+
+
+class EmailVerificationToken(models.Model):
+    """One-time token sent to verify a user's email address."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="verification_tokens")
+    token_hash = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "email_verification_tokens"
+
+    def __str__(self) -> str:
+        return f"EmailVerificationToken({self.id}, user={self.user_id})"
+
+
+class PasswordResetToken(models.Model):
+    """One-time token for password reset flow."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="password_reset_tokens")
+    token_hash = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "password_reset_tokens"
+
+    def __str__(self) -> str:
+        return f"PasswordResetToken({self.id}, user={self.user_id})"

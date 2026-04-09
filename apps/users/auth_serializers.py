@@ -22,6 +22,28 @@ class RefreshSerializer(serializers.Serializer[User]):
     refresh_token = serializers.CharField()
 
 
+class LogoutSerializer(serializers.Serializer[User]):
+    refresh_token = serializers.CharField()
+
+
+class VerifyEmailSerializer(serializers.Serializer[User]):
+    token = serializers.CharField()
+
+
+class ForgotPasswordSerializer(serializers.Serializer[User]):
+    email = serializers.EmailField()
+
+
+class ResetPasswordSerializer(serializers.Serializer[User]):
+    token = serializers.CharField()
+    password = serializers.CharField(min_length=8, max_length=128, write_only=True)
+
+
+class ChangePasswordSerializer(serializers.Serializer[User]):
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(min_length=8, max_length=128, write_only=True)
+
+
 class TokenResponseSerializer(serializers.Serializer[User]):
     access_token = serializers.CharField()
     refresh_token = serializers.CharField()

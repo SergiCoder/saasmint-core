@@ -41,6 +41,15 @@ class _Env(BaseSettings):
     cors_allowed_origins: list[str] = []
     cors_allow_all_origins: bool = False
     csrf_trusted_origins: list[str] = []
+    resend_api_key: str = ""
+    frontend_url: str = "http://localhost:3000"
+    email_from_address: str = "noreply@saasmint.com"
+    oauth_google_client_id: str = ""
+    oauth_google_client_secret: str = ""
+    oauth_github_client_id: str = ""
+    oauth_github_client_secret: str = ""
+    oauth_microsoft_client_id: str = ""
+    oauth_microsoft_client_secret: str = ""
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
@@ -138,6 +147,9 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
 _auth_classes = ["apps.users.authentication.JWTAuthentication"]
 if env.enable_session_auth:
     _auth_classes.append("rest_framework.authentication.SessionAuthentication")
@@ -204,6 +216,19 @@ CELERY_BEAT_SCHEDULE = {
 # Stripe
 STRIPE_SECRET_KEY = env.stripe_secret_key
 STRIPE_WEBHOOK_SECRET = env.stripe_webhook_secret
+
+# Email (Resend)
+RESEND_API_KEY = env.resend_api_key
+EMAIL_FROM_ADDRESS = env.email_from_address
+FRONTEND_URL = env.frontend_url
+
+# OAuth
+OAUTH_GOOGLE_CLIENT_ID = env.oauth_google_client_id
+OAUTH_GOOGLE_CLIENT_SECRET = env.oauth_google_client_secret
+OAUTH_GITHUB_CLIENT_ID = env.oauth_github_client_id
+OAUTH_GITHUB_CLIENT_SECRET = env.oauth_github_client_secret
+OAUTH_MICROSOFT_CLIENT_ID = env.oauth_microsoft_client_id
+OAUTH_MICROSOFT_CLIENT_SECRET = env.oauth_microsoft_client_secret
 
 # django-hijack
 HIJACK_REGISTER_ADMIN_ACTIONS = True

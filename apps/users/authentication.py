@@ -1,12 +1,15 @@
 """JWT authentication backend for Django REST Framework.
 
 Django issues and verifies its own HS256 JWTs — no external auth provider.
+Refresh tokens are stored in the database for revocation and rotation.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from datetime import UTC, datetime
+import secrets
+from datetime import UTC, datetime, timedelta
 
 import jwt
 from django.conf import settings
@@ -15,21 +18,28 @@ from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.request import Request
 
-from apps.users.models import AUTH_USER_CACHE_KEY, User
+from apps.users.models import AUTH_USER_CACHE_KEY, RefreshToken, User
 
 logger = logging.getLogger(__name__)
 
 _AUTH_CACHE_TTL = 60  # seconds
 
-# Token lifetimes (seconds)
-ACCESS_TOKEN_LIFETIME = 60 * 15  # 15 minutes
-REFRESH_TOKEN_LIFETIME = 60 * 60 * 24 * 7  # 7 days
+# Token lifetimes
+ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
+REFRESH_TOKEN_LIFETIME = timedelta(days=7)
+EMAIL_VERIFICATION_LIFETIME = timedelta(hours=24)
+PASSWORD_RESET_LIFETIME = timedelta(hours=1)
 
 _ALGORITHM = "HS256"
 
 
 def _get_signing_key() -> str:
     return settings.SECRET_KEY
+
+
+def _hash_token(raw: str) -> str:
+    """SHA-256 hash for storing tokens server-side."""
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def create_access_token(user: User) -> str:
@@ -40,21 +50,148 @@ def create_access_token(user: User) -> str:
         "email": user.email,
         "type": "access",
         "iat": now,
-        "exp": now.timestamp() + ACCESS_TOKEN_LIFETIME,
+        "exp": now + ACCESS_TOKEN_LIFETIME,
     }
     return jwt.encode(payload, _get_signing_key(), algorithm=_ALGORITHM)
 
 
 def create_refresh_token(user: User) -> str:
-    """Issue a long-lived refresh token for the given user."""
-    now = datetime.now(UTC)
-    payload = {
-        "sub": str(user.id),
-        "type": "refresh",
-        "iat": now,
-        "exp": now.timestamp() + REFRESH_TOKEN_LIFETIME,
-    }
-    return jwt.encode(payload, _get_signing_key(), algorithm=_ALGORITHM)
+    """Issue a DB-backed refresh token. Returns the raw opaque token."""
+    raw = secrets.token_urlsafe(48)
+    RefreshToken.objects.create(
+        user=user,
+        token_hash=_hash_token(raw),
+        expires_at=datetime.now(UTC) + REFRESH_TOKEN_LIFETIME,
+    )
+    return raw
+
+
+def rotate_refresh_token(raw_token: str) -> tuple[User, str]:
+    """Validate, revoke, and reissue a refresh token. Returns (user, new_raw_token).
+
+    Raises AuthenticationFailed on invalid/expired/revoked tokens.
+    """
+    token_hash = _hash_token(raw_token)
+    try:
+        rt = RefreshToken.objects.select_related("user").get(token_hash=token_hash)
+    except RefreshToken.DoesNotExist:
+        raise AuthenticationFailed(
+            {"detail": "Invalid refresh token.", "code": "invalid_token"}
+        ) from None
+
+    if rt.revoked_at is not None:
+        # Possible token reuse — revoke all tokens for this user as a precaution
+        RefreshToken.objects.filter(user=rt.user, revoked_at__isnull=True).update(
+            revoked_at=datetime.now(UTC)
+        )
+        raise AuthenticationFailed({"detail": "Token has been revoked.", "code": "token_revoked"})
+
+    if rt.expires_at <= datetime.now(UTC):
+        raise AuthenticationFailed(
+            {"detail": "Refresh token has expired.", "code": "token_expired"}
+        )
+
+    user = rt.user
+    if not user.is_active or user.deleted_at is not None:
+        raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
+
+    # Revoke old, issue new
+    rt.revoked_at = datetime.now(UTC)
+    rt.save(update_fields=["revoked_at"])
+
+    new_raw = create_refresh_token(user)
+    return user, new_raw
+
+
+def revoke_refresh_token(raw_token: str) -> None:
+    """Revoke a single refresh token (logout)."""
+    token_hash = _hash_token(raw_token)
+    RefreshToken.objects.filter(token_hash=token_hash, revoked_at__isnull=True).update(
+        revoked_at=datetime.now(UTC)
+    )
+
+
+def revoke_all_refresh_tokens(user: User) -> None:
+    """Revoke all refresh tokens for a user (e.g. password change)."""
+    RefreshToken.objects.filter(user=user, revoked_at__isnull=True).update(
+        revoked_at=datetime.now(UTC)
+    )
+
+
+def create_email_verification_token(user: User) -> str:
+    """Create a one-time email verification token. Returns the raw token."""
+    from apps.users.models import EmailVerificationToken
+
+    raw = secrets.token_urlsafe(32)
+    EmailVerificationToken.objects.create(
+        user=user,
+        token_hash=_hash_token(raw),
+        expires_at=datetime.now(UTC) + EMAIL_VERIFICATION_LIFETIME,
+    )
+    return raw
+
+
+def verify_email_token(raw_token: str) -> User:
+    """Validate and consume an email verification token. Returns the user.
+
+    Raises AuthenticationFailed on invalid/expired/used tokens.
+    """
+    from apps.users.models import EmailVerificationToken
+
+    token_hash = _hash_token(raw_token)
+    try:
+        evt = EmailVerificationToken.objects.select_related("user").get(token_hash=token_hash)
+    except EmailVerificationToken.DoesNotExist:
+        raise AuthenticationFailed(
+            {"detail": "Invalid verification token.", "code": "invalid_token"}
+        ) from None
+
+    if evt.used_at is not None:
+        raise AuthenticationFailed({"detail": "Token has already been used.", "code": "token_used"})
+    if evt.expires_at <= datetime.now(UTC):
+        raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
+
+    evt.used_at = datetime.now(UTC)
+    evt.save(update_fields=["used_at"])
+    return evt.user
+
+
+def create_password_reset_token(user: User) -> str:
+    """Create a one-time password reset token. Returns the raw token."""
+    from apps.users.models import PasswordResetToken
+
+    raw = secrets.token_urlsafe(32)
+    PasswordResetToken.objects.create(
+        user=user,
+        token_hash=_hash_token(raw),
+        expires_at=datetime.now(UTC) + PASSWORD_RESET_LIFETIME,
+    )
+    return raw
+
+
+def verify_password_reset_token(raw_token: str) -> User:
+    """Validate and consume a password reset token. Returns the user.
+
+    Raises AuthenticationFailed on invalid/expired/used tokens.
+    """
+    from apps.users.models import PasswordResetToken
+
+    token_hash = _hash_token(raw_token)
+    try:
+        prt = PasswordResetToken.objects.select_related("user").get(token_hash=token_hash)
+    except PasswordResetToken.DoesNotExist:
+        raise AuthenticationFailed(
+            {"detail": "Invalid reset token.", "code": "invalid_token"}
+        ) from None
+
+    if prt.used_at is not None:
+        raise AuthenticationFailed({"detail": "Token has already been used.", "code": "token_used"})
+    if prt.expires_at <= datetime.now(UTC):
+        raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
+
+    prt.used_at = datetime.now(UTC)
+    prt.save(update_fields=["used_at"])
+    return prt.user
 
 
 class JWTAuthentication(BaseAuthentication):
