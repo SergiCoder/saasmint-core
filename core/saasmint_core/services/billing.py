@@ -140,7 +140,7 @@ async def cancel_subscription(
         raise SubscriptionNotFoundError("No active subscription found to cancel.")
 
     if at_period_end:
-        # 2025-03-31.basil replaces `cancel_at_period_end=True` with
+        # 2026-03-25.dahlia replaces `cancel_at_period_end=True` with
         # `cancel_at="min_period_end"`. For single-item subs (the only shape
         # we support) this is the direct equivalent.
         await asyncio.to_thread(
@@ -167,6 +167,6 @@ async def resume_subscription(
     if active is None or active.stripe_id is None:
         raise SubscriptionNotFoundError("No active subscription found to resume.")
 
-    # 2025-03-31.basil: clear a scheduled cancellation set via
+    # 2026-03-25.dahlia: clear a scheduled cancellation set via
     # cancel_at="min_period_end" by passing cancel_at="".
     await asyncio.to_thread(stripe.Subscription.modify, active.stripe_id, cancel_at="")

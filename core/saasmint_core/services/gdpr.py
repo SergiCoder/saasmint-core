@@ -64,7 +64,7 @@ async def request_account_deletion(
     # "no subscription" so the account is deleted immediately.
     if active_sub and not active_sub.is_free:
         # Cancel renewal, schedule deletion for period end.
-        # 2025-03-31.basil: `cancel_at_period_end=True` → `cancel_at="min_period_end"`.
+        # 2026-03-25.dahlia: `cancel_at_period_end=True` → `cancel_at="min_period_end"`.
         await _stripe_request(
             stripe.Subscription.modify,
             active_sub.stripe_id,
@@ -136,7 +136,7 @@ async def cancel_account_deletion(
         return
 
     # Re-enable subscription renewal (skip free subscriptions).
-    # 2025-03-31.basil: clear a scheduled cancellation by passing `cancel_at=""`.
+    # 2026-03-25.dahlia: clear a scheduled cancellation by passing `cancel_at=""`.
     active_sub = await subscription_repo.get_active_for_user(user_id)
     if active_sub and not active_sub.is_free:
         await _stripe_request(

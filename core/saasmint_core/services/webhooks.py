@@ -102,7 +102,7 @@ async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
 def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, float | None, datetime | None]:
     """Extract promotion code, discount percent, and discount end from raw sub data.
 
-    Stripe API 2025-03-31.basil removes the singular ``subscription.discount``
+    Stripe API 2026-03-25.dahlia removes the singular ``subscription.discount``
     field in favour of a ``discounts`` array (stackable discounts). We read the
     first entry of ``discounts`` when present and fall back to the legacy
     singular field for older fixtures / pre-Basil API versions.

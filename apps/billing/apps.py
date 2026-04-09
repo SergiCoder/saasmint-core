@@ -12,4 +12,4 @@ class BillingConfig(AppConfig):
         # Pin the API version so upgrades to stripe-python don't silently
         # change webhook payload shapes on us. Bump this deliberately after
         # reviewing the Stripe changelog and updating any affected code paths.
-        stripe.api_version = "2025-03-31.basil"
+        stripe.api_version = "2026-03-25.dahlia"

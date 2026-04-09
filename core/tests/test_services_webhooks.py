@@ -483,7 +483,7 @@ async def test_sync_subscription_with_discount_coupon_none() -> None:
 
 @pytest.mark.anyio
 async def test_sync_subscription_with_basil_discounts_array() -> None:
-    """Stripe API 2025-03-31.basil: ``discounts[]`` array replaces singular ``discount``."""
+    """Stripe API 2026-03-25.dahlia: ``discounts[]`` array replaces singular ``discount``."""
     customer_repo = InMemoryStripeCustomerRepository()
     plan_repo = InMemoryPlanRepository()
     subscription_repo = InMemorySubscriptionRepository()
