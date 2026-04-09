@@ -147,6 +147,14 @@ _MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB
 _ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 
+def _delete_local_avatar(avatar_url: str | None) -> None:
+    """Remove a locally-stored avatar file if it exists."""
+    if avatar_url and avatar_url.startswith(settings.MEDIA_URL):
+        old_path = avatar_url.replace(settings.MEDIA_URL, "", 1)
+        if default_storage.exists(old_path):
+            default_storage.delete(old_path)
+
+
 class _AvatarUploadSerializer(serializers.Serializer["_AvatarUploadSerializer"]):
     avatar = serializers.ImageField()
 
@@ -186,11 +194,7 @@ class AvatarView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Delete old avatar if stored locally
-        if user.avatar_url and user.avatar_url.startswith(settings.MEDIA_URL):
-            old_path = user.avatar_url.replace(settings.MEDIA_URL, "", 1)
-            if default_storage.exists(old_path):
-                default_storage.delete(old_path)
+        _delete_local_avatar(user.avatar_url)
 
         ext = file.name.rsplit(".", 1)[-1] if "." in file.name else "jpg"
         path = f"avatars/{user.id}/{uuid.uuid4().hex}.{ext}"
@@ -211,10 +215,7 @@ class AvatarView(APIView):
         """Delete avatar."""
         user = get_user(request)
 
-        if user.avatar_url and user.avatar_url.startswith(settings.MEDIA_URL):
-            old_path = user.avatar_url.replace(settings.MEDIA_URL, "", 1)
-            if default_storage.exists(old_path):
-                default_storage.delete(old_path)
+        _delete_local_avatar(user.avatar_url)
 
         user.avatar_url = None
         user.save(update_fields=["avatar_url", "updated_at"])

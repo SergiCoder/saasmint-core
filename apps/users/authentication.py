@@ -10,6 +10,7 @@ import hashlib
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import jwt
 from django.conf import settings
@@ -118,80 +119,71 @@ def revoke_all_refresh_tokens(user: User) -> None:
     )
 
 
-def create_email_verification_token(user: User) -> str:
-    """Create a one-time email verification token. Returns the raw token."""
-    from apps.users.models import EmailVerificationToken
-
+def _create_one_time_token(
+    model_class: Any,  # noqa: ANN401
+    user: User,
+    lifetime: timedelta,
+) -> str:
+    """Create a hashed one-time token for *model_class*. Returns the raw token."""
     raw = secrets.token_urlsafe(32)
-    EmailVerificationToken.objects.create(
+    model_class.objects.create(
         user=user,
         token_hash=_hash_token(raw),
-        expires_at=datetime.now(UTC) + EMAIL_VERIFICATION_LIFETIME,
+        expires_at=datetime.now(UTC) + lifetime,
     )
     return raw
 
 
-def verify_email_token(raw_token: str) -> User:
-    """Validate and consume an email verification token. Returns the user.
+def _verify_one_time_token(model_class: Any, raw_token: str, label: str) -> User:  # noqa: ANN401
+    """Validate and consume a one-time token. Returns the user.
 
     Raises AuthenticationFailed on invalid/expired/used tokens.
     """
-    from apps.users.models import EmailVerificationToken
-
     token_hash = _hash_token(raw_token)
     try:
-        evt = EmailVerificationToken.objects.select_related("user").get(token_hash=token_hash)
-    except EmailVerificationToken.DoesNotExist:
+        obj = model_class.objects.select_related("user").get(token_hash=token_hash)
+    except model_class.DoesNotExist:
         raise AuthenticationFailed(
-            {"detail": "Invalid verification token.", "code": "invalid_token"}
+            {"detail": f"Invalid {label} token.", "code": "invalid_token"}
         ) from None
 
-    if evt.used_at is not None:
+    if obj.used_at is not None:
         raise AuthenticationFailed({"detail": "Token has already been used.", "code": "token_used"})
-    if evt.expires_at <= datetime.now(UTC):
+    if obj.expires_at <= datetime.now(UTC):
         raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
 
-    evt.used_at = datetime.now(UTC)
-    evt.save(update_fields=["used_at"])
-    return evt.user
+    obj.used_at = datetime.now(UTC)
+    obj.save(update_fields=["used_at"])
+    user: User = obj.user
+    return user
+
+
+def create_email_verification_token(user: User) -> str:
+    """Create a one-time email verification token. Returns the raw token."""
+    from apps.users.models import EmailVerificationToken
+
+    return _create_one_time_token(EmailVerificationToken, user, EMAIL_VERIFICATION_LIFETIME)
+
+
+def verify_email_token(raw_token: str) -> User:
+    """Validate and consume an email verification token. Returns the user."""
+    from apps.users.models import EmailVerificationToken
+
+    return _verify_one_time_token(EmailVerificationToken, raw_token, "verification")
 
 
 def create_password_reset_token(user: User) -> str:
     """Create a one-time password reset token. Returns the raw token."""
     from apps.users.models import PasswordResetToken
 
-    raw = secrets.token_urlsafe(32)
-    PasswordResetToken.objects.create(
-        user=user,
-        token_hash=_hash_token(raw),
-        expires_at=datetime.now(UTC) + PASSWORD_RESET_LIFETIME,
-    )
-    return raw
+    return _create_one_time_token(PasswordResetToken, user, PASSWORD_RESET_LIFETIME)
 
 
 def verify_password_reset_token(raw_token: str) -> User:
-    """Validate and consume a password reset token. Returns the user.
-
-    Raises AuthenticationFailed on invalid/expired/used tokens.
-    """
+    """Validate and consume a password reset token. Returns the user."""
     from apps.users.models import PasswordResetToken
 
-    token_hash = _hash_token(raw_token)
-    try:
-        prt = PasswordResetToken.objects.select_related("user").get(token_hash=token_hash)
-    except PasswordResetToken.DoesNotExist:
-        raise AuthenticationFailed(
-            {"detail": "Invalid reset token.", "code": "invalid_token"}
-        ) from None
-
-    if prt.used_at is not None:
-        raise AuthenticationFailed({"detail": "Token has already been used.", "code": "token_used"})
-    if prt.expires_at <= datetime.now(UTC):
-        raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
-
-    prt.used_at = datetime.now(UTC)
-    prt.save(update_fields=["used_at"])
-    return prt.user
+    return _verify_one_time_token(PasswordResetToken, raw_token, "reset")
 
 
 class JWTAuthentication(BaseAuthentication):
