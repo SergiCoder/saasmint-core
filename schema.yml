@@ -1222,8 +1222,12 @@ components:
         currency:
           type: string
           readOnly: true
+        approximate:
+          type: boolean
+          readOnly: true
       required:
       - amount
+      - approximate
       - currency
       - display_amount
       - id
@@ -1296,8 +1300,12 @@ components:
         currency:
           type: string
           readOnly: true
+        approximate:
+          type: boolean
+          readOnly: true
       required:
       - amount
+      - approximate
       - currency
       - display_amount
       - id
