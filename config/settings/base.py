@@ -40,7 +40,7 @@ class _Env(BaseSettings):
     csrf_trusted_origins: list[str] = []
     resend_api_key: str = ""
     frontend_url: str = "https://localhost:3000"
-    email_from_address: str = "noreply@saasmint.com"
+    email_from_address: str = "noreply@saasmint.net"
     oauth_google_client_id: str = ""
     oauth_google_client_secret: str = ""
     oauth_github_client_id: str = ""
