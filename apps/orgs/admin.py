@@ -21,9 +21,7 @@ class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs gene
     list_select_related = ("created_by",)
     actions = ["delete_org_action"]  # noqa: RUF012
 
-    def has_delete_permission(
-        self, request: HttpRequest, obj: Org | None = None
-    ) -> bool:
+    def has_delete_permission(self, request: HttpRequest, obj: Org | None = None) -> bool:
         # Disable built-in delete (detail page button + bulk action) — it bypasses
         # Stripe cancellation and member cleanup. Use the custom action instead.
         return False
