@@ -146,12 +146,21 @@ class CheckoutRequestSerializer(serializers.Serializer[object]):
     trial_period_days = serializers.IntegerField(
         required=False, allow_null=True, default=None, min_value=1, max_value=90
     )
+    org_name = serializers.CharField(max_length=255, required=False)
+    org_slug = serializers.SlugField(max_length=255, required=False)
 
     def validate_success_url(self, value: str) -> str:
         return _validate_redirect_url(value)
 
     def validate_cancel_url(self, value: str) -> str:
         return _validate_redirect_url(value)
+
+    def validate_org_slug(self, value: str) -> str:
+        from apps.orgs.models import Org
+
+        if Org.objects.filter(slug=value, deleted_at__isnull=True).exists():
+            raise serializers.ValidationError("An org with this slug already exists.")
+        return value
 
 
 class PortalRequestSerializer(serializers.Serializer[object]):

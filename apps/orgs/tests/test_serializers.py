@@ -6,10 +6,11 @@ import pytest
 
 from apps.orgs.models import OrgRole
 from apps.orgs.serializers import (
-    AddMemberSerializer,
-    CreateOrgSerializer,
+    CreateInvitationSerializer,
+    InvitationSerializer,
     OrgMemberSerializer,
     OrgSerializer,
+    TransferOwnershipSerializer,
     UpdateMemberSerializer,
     UpdateOrgSerializer,
 )
@@ -26,49 +27,6 @@ class TestOrgSerializer:
 
     def test_all_fields_read_only(self):
         assert set(OrgSerializer.Meta.read_only_fields) == set(OrgSerializer.Meta.fields)
-
-
-@pytest.mark.django_db
-class TestCreateOrgSerializer:
-    def test_valid_data(self):
-        ser = CreateOrgSerializer(data={"name": "New Org", "slug": "new-org"})
-        assert ser.is_valid(), ser.errors
-
-    def test_missing_required_fields(self):
-        ser = CreateOrgSerializer(data={})
-        assert not ser.is_valid()
-        assert "name" in ser.errors
-        assert "slug" in ser.errors
-
-    def test_logo_url_optional(self):
-        ser = CreateOrgSerializer(
-            data={"name": "Org", "slug": "org-slug", "logo_url": "https://example.com/logo.png"}
-        )
-        assert ser.is_valid(), ser.errors
-        assert ser.validated_data["logo_url"] == "https://example.com/logo.png"
-
-    def test_logo_url_defaults_to_none(self):
-        ser = CreateOrgSerializer(data={"name": "Org", "slug": "org-slug"})
-        ser.is_valid()
-        assert ser.validated_data["logo_url"] is None
-
-    def test_duplicate_slug_rejected(self, org):
-        ser = CreateOrgSerializer(data={"name": "Dup", "slug": "test-org"})
-        assert not ser.is_valid()
-        assert "slug" in ser.errors
-
-    def test_slug_validation_allows_deleted_org_slug(self, org):
-        from datetime import UTC, datetime
-
-        org.deleted_at = datetime.now(UTC)
-        org.save(update_fields=["deleted_at"])
-        ser = CreateOrgSerializer(data={"name": "Reuse", "slug": "test-org"})
-        assert ser.is_valid(), ser.errors
-
-    def test_invalid_slug_format(self):
-        ser = CreateOrgSerializer(data={"name": "Org", "slug": "invalid slug with spaces"})
-        assert not ser.is_valid()
-        assert "slug" in ser.errors
 
 
 class TestUpdateOrgSerializer:
@@ -88,6 +46,16 @@ class TestUpdateOrgSerializer:
         ser = UpdateOrgSerializer(data={"logo_url": None})
         assert ser.is_valid(), ser.errors
 
+    def test_invalid_logo_url_rejected(self):
+        ser = UpdateOrgSerializer(data={"logo_url": "not-a-url"})
+        assert not ser.is_valid()
+        assert "logo_url" in ser.errors
+
+    def test_name_max_length_exceeded(self):
+        ser = UpdateOrgSerializer(data={"name": "X" * 256})
+        assert not ser.is_valid()
+        assert "name" in ser.errors
+
 
 @pytest.mark.django_db
 class TestOrgMemberSerializer:
@@ -102,40 +70,6 @@ class TestOrgMemberSerializer:
         assert set(OrgMemberSerializer.Meta.read_only_fields) == set(
             OrgMemberSerializer.Meta.fields
         )
-
-
-class TestAddMemberSerializer:
-    def test_valid_data(self):
-        from uuid import uuid4
-
-        ser = AddMemberSerializer(data={"user_id": str(uuid4()), "role": "member"})
-        assert ser.is_valid(), ser.errors
-
-    def test_missing_user_id(self):
-        ser = AddMemberSerializer(data={"role": "member"})
-        assert not ser.is_valid()
-        assert "user_id" in ser.errors
-
-    def test_default_role(self):
-        from uuid import uuid4
-
-        ser = AddMemberSerializer(data={"user_id": str(uuid4())})
-        ser.is_valid()
-        assert ser.validated_data["role"] == OrgRole.MEMBER
-
-    def test_default_is_billing_false(self):
-        from uuid import uuid4
-
-        ser = AddMemberSerializer(data={"user_id": str(uuid4())})
-        ser.is_valid()
-        assert ser.validated_data["is_billing"] is False
-
-    def test_invalid_role_rejected(self):
-        from uuid import uuid4
-
-        ser = AddMemberSerializer(data={"user_id": str(uuid4()), "role": "superadmin"})
-        assert not ser.is_valid()
-        assert "role" in ser.errors
 
 
 class TestUpdateMemberSerializer:
@@ -157,52 +91,76 @@ class TestUpdateMemberSerializer:
         assert "role" in ser.errors
 
 
-@pytest.mark.django_db
-class TestCreateOrgSerializerEdgeCases:
-    def test_invalid_logo_url_rejected(self):
-        ser = CreateOrgSerializer(data={"name": "Org", "slug": "org-slug", "logo_url": "not-a-url"})
-        assert not ser.is_valid()
-        assert "logo_url" in ser.errors
-
-    def test_name_max_length_exceeded(self):
-        ser = CreateOrgSerializer(data={"name": "X" * 256, "slug": "long-name"})
-        assert not ser.is_valid()
-        assert "name" in ser.errors
-
-    def test_slug_max_length_exceeded(self):
-        ser = CreateOrgSerializer(data={"name": "Org", "slug": "x" * 256})
-        assert not ser.is_valid()
-        assert "slug" in ser.errors
-
-    def test_logo_url_null_is_valid(self):
-        ser = CreateOrgSerializer(data={"name": "Org", "slug": "org-slug", "logo_url": None})
+class TestCreateInvitationSerializer:
+    def test_valid_data(self):
+        ser = CreateInvitationSerializer(data={"email": "test@example.com", "role": "member"})
         assert ser.is_valid(), ser.errors
-        assert ser.validated_data["logo_url"] is None
 
+    def test_default_role(self):
+        ser = CreateInvitationSerializer(data={"email": "test@example.com"})
+        ser.is_valid()
+        assert ser.validated_data["role"] == OrgRole.MEMBER
 
-class TestUpdateOrgSerializerEdgeCases:
-    def test_invalid_logo_url_rejected(self):
-        ser = UpdateOrgSerializer(data={"logo_url": "not-a-url"})
+    def test_admin_role_valid(self):
+        ser = CreateInvitationSerializer(data={"email": "test@example.com", "role": "admin"})
+        assert ser.is_valid(), ser.errors
+
+    def test_owner_role_rejected(self):
+        ser = CreateInvitationSerializer(data={"email": "test@example.com", "role": "owner"})
         assert not ser.is_valid()
-        assert "logo_url" in ser.errors
+        assert "role" in ser.errors
 
-    def test_name_max_length_exceeded(self):
-        ser = UpdateOrgSerializer(data={"name": "X" * 256})
+    def test_missing_email(self):
+        ser = CreateInvitationSerializer(data={"role": "member"})
         assert not ser.is_valid()
-        assert "name" in ser.errors
+        assert "email" in ser.errors
+
+    def test_invalid_email(self):
+        ser = CreateInvitationSerializer(data={"email": "not-an-email", "role": "member"})
+        assert not ser.is_valid()
+        assert "email" in ser.errors
 
 
-class TestAddMemberSerializerEdgeCases:
-    def test_invalid_uuid_rejected(self):
-        ser = AddMemberSerializer(data={"user_id": "not-a-uuid", "role": "member"})
+class TestTransferOwnershipSerializer:
+    def test_valid_data(self):
+        from uuid import uuid4
+
+        ser = TransferOwnershipSerializer(data={"user_id": str(uuid4())})
+        assert ser.is_valid(), ser.errors
+
+    def test_missing_user_id(self):
+        ser = TransferOwnershipSerializer(data={})
         assert not ser.is_valid()
         assert "user_id" in ser.errors
 
-    def test_is_billing_true(self):
-        from uuid import uuid4
+    def test_invalid_uuid(self):
+        ser = TransferOwnershipSerializer(data={"user_id": "not-a-uuid"})
+        assert not ser.is_valid()
+        assert "user_id" in ser.errors
 
-        ser = AddMemberSerializer(
-            data={"user_id": str(uuid4()), "role": "member", "is_billing": True}
+
+@pytest.mark.django_db
+class TestInvitationSerializer:
+    def test_serializes_fields(self, org, user):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.orgs.models import Invitation
+
+        invitation = Invitation.objects.create(
+            org=org,
+            email="invitee@example.com",
+            role=OrgRole.MEMBER,
+            token="test-token-123",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
         )
-        assert ser.is_valid(), ser.errors
-        assert ser.validated_data["is_billing"] is True
+        data = InvitationSerializer(invitation).data
+        assert data["id"] == str(invitation.id)
+        assert data["email"] == "invitee@example.com"
+        assert data["role"] == "member"
+        assert data["status"] == "pending"
+        assert data["invited_by"]["email"] == user.email
+        assert "created_at" in data
+        assert "expires_at" in data

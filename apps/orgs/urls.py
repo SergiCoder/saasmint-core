@@ -2,15 +2,40 @@
 
 from django.urls import path
 
-from apps.orgs.views import OrgDetailView, OrgListCreateView, OrgMemberDetailView, OrgMemberListView
+from apps.orgs.views import (
+    InvitationCancelView,
+    InvitationListCreateView,
+    OrgDetailView,
+    OrgLeaveView,
+    OrgListView,
+    OrgMemberDetailView,
+    OrgMemberListView,
+    OrgTransferOwnershipView,
+)
 
 urlpatterns = [
-    path("", OrgListCreateView.as_view(), name="org-list-create"),
+    path("", OrgListView.as_view(), name="org-list"),
     path("<uuid:org_id>/", OrgDetailView.as_view(), name="org-detail"),
     path("<uuid:org_id>/members/", OrgMemberListView.as_view(), name="org-member-list"),
     path(
         "<uuid:org_id>/members/<uuid:member_user_id>/",
         OrgMemberDetailView.as_view(),
         name="org-member-detail",
+    ),
+    path("<uuid:org_id>/leave/", OrgLeaveView.as_view(), name="org-leave"),
+    path(
+        "<uuid:org_id>/transfer-ownership/",
+        OrgTransferOwnershipView.as_view(),
+        name="org-transfer-ownership",
+    ),
+    path(
+        "<uuid:org_id>/invitations/",
+        InvitationListCreateView.as_view(),
+        name="org-invitation-list-create",
+    ),
+    path(
+        "<uuid:org_id>/invitations/<uuid:invitation_id>/",
+        InvitationCancelView.as_view(),
+        name="org-invitation-cancel",
     ),
 ]

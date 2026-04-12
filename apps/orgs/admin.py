@@ -2,7 +2,7 @@
 
 from django.contrib import admin
 
-from apps.orgs.models import Org, OrgMember
+from apps.orgs.models import Invitation, Org, OrgMember
 
 
 @admin.register(Org)
@@ -21,3 +21,12 @@ class OrgMemberAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stub
     search_fields = ("org__name", "user__email")
     readonly_fields = ("id", "joined_at")
     list_select_related = ("org", "user")
+
+
+@admin.register(Invitation)
+class InvitationAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
+    list_display = ("email", "org", "role", "status", "invited_by", "created_at", "expires_at")
+    list_filter = ("status", "role")
+    search_fields = ("email", "org__name")
+    readonly_fields = ("id", "token", "created_at")
+    list_select_related = ("org", "invited_by")

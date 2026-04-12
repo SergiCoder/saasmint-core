@@ -325,9 +325,12 @@ def get_webhook_repos() -> WebhookRepos:
     """Build the WebhookRepos used by webhook processing (view + Celery task)."""
     from saasmint_core.services.webhooks import WebhookRepos
 
+    from apps.orgs.services import on_team_checkout_completed
+
     return WebhookRepos(
         events=DjangoStripeEventRepository(),
         subscriptions=DjangoSubscriptionRepository(),
         customers=DjangoStripeCustomerRepository(),
         plans=DjangoPlanRepository(),
+        on_team_checkout_completed=on_team_checkout_completed,
     )

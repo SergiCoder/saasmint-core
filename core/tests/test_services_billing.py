@@ -151,7 +151,8 @@ async def test_create_checkout_session_with_trial_and_metadata() -> None:
     call_kwargs = mock_create.call_args.kwargs
     sub_data = call_kwargs["subscription_data"]
     assert sub_data["trial_period_days"] == 14
-    assert sub_data["metadata"] == {"plan": "pro"}
+    # Metadata is now at session level, not subscription_data level
+    assert call_kwargs["metadata"] == {"plan": "pro"}
 
 
 @pytest.mark.anyio
@@ -212,9 +213,9 @@ async def test_create_checkout_session_with_metadata_only() -> None:
         )
 
     call_kwargs = mock_create.call_args.kwargs
-    sub_data = call_kwargs["subscription_data"]
-    assert sub_data["metadata"] == {"plan": "pro"}
-    assert "trial_period_days" not in sub_data
+    # Metadata is now at session level, not in subscription_data
+    assert call_kwargs["metadata"] == {"plan": "pro"}
+    assert "subscription_data" not in call_kwargs
 
 
 # ── create_billing_portal_session ─────────────────────────────────────────────

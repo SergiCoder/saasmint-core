@@ -76,8 +76,6 @@ async def create_checkout_session(
     subscription_data: dict[str, object] = {}
     if trial_period_days is not None:
         subscription_data["trial_period_days"] = trial_period_days
-    if metadata is not None:
-        subscription_data["metadata"] = metadata
 
     params: dict[str, object] = {
         "customer": stripe_customer_id,
@@ -91,6 +89,10 @@ async def create_checkout_session(
 
     params["allow_promotion_codes"] = True
     params["adaptive_pricing"] = {"enabled": True}
+
+    # Session-level metadata carries org fields for checkout.session.completed
+    if metadata is not None:
+        params["metadata"] = metadata
 
     if subscription_data:
         params["subscription_data"] = subscription_data

@@ -216,10 +216,26 @@ class CheckoutSessionView(APIView):
         plan_price = _get_active_plan_price(data["plan_price_id"])
         quantity = _validate_quantity_for_plan(plan_price, data["quantity"])
 
+        is_team = plan_price.plan.context == PlanContext.TEAM
+
+        # Team plans require org_name and org_slug
+        if is_team:
+            if "org_name" not in data or "org_slug" not in data:
+                msg = "Required for team plans."
+                raise ValidationError({"org_name": [msg], "org_slug": [msg]})
+
         # Orgs are not eligible for trial periods
         trial_period_days = data["trial_period_days"]
-        if trial_period_days is not None and plan_price.plan.context == PlanContext.TEAM:
+        if trial_period_days is not None and is_team:
             trial_period_days = None
+
+        # Build metadata for the checkout session
+        metadata: dict[str, str] | None = None
+        if is_team:
+            metadata = {
+                "org_name": data["org_name"],
+                "org_slug": data["org_slug"],
+            }
 
         async def _do() -> str:
             customer = await get_or_create_customer(
@@ -238,6 +254,7 @@ class CheckoutSessionView(APIView):
                 success_url=data["success_url"],
                 cancel_url=data["cancel_url"],
                 trial_period_days=trial_period_days,
+                metadata=metadata,
             )
 
         url = async_to_sync(_do)()

@@ -1,4 +1,4 @@
-"""Django ORM models for organisations and memberships."""
+"""Django ORM models for organisations, memberships, and invitations."""
 
 from __future__ import annotations
 
@@ -11,6 +11,13 @@ class OrgRole(models.TextChoices):
     OWNER = "owner", "Owner"
     ADMIN = "admin", "Admin"
     MEMBER = "member", "Member"
+
+
+class InvitationStatus(models.TextChoices):
+    PENDING = "pending", "Pending"
+    ACCEPTED = "accepted", "Accepted"
+    EXPIRED = "expired", "Expired"
+    CANCELLED = "cancelled", "Cancelled"
 
 
 class Org(models.Model):
@@ -56,3 +63,45 @@ class OrgMember(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user} @ {self.org} ({self.role})"
+
+
+class Invitation(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    org = models.ForeignKey(Org, on_delete=models.CASCADE, related_name="invitations")
+    email = models.EmailField()
+    role = models.CharField(
+        max_length=20,
+        choices=[
+            (OrgRole.ADMIN, "Admin"),
+            (OrgRole.MEMBER, "Member"),
+        ],
+        default=OrgRole.MEMBER,
+    )
+    token = models.CharField(max_length=255, unique=True)
+    status = models.CharField(
+        max_length=20, choices=InvitationStatus.choices, default=InvitationStatus.PENDING
+    )
+    invited_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name="sent_invitations",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "invitations"
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.Index(fields=["token"], name="idx_invitations_token"),
+        ]
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.UniqueConstraint(
+                fields=["org", "email"],
+                condition=models.Q(status="pending"),
+                name="idx_invitations_org_email_pending",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Invitation to {self.email} for {self.org} ({self.status})"

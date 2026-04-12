@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import stripe
 
@@ -24,6 +25,10 @@ from saasmint_core.repositories.subscription import SubscriptionRepository
 
 logger = logging.getLogger(__name__)
 
+# Callback type for team checkout completion.
+# Args: user_id, org_name, org_slug, stripe_subscription_id
+OnTeamCheckoutCompleted = Callable[[UUID, str, str, str | None], Awaitable[None]]
+
 
 @dataclass(frozen=True)
 class WebhookRepos:
@@ -31,6 +36,7 @@ class WebhookRepos:
     subscriptions: SubscriptionRepository
     customers: StripeCustomerRepository
     plans: PlanRepository
+    on_team_checkout_completed: OnTeamCheckoutCompleted | None = field(default=None)
 
 
 async def handle_stripe_event(
@@ -87,6 +93,8 @@ async def handle_stripe_event(
 
 async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
     match event["type"]:
+        case "checkout.session.completed":
+            await _on_checkout_completed(event["data"]["object"], repos)
         case "customer.subscription.created" | "customer.subscription.updated":
             await _sync_subscription(event["data"]["object"], repos)
         case "customer.subscription.deleted":
@@ -107,6 +115,34 @@ def _ts_to_dt(value: int | float | None) -> datetime | None:
 def _ts_to_dt_required(value: int | float) -> datetime:
     """Convert a Unix timestamp to a UTC datetime (required field)."""
     return datetime.fromtimestamp(int(value), tz=UTC)
+
+
+async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRepos) -> None:
+    """Handle checkout.session.completed — create org for team plan checkouts."""
+    metadata = session_data.get("metadata") or {}
+    org_name = metadata.get("org_name")
+    org_slug = metadata.get("org_slug")
+
+    if not org_name or not org_slug:
+        # Not a team checkout with org metadata — nothing to do
+        logger.debug("checkout.session.completed without org metadata, skipping")
+        return
+
+    client_ref = session_data.get("client_reference_id")
+    if not client_ref:
+        logger.warning("checkout.session.completed missing client_reference_id")
+        return
+
+    user_id = UUID(client_ref)
+    subscription_id = session_data.get("subscription")
+
+    if repos.on_team_checkout_completed is not None:
+        await repos.on_team_checkout_completed(user_id, org_name, org_slug, subscription_id)
+    else:
+        logger.warning(
+            "Team checkout completed for user %s but no callback registered",
+            user_id,
+        )
 
 
 async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
