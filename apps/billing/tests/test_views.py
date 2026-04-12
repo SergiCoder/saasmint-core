@@ -52,6 +52,28 @@ class TestPlanListView:
         resp = client.get("/api/v1/billing/plans/")
         assert resp.status_code == 200
 
+    def test_unauthenticated_returns_all_plans(self, plan, plan_price, team_plan, team_plan_price):
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/")
+        assert resp.status_code == 200
+        assert len(resp.data) == 2
+
+    def test_personal_user_sees_only_personal_plans(
+        self, authed_client, plan, plan_price, team_plan, team_plan_price
+    ):
+        resp = authed_client.get("/api/v1/billing/plans/")
+        assert resp.status_code == 200
+        assert len(resp.data) == 1
+        assert resp.data[0]["context"] == "personal"
+
+    def test_org_member_sees_only_team_plans(
+        self, org_member_client, plan, plan_price, team_plan, team_plan_price
+    ):
+        resp = org_member_client.get("/api/v1/billing/plans/")
+        assert resp.status_code == 200
+        assert len(resp.data) == 1
+        assert resp.data[0]["context"] == "team"
+
 
 @pytest.mark.django_db
 class TestCheckoutSessionView:

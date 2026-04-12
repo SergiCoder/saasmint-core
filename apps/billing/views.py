@@ -174,8 +174,18 @@ class PlanListView(APIView):
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
-        plans = PlanModel.objects.filter(is_active=True).select_related("price")
-        data = PlanSerializer(plans, many=True, context=_currency_context(request)).data
+        qs = PlanModel.objects.filter(is_active=True).select_related("price")
+
+        # Authenticated users only see plans matching their account type
+        if request.user.is_authenticated:
+            context_filter = (
+                PlanContext.TEAM
+                if request.user.account_type == AccountType.ORG_MEMBER
+                else PlanContext.PERSONAL
+            )
+            qs = qs.filter(context=context_filter)
+
+        data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
         return Response(data)
 
 
