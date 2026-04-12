@@ -218,11 +218,10 @@ class CheckoutSessionView(APIView):
 
         is_team = plan_price.plan.context == PlanContext.TEAM
 
-        # Team plans require org_name and org_slug
+        # Team plans require org_name
         if is_team:
-            if "org_name" not in data or "org_slug" not in data:
-                msg = "Required for team plans."
-                raise ValidationError({"org_name": [msg], "org_slug": [msg]})
+            if "org_name" not in data:
+                raise ValidationError({"org_name": ["Required for team plans."]})
 
         # Orgs are not eligible for trial periods
         trial_period_days = data["trial_period_days"]
@@ -234,7 +233,6 @@ class CheckoutSessionView(APIView):
         if is_team:
             metadata = {
                 "org_name": data["org_name"],
-                "org_slug": data["org_slug"],
             }
 
         async def _do() -> str:

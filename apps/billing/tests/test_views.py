@@ -129,7 +129,6 @@ class TestCheckoutSessionView:
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Team Org",
-                "org_slug": "team-org",
             },
             format="json",
         )
@@ -601,7 +600,6 @@ class TestQuantityValidationOnCheckout:
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Mini Org",
-                "org_slug": "mini-org",
             },
             format="json",
         )
@@ -629,7 +627,6 @@ class TestQuantityValidationOnCheckout:
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Min Org",
-                "org_slug": "min-org",
             },
             format="json",
         )

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from uuid import UUID
 
 import stripe
 from asgiref.sync import sync_to_async
 from django.db import IntegrityError, transaction
+from django.utils.text import slugify
 
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
 from apps.users.models import AccountType, User
@@ -16,10 +18,33 @@ from apps.users.models import AccountType, User
 logger = logging.getLogger(__name__)
 
 
+def generate_unique_slug(name: str) -> str:
+    """Generate a unique org slug from a name.
+
+    Slugifies the name, ensures it matches [a-z0-9][a-z0-9-]*[a-z0-9] (min 2 chars),
+    and appends a numeric suffix if the slug is already taken by an active org.
+    """
+    base = slugify(name)
+    # Strip any characters not in [a-z0-9-]
+    base = re.sub(r"[^a-z0-9-]", "", base)
+    # Strip leading/trailing hyphens
+    base = base.strip("-")
+    # Ensure minimum length
+    if len(base) < 2:
+        base = "org"
+
+    slug = base
+    suffix = 2
+    while Org.objects.filter(slug=slug, deleted_at__isnull=True).exists():
+        slug = f"{base}-{suffix}"
+        suffix += 1
+
+    return slug
+
+
 async def on_team_checkout_completed(
     user_id: UUID,
     org_name: str,
-    org_slug: str,
     stripe_subscription_id: str | None,
 ) -> None:
     """Create an org after a successful team plan checkout.
@@ -31,12 +56,12 @@ async def on_team_checkout_completed(
     user = await User.objects.aget(id=user_id)
 
     try:
-        _org, _member = await sync_to_async(_create_org_with_owner)(user, org_name, org_slug)
+        _org, _member = await sync_to_async(_create_org_with_owner)(user, org_name)
     except IntegrityError:
         logger.error(
-            "Org slug '%s' already taken during team checkout for user %s",
-            org_slug,
+            "Org creation failed during team checkout for user %s (name='%s')",
             user_id,
+            org_name,
         )
         raise
 
@@ -46,17 +71,18 @@ async def on_team_checkout_completed(
     logger.info(
         "Team checkout completed: org '%s' (slug=%s) created for user %s",
         org_name,
-        org_slug,
+        _org.slug,
         user_id,
     )
 
 
-def _create_org_with_owner(user: User, org_name: str, org_slug: str) -> tuple[Org, OrgMember]:
+def _create_org_with_owner(user: User, org_name: str) -> tuple[Org, OrgMember]:
     """Atomically create an org and its owner membership."""
     with transaction.atomic():
+        slug = generate_unique_slug(org_name)
         org = Org.objects.create(
             name=org_name,
-            slug=org_slug,
+            slug=slug,
             created_by=user,
         )
         member = OrgMember.objects.create(

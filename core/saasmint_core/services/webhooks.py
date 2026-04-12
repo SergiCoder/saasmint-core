@@ -26,8 +26,8 @@ from saasmint_core.repositories.subscription import SubscriptionRepository
 logger = logging.getLogger(__name__)
 
 # Callback type for team checkout completion.
-# Args: user_id, org_name, org_slug, stripe_subscription_id
-OnTeamCheckoutCompleted = Callable[[UUID, str, str, str | None], Awaitable[None]]
+# Args: user_id, org_name, stripe_subscription_id
+OnTeamCheckoutCompleted = Callable[[UUID, str, str | None], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -121,9 +121,8 @@ async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRep
     """Handle checkout.session.completed — create org for team plan checkouts."""
     metadata = session_data.get("metadata") or {}
     org_name = metadata.get("org_name")
-    org_slug = metadata.get("org_slug")
 
-    if not org_name or not org_slug:
+    if not org_name:
         # Not a team checkout with org metadata — nothing to do
         logger.debug("checkout.session.completed without org metadata, skipping")
         return
@@ -137,7 +136,7 @@ async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRep
     subscription_id = session_data.get("subscription")
 
     if repos.on_team_checkout_completed is not None:
-        await repos.on_team_checkout_completed(user_id, org_name, org_slug, subscription_id)
+        await repos.on_team_checkout_completed(user_id, org_name, subscription_id)
     else:
         logger.warning(
             "Team checkout completed for user %s but no callback registered",
