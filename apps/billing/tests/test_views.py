@@ -387,17 +387,17 @@ class TestUpdateSubscription:
         mock_seats.assert_not_called()
 
     @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
-    def test_seats_only_rejected_below_team_minimum(
+    def test_seats_only_accepted_with_single_seat(
         self, mock_seats, authed_client, team_subscription
     ):
-        """Team plans must reject seat updates below the minimum seat count."""
+        """Team plans accept a single seat (solo org owner starting a team)."""
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
             {"quantity": 1},
             format="json",
         )
-        assert resp.status_code == 400
-        mock_seats.assert_not_called()
+        assert resp.status_code == 204
+        mock_seats.assert_called_once()
 
     def test_invalid_quantity_returns_400(self, authed_client, subscription):
         resp = authed_client.patch(
@@ -602,8 +602,8 @@ class TestQuantityValidationOnCheckout:
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_team_plan_with_quantity_lt_2_returns_400(
-        self, mock_get_customer, mock_create, authed_client, mock_stripe_customer, db
+    def test_team_plan_with_single_seat_succeeds(
+        self, mock_get_customer, mock_create, org_member_client, mock_stripe_customer, db
     ):
         team_plan = Plan.objects.create(
             name="Team Mini", context="team", interval="month", is_active=True
@@ -614,7 +614,7 @@ class TestQuantityValidationOnCheckout:
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
-        resp = authed_client.post(
+        resp = org_member_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
@@ -625,7 +625,8 @@ class TestQuantityValidationOnCheckout:
             },
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 201
+        assert mock_create.call_args.kwargs["quantity"] == 1
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
@@ -666,16 +667,6 @@ class TestUpdateSubscriptionQuantityValidation:
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
             {"plan_price_id": str(plan_price.id), "quantity": 2},
-            format="json",
-        )
-        assert resp.status_code == 400
-
-    def test_team_plan_with_quantity_lt_2_returns_400(
-        self, authed_client, subscription, team_plan_price
-    ):
-        resp = authed_client.patch(
-            "/api/v1/billing/subscription/",
-            {"plan_price_id": str(team_plan_price.id), "quantity": 1},
             format="json",
         )
         assert resp.status_code == 400

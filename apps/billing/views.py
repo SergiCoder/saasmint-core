@@ -54,7 +54,7 @@ from helpers import get_user
 
 logger = logging.getLogger(__name__)
 
-MIN_TEAM_SEATS = 2
+MIN_TEAM_SEATS = 1
 
 _CURRENCY_PARAM = OpenApiParameter(
     name="currency",
