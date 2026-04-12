@@ -209,6 +209,12 @@ class DjangoPlanRepository:
     async def list_active(self) -> list[Plan]:
         return [self._plan_to_domain(obj) async for obj in PlanModel.objects.filter(is_active=True)]
 
+    async def list_active_by_context(self, context: PlanContext) -> list[Plan]:
+        return [
+            self._plan_to_domain(obj)
+            async for obj in PlanModel.objects.filter(is_active=True, context=context)
+        ]
+
     async def get_free_plan(self) -> Plan | None:
         obj = await PlanModel.free_plans().afirst()
         return self._plan_to_domain(obj) if obj is not None else None
