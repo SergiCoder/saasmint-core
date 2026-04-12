@@ -34,15 +34,9 @@ class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs gene
     ) -> HttpResponse | None:
         from apps.orgs.services import delete_org
 
-        active_orgs = queryset.filter(deleted_at__isnull=True)
-
-        if not active_orgs.exists():
-            self.message_user(request, "No active orgs selected.")
-            return None
-
         # Show confirmation page unless already confirmed
         if "confirm" not in request.POST:
-            orgs = active_orgs.select_related("created_by").annotate(
+            orgs = queryset.select_related("created_by").annotate(
                 member_count=Count("members"),
             )
             return TemplateResponse(
@@ -57,7 +51,7 @@ class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs gene
             )
 
         count = 0
-        for org in active_orgs:
+        for org in queryset:
             delete_org(org)
             count += 1
             logger.info("Admin %s deleted org %s (%s)", request.user, org.slug, org.id)
