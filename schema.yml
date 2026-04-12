@@ -744,25 +744,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/Org'
           description: ''
-    delete:
-      operationId: orgs_destroy
-      description: 'Delete org — cascades: cancels subscription, reverts members,
-        clears invitations.'
-      parameters:
-      - in: path
-        name: org_id
-        schema:
-          type: string
-          format: uuid
-        required: true
-      tags:
-      - orgs
-      security:
-      - JWT: []
-      - cookieAuth: []
-      responses:
-        '204':
-          description: No response body
   /api/v1/orgs/{org_id}/invitations/:
     get:
       operationId: orgs_invitations_list

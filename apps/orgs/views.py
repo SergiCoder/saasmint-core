@@ -124,17 +124,7 @@ class OrgDetailView(APIView):
         org.save(update_fields=list(ser.validated_data.keys()))
         return Response(OrgSerializer(org).data)
 
-    @extend_schema(request=None, responses={204: None}, tags=["orgs"])
-    def delete(self, request: Request, org_id: UUID) -> Response:
-        """Delete org — cascades: cancels subscription, reverts members, clears invitations."""
-        from apps.orgs.services import delete_org
-
-        user = get_user(request)
-        org, _ = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
-
-        delete_org(org)
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
+    # Org deletion is admin-only (Django admin action). No API endpoint.
 
 
 # ---------------------------------------------------------------------------

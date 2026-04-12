@@ -134,43 +134,11 @@ class TestOrgDetailViewPATCH:
 
 @pytest.mark.django_db
 class TestOrgDetailViewDELETE:
-    @patch("apps.orgs.services._cancel_team_subscription")
-    def test_owner_can_delete_org(
-        self, mock_cancel_sub, authed_client, org, owner_membership, user
-    ):
+    """Org deletion is admin-only — no API DELETE endpoint."""
+
+    def test_delete_not_allowed(self, authed_client, org, owner_membership):
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 204
-        org.refresh_from_db()
-        assert org.deleted_at is not None
-        # Owner's account is hard-deleted
-        assert not User.objects.filter(id=user.id).exists()
-
-    @patch("apps.orgs.services._cancel_team_subscription")
-    def test_delete_hard_deletes_all_members(
-        self,
-        mock_cancel_sub,
-        authed_client,
-        org,
-        owner_membership,
-        member_user,
-        member_membership,
-    ):
-        user_id = authed_client.handler._force_user.id
-        member_id = member_user.id
-        resp = authed_client.delete(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 204
-        # Both owner and member accounts are hard-deleted
-        assert not User.objects.filter(id=user_id).exists()
-        assert not User.objects.filter(id=member_id).exists()
-        assert not OrgMember.objects.filter(org=org).exists()
-
-    def test_admin_cannot_delete(self, admin_client, org, admin_membership, owner_membership):
-        resp = admin_client.delete(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 403
-
-    def test_member_cannot_delete(self, member_client, org, member_membership, owner_membership):
-        resp = member_client.delete(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 403
+        assert resp.status_code == 405
 
 
 # ---------------------------------------------------------------------------
