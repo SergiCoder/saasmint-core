@@ -100,3 +100,8 @@ class TestOrgAdminDeleteAction:
         )
         # Owner should NOT be deleted since org was already soft-deleted
         assert User.objects.filter(id=owner_id).exists()
+
+    def test_builtin_delete_is_disabled(self, admin_client_django, org, owner_membership):
+        """The detail-page Delete button should be blocked (403)."""
+        resp = admin_client_django.post(f"/admin/orgs/org/{org.id}/delete/", {"post": "yes"})
+        assert resp.status_code == 403
