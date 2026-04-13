@@ -16,7 +16,7 @@ from typing import Any
 import stripe
 from django.core.management.base import BaseCommand
 
-from apps.billing.models import Plan, PlanPrice, Product, ProductPrice
+from apps.billing.models import Plan, PlanPrice, PlanTier, Product, ProductPrice
 
 CURRENCY = "usd"
 
@@ -26,7 +26,8 @@ def _slug(value: str) -> str:
 
 
 def _plan_lookup_key(plan: Plan) -> str:
-    return f"plan_{plan.context}_{plan.tier}_{plan.interval}"
+    tier_name = PlanTier(plan.tier).name.lower()
+    return f"plan_{plan.context}_{tier_name}_{plan.interval}"
 
 
 def _product_lookup_key(product: Product) -> str:
