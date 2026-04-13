@@ -113,10 +113,10 @@ async def test_change_plan_with_quantity_no_proration() -> None:
 
 
 @pytest.mark.anyio
-async def test_update_seat_count_valid() -> None:
+async def test_update_seat_count_increase_prorates() -> None:
     mock_sub = MagicMock()
     mock_sub.__getitem__ = MagicMock(
-        side_effect=lambda k: {"items": {"data": [{"id": "si_seat"}]}}[k]
+        side_effect=lambda k: {"items": {"data": [{"id": "si_seat", "quantity": 3}]}}[k]
     )
 
     with (
@@ -133,10 +133,30 @@ async def test_update_seat_count_valid() -> None:
 
 
 @pytest.mark.anyio
+async def test_update_seat_count_decrease_no_proration() -> None:
+    mock_sub = MagicMock()
+    mock_sub.__getitem__ = MagicMock(
+        side_effect=lambda k: {"items": {"data": [{"id": "si_seat", "quantity": 5}]}}[k]
+    )
+
+    with (
+        patch("stripe.Subscription.retrieve", return_value=mock_sub),
+        patch("stripe.Subscription.modify") as mock_modify,
+    ):
+        await update_seat_count(stripe_subscription_id="sub_abc", quantity=3)
+
+    mock_modify.assert_called_once_with(
+        "sub_abc",
+        items=[{"id": "si_seat", "quantity": 3}],
+        proration_behavior="none",
+    )
+
+
+@pytest.mark.anyio
 async def test_update_seat_count_minimum_valid() -> None:
     mock_sub = MagicMock()
     mock_sub.__getitem__ = MagicMock(
-        side_effect=lambda k: {"items": {"data": [{"id": "si_min"}]}}[k]
+        side_effect=lambda k: {"items": {"data": [{"id": "si_min", "quantity": 1}]}}[k]
     )
 
     with (
@@ -148,7 +168,7 @@ async def test_update_seat_count_minimum_valid() -> None:
     mock_modify.assert_called_once_with(
         "sub_abc",
         items=[{"id": "si_min", "quantity": 1}],
-        proration_behavior="create_prorations",
+        proration_behavior="none",
     )
 
 

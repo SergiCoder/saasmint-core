@@ -59,7 +59,8 @@ async def update_seat_count(
     """
     Update the seat count for an org subscription.
 
-    Prorates immediately so the customer is billed/credited for the delta.
+    Adding seats prorates immediately (the org is charged for the new seat
+    right away).  Removing seats applies at renewal — no mid-cycle credit.
     DB state is synced via customer.subscription.updated webhook.
     """
     if quantity < 1:
@@ -67,9 +68,15 @@ async def update_seat_count(
 
     item_id = await _get_first_item_id(stripe_subscription_id)
 
+    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
+    current_quantity: int = sub["items"]["data"][0]["quantity"]
+    proration: Literal["create_prorations", "none"] = (
+        "create_prorations" if quantity > current_quantity else "none"
+    )
+
     await asyncio.to_thread(
         stripe.Subscription.modify,
         stripe_subscription_id,
         items=[{"id": item_id, "quantity": quantity}],
-        proration_behavior="create_prorations",
+        proration_behavior=proration,
     )
