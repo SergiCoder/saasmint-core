@@ -21,10 +21,10 @@ class PlanInterval(models.TextChoices):
     YEAR = "year", "Yearly"
 
 
-class PlanTier(models.TextChoices):
-    FREE = "free", "Free"
-    BASIC = "basic", "Basic"
-    PRO = "pro", "Pro"
+class PlanTier(models.IntegerChoices):
+    FREE = 1, "Free"
+    BASIC = 2, "Basic"
+    PRO = 3, "Pro"
 
 
 class SubscriptionStatus(models.TextChoices):
@@ -46,7 +46,7 @@ class Plan(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(default="", blank=True)
     context = models.CharField(max_length=20, choices=PlanContext.choices)
-    tier = models.CharField(max_length=10, choices=PlanTier.choices, default=PlanTier.BASIC)
+    tier = models.IntegerField(choices=PlanTier.choices, default=PlanTier.BASIC)
     interval = models.CharField(max_length=10, choices=PlanInterval.choices)
     is_active = models.BooleanField(default=True)
 

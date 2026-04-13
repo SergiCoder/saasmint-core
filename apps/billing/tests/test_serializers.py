@@ -42,7 +42,7 @@ class TestPlanSerializer:
         data = PlanSerializer(plan).data
         assert data["name"] == "Personal Monthly"
         assert data["context"] == "personal"
-        assert data["tier"] == "basic"
+        assert data["tier"] == 2
         assert data["interval"] == "month"
         assert data["price"]["amount"] == 999
 

@@ -74,7 +74,7 @@ class TestAssignFreePlan:
         plan = Plan.objects.create(
             name="Personal Free",
             context="personal",
-            tier="free",
+            tier=1,
             interval="month",
             is_active=False,
         )
@@ -88,7 +88,7 @@ class TestAssignFreePlan:
         paid_plan = Plan.objects.create(
             name="Personal Basic",
             context="personal",
-            tier="basic",
+            tier=2,
             interval="month",
             is_active=True,
         )

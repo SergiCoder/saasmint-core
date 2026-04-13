@@ -116,7 +116,7 @@ class TestPlanFreePlans:
         inactive = Plan.objects.create(
             name="Personal Free",
             context="personal",
-            tier="free",
+            tier=1,
             interval="month",
             is_active=False,
         )
@@ -129,7 +129,7 @@ class TestPlanFreePlans:
         team_free = Plan.objects.create(
             name="Team Free",
             context="team",
-            tier="free",
+            tier=1,
             interval="month",
             is_active=True,
         )
@@ -150,7 +150,7 @@ class TestPlanUniqueConstraint:
         Plan.objects.create(
             name="Personal Basic Monthly",
             context="personal",
-            tier="basic",
+            tier=2,
             interval="month",
             is_active=True,
         )
@@ -158,7 +158,7 @@ class TestPlanUniqueConstraint:
             Plan.objects.create(
                 name="Personal Basic Monthly v2",
                 context="personal",
-                tier="basic",
+                tier=2,
                 interval="month",
                 is_active=True,
             )
@@ -169,14 +169,14 @@ class TestPlanUniqueConstraint:
         Plan.objects.create(
             name="Legacy 1",
             context="personal",
-            tier="pro",
+            tier=3,
             interval="year",
             is_active=False,
         )
         Plan.objects.create(
             name="Legacy 2",
             context="personal",
-            tier="pro",
+            tier=3,
             interval="year",
             is_active=False,
         )

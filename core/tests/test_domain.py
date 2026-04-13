@@ -229,9 +229,9 @@ def test_plan_context_values() -> None:
 
 
 def test_plan_tier_values() -> None:
-    assert PlanTier.FREE == "free"
-    assert PlanTier.BASIC == "basic"
-    assert PlanTier.PRO == "pro"
+    assert PlanTier.FREE == 1
+    assert PlanTier.BASIC == 2
+    assert PlanTier.PRO == 3
 
 
 def test_plan_default_tier_is_basic() -> None:

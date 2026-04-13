@@ -1,4 +1,4 @@
-"""Verify Django TextChoices enums stay in sync with core StrEnum definitions.
+"""Verify Django choice enums stay in sync with core enum definitions.
 
 If a member is added/removed in one place but not the other, these tests fail.
 """
@@ -39,7 +39,7 @@ _ENUM_PAIRS: list[tuple[type, type, str]] = [
     ids=[pair[2] for pair in _ENUM_PAIRS],
 )
 def test_enum_values_match(django_enum: type, core_enum: type, name: str) -> None:
-    """Django TextChoices values must exactly match core StrEnum values."""
+    """Django choice enum values must exactly match core enum values."""
     django_values = {e.value for e in django_enum}
     core_values = {e.value for e in core_enum}
     assert django_values == core_values, (
@@ -55,7 +55,7 @@ def test_enum_values_match(django_enum: type, core_enum: type, name: str) -> Non
     ids=[pair[2] for pair in _ENUM_PAIRS],
 )
 def test_enum_names_match(django_enum: type, core_enum: type, name: str) -> None:
-    """Django TextChoices member names must exactly match core StrEnum member names."""
+    """Django choice enum member names must exactly match core enum member names."""
     django_names = {e.name for e in django_enum}
     core_names = {e.name for e in core_enum}
     assert django_names == core_names, (
