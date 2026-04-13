@@ -2,7 +2,7 @@
 
 import os
 
-# Provide dummy values for required secrets that aren't in .env.base / .env.django.
+# Provide dummy values for required secrets that aren't in .env.base.
 # These are set BEFORE base.py is imported so _Env() picks them up.
 _TEST_DEFAULTS = {
     "STRIPE_SECRET_KEY": "sk_test_fake",

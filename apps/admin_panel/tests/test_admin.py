@@ -268,11 +268,7 @@ class TestUserAdminChangelistRendering:
 class TestUserAdminExtendedInheritance:
     """Verify UserAdminExtended inherits configuration from apps.users.admin.UserAdmin."""
 
-    def test_extends_list_filter_with_deletion_state(self, admin_instance, base_admin):
-        from apps.admin_panel.admin import DeletionStateFilter
-
-        # Extended admin keeps every base filter and prepends DeletionStateFilter
-        assert DeletionStateFilter in admin_instance.list_filter
+    def test_extends_list_filter_from_base(self, admin_instance, base_admin):
         for base_filter in base_admin.list_filter:
             assert base_filter in admin_instance.list_filter
 

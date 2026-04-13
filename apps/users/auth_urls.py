@@ -10,6 +10,7 @@ from apps.users.auth_views import (
     OAuthAuthorizeView,
     OAuthCallbackView,
     RefreshView,
+    RegisterOrgOwnerView,
     RegisterView,
     ResetPasswordView,
     VerifyEmailView,
@@ -17,6 +18,7 @@ from apps.users.auth_views import (
 
 urlpatterns = [
     path("register/", RegisterView.as_view(), name="auth-register"),
+    path("register/org-owner/", RegisterOrgOwnerView.as_view(), name="auth-register-org-owner"),
     path("login/", LoginView.as_view(), name="auth-login"),
     path("refresh/", RefreshView.as_view(), name="auth-refresh"),
     path("logout/", LogoutView.as_view(), name="auth-logout"),

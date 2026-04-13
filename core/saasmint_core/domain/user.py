@@ -24,5 +24,3 @@ class User(BaseModel):
     is_verified: bool = False
     created_at: datetime
     updated_at: datetime | None = None
-    deleted_at: datetime | None = None
-    scheduled_deletion_at: datetime | None = None

@@ -114,17 +114,6 @@ class TestJWTAuthentication:
             self.auth.authenticate(request)
 
     @pytest.mark.django_db
-    def test_soft_deleted_user_rejected(self):
-        user = User.objects.create_user(email="deleted@example.com", full_name="Deleted")
-        user.deleted_at = datetime.now(UTC)
-        user.save()
-        token = _make_token(user_id=str(user.id))
-        request = _make_request(token)
-
-        with pytest.raises(AuthenticationFailed, match="User not found"):
-            self.auth.authenticate(request)
-
-    @pytest.mark.django_db
     def test_inactive_user_rejected(self):
         user = User.objects.create_user(
             email="inactive@example.com",
@@ -136,29 +125,6 @@ class TestJWTAuthentication:
 
         with pytest.raises(AuthenticationFailed, match="User not found"):
             self.auth.authenticate(request)
-
-    @pytest.mark.django_db
-    def test_scheduled_deletion_past_due_rejected(self):
-        user = User.objects.create_user(email="scheduled@example.com", full_name="Scheduled")
-        user.scheduled_deletion_at = datetime.now(UTC) - timedelta(hours=1)
-        user.save()
-        token = _make_token(user_id=str(user.id))
-        request = _make_request(token)
-
-        with pytest.raises(AuthenticationFailed) as exc_info:
-            self.auth.authenticate(request)
-        assert exc_info.value.detail["code"] == "account_deleted"
-
-    @pytest.mark.django_db
-    def test_scheduled_deletion_future_allowed(self):
-        user = User.objects.create_user(email="future@example.com", full_name="Future")
-        user.scheduled_deletion_at = datetime.now(UTC) + timedelta(days=10)
-        user.save()
-        token = _make_token(user_id=str(user.id))
-        request = _make_request(token)
-
-        result_user, _ = self.auth.authenticate(request)
-        assert result_user.pk == user.pk
 
     def test_authenticate_header_returns_bearer(self):
         request = _make_request()

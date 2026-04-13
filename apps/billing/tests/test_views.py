@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from rest_framework.test import APIClient
 from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
 
-from apps.billing.models import Plan, PlanPrice, Product, ProductPrice
+from apps.billing.models import ExchangeRate, Plan, PlanPrice, Product, ProductPrice
 
 
 @pytest.fixture
@@ -41,18 +41,38 @@ class TestPlanListView:
         assert resp.status_code == 200
         assert len(resp.data) == 0
 
-    def test_caches_response(self, authed_client, plan, plan_price):
-        resp1 = authed_client.get("/api/v1/billing/plans/")
-        # Deactivate plan — cached response should still return it
-        plan.is_active = False
-        plan.save()
-        resp2 = authed_client.get("/api/v1/billing/plans/")
-        assert resp1.data == resp2.data
+    def test_response_includes_display_amount_and_currency(self, authed_client, plan, plan_price):
+        resp = authed_client.get("/api/v1/billing/plans/")
+        price = resp.data[0]["price"]
+        assert price["currency"] == "usd"
+        assert price["display_amount"] == 9.99
 
     def test_unauthenticated_allowed(self, plan, plan_price):
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/")
         assert resp.status_code == 200
+
+    def test_unauthenticated_returns_all_plans(self, plan, plan_price, team_plan, team_plan_price):
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/")
+        assert resp.status_code == 200
+        assert len(resp.data) == 2
+
+    def test_personal_user_sees_only_personal_plans(
+        self, authed_client, plan, plan_price, team_plan, team_plan_price
+    ):
+        resp = authed_client.get("/api/v1/billing/plans/")
+        assert resp.status_code == 200
+        assert len(resp.data) == 1
+        assert resp.data[0]["context"] == "personal"
+
+    def test_org_member_sees_only_team_plans(
+        self, org_member_client, plan, plan_price, team_plan, team_plan_price
+    ):
+        resp = org_member_client.get("/api/v1/billing/plans/")
+        assert resp.status_code == 200
+        assert len(resp.data) == 1
+        assert resp.data[0]["context"] == "team"
 
 
 @pytest.mark.django_db
@@ -111,7 +131,7 @@ class TestCheckoutSessionView:
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
     def test_trial_suppressed_for_team_plans(
-        self, mock_get_customer, mock_create, authed_client, mock_stripe_customer, db
+        self, mock_get_customer, mock_create, org_member_client, mock_stripe_customer, db
     ):
         team_plan = Plan.objects.create(
             name="Team Monthly", context="team", interval="month", is_active=True
@@ -122,7 +142,7 @@ class TestCheckoutSessionView:
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
-        authed_client.post(
+        org_member_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
@@ -130,6 +150,7 @@ class TestCheckoutSessionView:
                 "trial_period_days": 14,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
+                "org_name": "Team Org",
             },
             format="json",
         )
@@ -180,6 +201,99 @@ class TestCheckoutSessionView:
         client = APIClient()
         resp = client.post("/api/v1/billing/checkout-sessions/", {}, format="json")
         assert resp.status_code in (401, 403)
+
+    def test_personal_user_cannot_checkout_team_plan(
+        self, authed_client, team_plan, team_plan_price
+    ):
+        """Personal account_type users are rejected when checking out a team plan."""
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                "org_name": "My Org",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "org accounts" in resp.data["detail"].lower()
+
+    def test_org_member_cannot_checkout_personal_plan(self, org_member_client, plan_price):
+        """Org member account_type users are rejected when checking out a personal plan."""
+        resp = org_member_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(plan_price.id),
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "personal plans" in resp.data["detail"].lower()
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_team_checkout_requires_org_name(
+        self,
+        mock_get_customer,
+        mock_create,
+        org_member_client,
+        org_member_stripe_customer,
+        team_plan,
+        team_plan_price,
+    ):
+        """Team plan checkout must include org_name."""
+        mock_get_customer.return_value = MagicMock(
+            stripe_id="cus_org_test", user_id=org_member_stripe_customer.user_id
+        )
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        resp = org_member_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                # no org_name
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "org_name" in resp.data
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_team_checkout_passes_metadata(
+        self,
+        mock_get_customer,
+        mock_create,
+        org_member_client,
+        org_member_stripe_customer,
+        team_plan,
+        team_plan_price,
+    ):
+        """Team checkout should pass org_name in metadata to Stripe."""
+        mock_get_customer.return_value = MagicMock(
+            stripe_id="cus_org_test", user_id=org_member_stripe_customer.user_id
+        )
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        org_member_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                "org_name": "My Team Org",
+            },
+            format="json",
+        )
+        assert mock_create.call_args.kwargs["metadata"] == {"org_name": "My Team Org"}
 
 
 @pytest.mark.django_db
@@ -366,17 +480,17 @@ class TestUpdateSubscription:
         mock_seats.assert_not_called()
 
     @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
-    def test_seats_only_rejected_below_team_minimum(
+    def test_seats_only_accepted_with_single_seat(
         self, mock_seats, authed_client, team_subscription
     ):
-        """Team plans must reject seat updates below the minimum seat count."""
+        """Team plans accept a single seat (solo org owner starting a team)."""
         resp = authed_client.patch(
             "/api/v1/billing/subscription/",
             {"quantity": 1},
             format="json",
         )
-        assert resp.status_code == 400
-        mock_seats.assert_not_called()
+        assert resp.status_code == 204
+        mock_seats.assert_called_once()
 
     def test_invalid_quantity_returns_400(self, authed_client, subscription):
         resp = authed_client.patch(
@@ -508,40 +622,6 @@ class TestUpdateSubscription:
 
 
 @pytest.mark.django_db
-class TestApplyPromoCodeView:
-    @patch("apps.billing.views.apply_promo_code", new_callable=AsyncMock)
-    def test_applies_promo(self, mock_promo, authed_client, subscription):
-        resp = authed_client.post(
-            "/api/v1/billing/subscription/promo-code/",
-            {"promo_code": "SAVE20"},
-            format="json",
-        )
-        assert resp.status_code == 204
-        mock_promo.assert_called_once()
-
-    def test_no_subscription_returns_404(self, authed_client, user):
-        resp = authed_client.post(
-            "/api/v1/billing/subscription/promo-code/",
-            {"promo_code": "SAVE20"},
-            format="json",
-        )
-        assert resp.status_code == 404
-
-    def test_missing_promo_code_returns_400(self, authed_client, subscription):
-        resp = authed_client.post("/api/v1/billing/subscription/promo-code/", {}, format="json")
-        assert resp.status_code == 400
-
-    def test_unauthenticated_rejected(self):
-        client = APIClient()
-        resp = client.post(
-            "/api/v1/billing/subscription/promo-code/",
-            {"promo_code": "SAVE20"},
-            format="json",
-        )
-        assert resp.status_code in (401, 403)
-
-
-@pytest.mark.django_db
 class TestProductListView:
     @pytest.fixture
     def product(self):
@@ -575,12 +655,13 @@ class TestProductListView:
         assert resp.status_code == 200
         assert not any(p["name"] == "100 Credits" for p in resp.data)
 
-    def test_caches_response(self, authed_client, product, product_price):
-        resp1 = authed_client.get("/api/v1/billing/products/")
-        product.is_active = False
-        product.save()
-        resp2 = authed_client.get("/api/v1/billing/products/")
-        assert resp1.data == resp2.data
+    def test_response_includes_display_amount_and_currency(
+        self, authed_client, product, product_price
+    ):
+        resp = authed_client.get("/api/v1/billing/products/")
+        match = next(p for p in resp.data if p["name"] == "100 Credits")
+        assert match["price"]["currency"] == "usd"
+        assert match["price"]["display_amount"] == 9.99
 
     def test_unauthenticated_rejected(self, product, product_price):
         client = APIClient()
@@ -614,8 +695,8 @@ class TestQuantityValidationOnCheckout:
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_team_plan_with_quantity_lt_2_returns_400(
-        self, mock_get_customer, mock_create, authed_client, mock_stripe_customer, db
+    def test_team_plan_with_single_seat_succeeds(
+        self, mock_get_customer, mock_create, org_member_client, mock_stripe_customer, db
     ):
         team_plan = Plan.objects.create(
             name="Team Mini", context="team", interval="month", is_active=True
@@ -626,22 +707,24 @@ class TestQuantityValidationOnCheckout:
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
-        resp = authed_client.post(
+        resp = org_member_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
                 "quantity": 1,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
+                "org_name": "Mini Org",
             },
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 201
+        assert mock_create.call_args.kwargs["quantity"] == 1
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
     def test_team_plan_with_min_seats_succeeds(
-        self, mock_get_customer, mock_create, authed_client, mock_stripe_customer, db
+        self, mock_get_customer, mock_create, org_member_client, mock_stripe_customer, db
     ):
         team_plan = Plan.objects.create(
             name="Team Min", context="team", interval="month", is_active=True
@@ -652,13 +735,14 @@ class TestQuantityValidationOnCheckout:
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
 
-        resp = authed_client.post(
+        resp = org_member_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
                 "quantity": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
+                "org_name": "Min Org",
             },
             format="json",
         )
@@ -680,12 +764,119 @@ class TestUpdateSubscriptionQuantityValidation:
         )
         assert resp.status_code == 400
 
-    def test_team_plan_with_quantity_lt_2_returns_400(
-        self, authed_client, subscription, team_plan_price
-    ):
-        resp = authed_client.patch(
-            "/api/v1/billing/subscription/",
-            {"plan_price_id": str(team_plan_price.id), "quantity": 1},
-            format="json",
+
+@pytest.mark.django_db
+class TestCurrencyConversion:
+    """Display-currency conversion on plan/product/subscription endpoints."""
+
+    def test_currency_query_param_converts_amount(self, plan, plan_price):
+        ExchangeRate.objects.create(
+            currency="eur",
+            rate="0.91",
+            fetched_at=datetime.now(UTC),
         )
-        assert resp.status_code == 400
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=eur")
+        price = resp.data[0]["price"]
+        assert price["currency"] == "eur"
+        # 999 cents * 0.91 = 909.09 → round → 909 minor units → 9.09 → friendly → 9.49
+        assert price["display_amount"] == 9.49
+        assert price["approximate"] is True
+        # Original USD cents still present
+        assert price["amount"] == 999
+
+    def test_falls_back_to_usd_when_rate_missing(self, plan, plan_price):
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=eur")
+        price = resp.data[0]["price"]
+        # No ExchangeRate for EUR → fallback to USD
+        assert price["currency"] == "usd"
+        assert price["display_amount"] == 9.99
+        assert price["approximate"] is False
+
+    def test_invalid_currency_param_ignored(self, plan, plan_price):
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=xyz")
+        assert resp.data[0]["price"]["currency"] == "usd"
+
+    def test_authenticated_user_preferred_currency(self, authed_client, user, plan, plan_price):
+        ExchangeRate.objects.create(
+            currency="gbp",
+            rate="0.79",
+            fetched_at=datetime.now(UTC),
+        )
+        user.preferred_currency = "gbp"
+        user.save()
+        resp = authed_client.get("/api/v1/billing/plans/")
+        assert resp.data[0]["price"]["currency"] == "gbp"
+
+    def test_query_param_overrides_user_preference(self, authed_client, user, plan, plan_price):
+        ExchangeRate.objects.create(
+            currency="eur",
+            rate="0.91",
+            fetched_at=datetime.now(UTC),
+        )
+        ExchangeRate.objects.create(
+            currency="gbp",
+            rate="0.79",
+            fetched_at=datetime.now(UTC),
+        )
+        user.preferred_currency = "gbp"
+        user.save()
+        resp = authed_client.get("/api/v1/billing/plans/?currency=eur")
+        assert resp.data[0]["price"]["currency"] == "eur"
+
+    def test_zero_decimal_currency_conversion(self, plan, plan_price):
+        ExchangeRate.objects.create(
+            currency="jpy",
+            rate="149.5",
+            fetched_at=datetime.now(UTC),
+        )
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=jpy")
+        price = resp.data[0]["price"]
+        assert price["currency"] == "jpy"
+        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → friendly → 149400.0
+        assert price["display_amount"] == 149400.0
+        assert price["approximate"] is True
+
+    def test_subscription_includes_currency(self, authed_client, subscription):
+        resp = authed_client.get("/api/v1/billing/subscription/")
+        price = resp.data["plan"]["price"]
+        assert "currency" in price
+        assert "display_amount" in price
+
+    def test_product_endpoint_currency_conversion(self, authed_client):
+        """Products endpoint also respects ?currency= param."""
+        product = Product.objects.create(
+            name="50 Credits", type="one_time", credits=50, is_active=True
+        )
+        ProductPrice.objects.create(product=product, stripe_price_id="price_prod_cur", amount=500)
+        ExchangeRate.objects.create(currency="eur", rate="0.91", fetched_at=datetime.now(UTC))
+        resp = authed_client.get("/api/v1/billing/products/?currency=eur")
+        price = resp.data[0]["price"]
+        assert price["currency"] == "eur"
+        # 500 * 0.91 = 455 → /100 → 4.55 → friendly → 4.99 (rounds up)
+        assert price["display_amount"] == 4.99
+        assert price["approximate"] is True
+
+    def test_user_default_currency_returns_usd(self, authed_client, user, plan, plan_price):
+        """User with default preferred_currency='usd' gets USD without exchange rate lookup."""
+        assert user.preferred_currency == "usd"
+        resp = authed_client.get("/api/v1/billing/plans/")
+        assert resp.data[0]["price"]["currency"] == "usd"
+
+    def test_user_unsupported_preferred_currency_falls_back_to_usd(
+        self, authed_client, user, plan, plan_price
+    ):
+        """User with a preferred_currency not in SUPPORTED_CURRENCIES should get USD."""
+        user.preferred_currency = "xyz"
+        user.save()
+        resp = authed_client.get("/api/v1/billing/plans/")
+        assert resp.data[0]["price"]["currency"] == "usd"
+
+    def test_empty_currency_param_ignored(self, plan, plan_price):
+        """?currency= (empty string) should fall back to USD."""
+        client = APIClient()
+        resp = client.get("/api/v1/billing/plans/?currency=")
+        assert resp.data[0]["price"]["currency"] == "usd"

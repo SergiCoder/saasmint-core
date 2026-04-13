@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from saasmint_core.exceptions import InvalidPromoCodeError, SubscriptionNotFoundError
+from saasmint_core.exceptions import SubscriptionNotFoundError
 from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
@@ -133,38 +133,6 @@ async def test_create_checkout_session_without_promo() -> None:
 
 
 @pytest.mark.anyio
-async def test_create_checkout_session_with_promo_code() -> None:
-    mock_promo = MagicMock()
-    mock_promo.id = "promo_id_abc"
-    mock_coupon = MagicMock()
-    mock_coupon.valid = True
-    mock_promo.coupon = mock_coupon
-    mock_list = MagicMock()
-    mock_list.data = [mock_promo]
-
-    mock_session = MagicMock()
-    mock_session.url = "https://checkout.stripe.com/pay/cs_promo"
-
-    with (
-        patch("stripe.PromotionCode.list", return_value=mock_list),
-        patch("stripe.checkout.Session.create", return_value=mock_session) as mock_create,
-    ):
-        url = await create_checkout_session(
-            stripe_customer_id="cus_abc",
-            client_reference_id="user_123",
-            price_id="price_abc",
-            promo_code="SAVE20",
-            success_url="https://example.com/success",
-            cancel_url="https://example.com/cancel",
-        )
-
-    assert url == "https://checkout.stripe.com/pay/cs_promo"
-    call_kwargs = mock_create.call_args.kwargs
-    assert call_kwargs["allow_promotion_codes"] is False
-    assert call_kwargs["discounts"] == [{"promotion_code": "promo_id_abc"}]
-
-
-@pytest.mark.anyio
 async def test_create_checkout_session_with_trial_and_metadata() -> None:
     mock_session = MagicMock()
     mock_session.url = "https://checkout.stripe.com/pay/cs_trial"
@@ -183,7 +151,8 @@ async def test_create_checkout_session_with_trial_and_metadata() -> None:
     call_kwargs = mock_create.call_args.kwargs
     sub_data = call_kwargs["subscription_data"]
     assert sub_data["trial_period_days"] == 14
-    assert sub_data["metadata"] == {"plan": "pro"}
+    # Metadata is now at session level, not subscription_data level
+    assert call_kwargs["metadata"] == {"plan": "pro"}
 
 
 @pytest.mark.anyio
@@ -244,26 +213,9 @@ async def test_create_checkout_session_with_metadata_only() -> None:
         )
 
     call_kwargs = mock_create.call_args.kwargs
-    sub_data = call_kwargs["subscription_data"]
-    assert sub_data["metadata"] == {"plan": "pro"}
-    assert "trial_period_days" not in sub_data
-
-
-@pytest.mark.anyio
-async def test_create_checkout_session_invalid_promo_code_raises() -> None:
-    mock_list = MagicMock()
-    mock_list.data = []
-
-    with patch("stripe.PromotionCode.list", return_value=mock_list):
-        with pytest.raises(InvalidPromoCodeError):
-            await create_checkout_session(
-                stripe_customer_id="cus_abc",
-                client_reference_id="user_123",
-                price_id="price_abc",
-                promo_code="BADCODE",
-                success_url="https://example.com/success",
-                cancel_url="https://example.com/cancel",
-            )
+    # Metadata is now at session level, not in subscription_data
+    assert call_kwargs["metadata"] == {"plan": "pro"}
+    assert "subscription_data" not in call_kwargs
 
 
 # ── create_billing_portal_session ─────────────────────────────────────────────

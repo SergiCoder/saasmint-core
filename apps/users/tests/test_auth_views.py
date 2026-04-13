@@ -140,6 +140,64 @@ class TestRegisterView:
 
 
 # ---------------------------------------------------------------------------
+# RegisterOrgOwnerView
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestRegisterOrgOwnerView:
+    URL = "/api/v1/auth/register/org-owner/"
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_register_org_owner_success(self, mock_email, api):
+        resp = api.post(
+            self.URL,
+            {"email": "orgowner@example.com", "password": "securepass1", "full_name": "Org Owner"},
+            format="json",
+        )
+        assert resp.status_code == 201
+        assert "access_token" in resp.data
+        assert "refresh_token" in resp.data
+
+        user = User.objects.get(email="orgowner@example.com")
+        assert user.account_type == "org_member"
+        assert user.is_verified is False
+        mock_email.assert_called_once()
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_duplicate_email_returns_409(self, _mock_email, api):
+        User.objects.create_user(
+            email="taken@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Existing",
+        )
+        resp = api.post(
+            self.URL,
+            {"email": "taken@example.com", "password": "securepass1", "full_name": "Dup"},
+            format="json",
+        )
+        assert resp.status_code == 409
+        assert resp.data["code"] == "email_exists"
+
+    def test_missing_fields_returns_400(self, api):
+        resp = api.post(self.URL, {"email": "only@example.com"}, format="json")
+        assert resp.status_code == 400
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_no_free_plan_assigned(self, mock_email, api):
+        """Org owner registration does not assign a free plan subscription."""
+        from apps.billing.models import Subscription
+
+        api.post(
+            self.URL,
+            {"email": "noplan@example.com", "password": "securepass1", "full_name": "No Plan"},
+            format="json",
+        )
+        user = User.objects.get(email="noplan@example.com")
+        assert not Subscription.objects.filter(user=user).exists()
+
+
+# ---------------------------------------------------------------------------
 # LoginView
 # ---------------------------------------------------------------------------
 
@@ -191,23 +249,6 @@ class TestLoginView:
         )
         # Django's authenticate returns None for inactive users
         assert resp.status_code == 401
-
-    def test_login_soft_deleted_user(self, api):
-        user = User.objects.create_user(
-            email="deleted@example.com",
-            password="testpass123",  # noqa: S106
-            full_name="Deleted",
-            is_verified=True,
-        )
-        user.deleted_at = datetime.now(UTC)
-        user.save()
-        resp = api.post(
-            self.URL,
-            {"email": "deleted@example.com", "password": "testpass123"},
-            format="json",
-        )
-        assert resp.status_code == 401
-        assert resp.data["code"] == "account_deactivated"
 
     def test_login_unverified_user(self, api):
         User.objects.create_user(
@@ -340,20 +381,6 @@ class TestForgotPasswordView:
         resp = api.post(self.URL, {"email": "nobody@example.com"}, format="json")
         # Always 200 to prevent email enumeration
         assert resp.status_code == 200
-
-    @patch("apps.users.tasks.send_password_reset_email_task.delay")
-    def test_forgot_password_deleted_user_not_sent(self, mock_delay, api):
-        user = User.objects.create_user(
-            email="del@example.com",
-            full_name="Deleted",
-            password="testpass123",  # noqa: S106
-        )
-        user.deleted_at = datetime.now(UTC)
-        user.save()
-
-        resp = api.post(self.URL, {"email": "del@example.com"}, format="json")
-        assert resp.status_code == 200
-        mock_delay.assert_not_called()
 
     @patch("apps.users.tasks.send_password_reset_email_task.delay")
     def test_forgot_password_email_failure_still_returns_200(self, mock_delay, api, verified_user):

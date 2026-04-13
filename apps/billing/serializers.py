@@ -6,8 +6,18 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 from rest_framework import serializers
+from saasmint_core.services.currency import format_amount, round_friendly
 
 from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, Subscription
+
+
+def _convert_amount(amount: int, currency: str, rate: float) -> float:
+    """Convert a USD-cents amount to a display amount in the target currency."""
+    converted = round(amount * rate)  # round() returns int when ndigits is omitted
+    raw = format_amount(converted, currency)
+    if currency != "usd":
+        return round_friendly(raw, currency)
+    return raw
 
 
 def _validate_redirect_url(url: str) -> str:
@@ -42,11 +52,33 @@ def _validate_redirect_url(url: str) -> str:
     raise serializers.ValidationError("URL domain is not in the list of allowed origins.")
 
 
-class PlanPriceSerializer(serializers.ModelSerializer[PlanPrice]):
+class _DisplayCurrencyMixin:
+    """Shared logic for serializers that add display_amount / currency fields."""
+
+    def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
+        return _convert_amount(
+            obj.amount,
+            self.context.get("currency", "usd"),  # type: ignore[attr-defined]
+            self.context.get("rate", 1.0),  # type: ignore[attr-defined]
+        )
+
+    def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
+        return str(self.context.get("currency", "usd"))  # type: ignore[attr-defined]
+
+    def get_approximate(self, obj: PlanPrice | ProductPrice) -> bool:
+        currency: str = self.context.get("currency", "usd")  # type: ignore[attr-defined]
+        return currency != "usd"
+
+
+class PlanPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[PlanPrice]):
+    display_amount = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
+    approximate = serializers.SerializerMethodField()
+
     class Meta:
         model = PlanPrice
-        fields = ("id", "amount")
-        read_only_fields = fields
+        fields = ("id", "amount", "display_amount", "currency", "approximate")
+        read_only_fields = ("id", "amount")
 
 
 class PlanSerializer(serializers.ModelSerializer[Plan]):
@@ -67,11 +99,15 @@ class PlanSerializer(serializers.ModelSerializer[Plan]):
         read_only_fields = fields
 
 
-class ProductPriceSerializer(serializers.ModelSerializer[ProductPrice]):
+class ProductPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[ProductPrice]):
+    display_amount = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
+    approximate = serializers.SerializerMethodField()
+
     class Meta:
         model = ProductPrice
-        fields = ("id", "amount")
-        read_only_fields = fields
+        fields = ("id", "amount", "display_amount", "currency", "approximate")
+        read_only_fields = ("id", "amount")
 
 
 class ProductSerializer(serializers.ModelSerializer[Product]):
@@ -93,8 +129,6 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "status",
             "plan",
             "quantity",
-            "discount_percent",
-            "discount_end_at",
             "trial_ends_at",
             "current_period_start",
             "current_period_end",
@@ -107,14 +141,12 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
 class CheckoutRequestSerializer(serializers.Serializer[object]):
     plan_price_id = serializers.UUIDField()
     quantity = serializers.IntegerField(default=1, min_value=1, max_value=10000)
-    promo_code = serializers.CharField(
-        required=False, allow_null=True, default=None, max_length=255
-    )
     success_url = serializers.URLField()
     cancel_url = serializers.URLField()
     trial_period_days = serializers.IntegerField(
         required=False, allow_null=True, default=None, min_value=1, max_value=90
     )
+    org_name = serializers.CharField(max_length=255, required=False)
 
     def validate_success_url(self, value: str) -> str:
         return _validate_redirect_url(value)
@@ -153,7 +185,3 @@ class UpdateSubscriptionSerializer(serializers.Serializer[object]):
                 "'cancel_at_period_end' cannot be combined with 'plan_price_id' or 'quantity'."
             )
         return attrs
-
-
-class PromoCodeSerializer(serializers.Serializer[object]):
-    promo_code = serializers.CharField(max_length=255)

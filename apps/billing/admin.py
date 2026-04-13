@@ -4,6 +4,7 @@ from django.contrib import admin
 from django.http import HttpRequest
 
 from apps.billing.models import (
+    ExchangeRate,
     Plan,
     PlanPrice,
     Product,
@@ -87,6 +88,19 @@ class SubscriptionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-s
             if customer.org_id is not None:
                 return f"org: {customer.org}"
         return "—"
+
+
+@admin.register(ExchangeRate)
+class ExchangeRateAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
+    list_display = ("currency", "rate", "fetched_at")
+    ordering = ("currency",)
+    readonly_fields = ("currency", "rate", "fetched_at")
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: object = None) -> bool:
+        return False
 
 
 @admin.register(StripeEvent)

@@ -21,10 +21,10 @@ class PlanInterval(models.TextChoices):
     YEAR = "year", "Yearly"
 
 
-class PlanTier(models.TextChoices):
-    FREE = "free", "Free"
-    BASIC = "basic", "Basic"
-    PRO = "pro", "Pro"
+class PlanTier(models.IntegerChoices):
+    FREE = 1, "Free"
+    BASIC = 2, "Basic"
+    PRO = 3, "Pro"
 
 
 class SubscriptionStatus(models.TextChoices):
@@ -46,7 +46,7 @@ class Plan(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(default="", blank=True)
     context = models.CharField(max_length=20, choices=PlanContext.choices)
-    tier = models.CharField(max_length=10, choices=PlanTier.choices, default=PlanTier.BASIC)
+    tier = models.IntegerField(choices=PlanTier.choices, default=PlanTier.BASIC)
     interval = models.CharField(max_length=10, choices=PlanInterval.choices)
     is_active = models.BooleanField(default=True)
 
@@ -143,9 +143,6 @@ class Subscription(models.Model):
     )
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="subscriptions")
     quantity = models.IntegerField(default=1)
-    promotion_code_id = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001  # nullable CharField intentional: NULL means no promo code applied (distinguishable from empty string)
-    discount_percent = models.FloatField(null=True, blank=True)
-    discount_end_at = models.DateTimeField(null=True, blank=True)
     trial_ends_at = models.DateTimeField(null=True, blank=True)
     current_period_start = models.DateTimeField()
     current_period_end = models.DateTimeField()
@@ -199,6 +196,24 @@ class ProductPrice(models.Model):
 
     def __str__(self) -> str:
         return f"{self.product.name} — ${self.amount / 100:.2f}"
+
+
+class ExchangeRate(models.Model):
+    """USD-based exchange rate for display-currency conversion.
+
+    Synced daily from Stripe by the ``sync_exchange_rates`` Celery task.
+    One row per supported currency (excluding USD).
+    """
+
+    currency = models.CharField(max_length=3, unique=True)
+    rate = models.DecimalField(max_digits=18, decimal_places=8)
+    fetched_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "exchange_rates"
+
+    def __str__(self) -> str:
+        return f"{self.currency.upper()}: {self.rate}"
 
 
 class StripeEvent(models.Model):

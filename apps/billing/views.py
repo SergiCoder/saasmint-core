@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from typing import ClassVar
 from uuid import UUID
 
 from asgiref.sync import async_to_sync
 from django.core.cache import cache
 from django.db.models import Q
-from drf_spectacular.utils import extend_schema, inline_serializer
+from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
@@ -26,13 +27,13 @@ from saasmint_core.services.billing import (
     get_or_create_customer,
     resume_subscription,
 )
+from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.subscriptions import (
-    apply_promo_code,
     change_plan,
     update_seat_count,
 )
 
-from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, PlanContext, PlanPrice
+from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, ExchangeRate, PlanContext, PlanPrice
 from apps.billing.models import Plan as PlanModel
 from apps.billing.models import Product as ProductModel
 from apps.billing.models import Subscription as SubscriptionModel
@@ -45,13 +46,72 @@ from apps.billing.serializers import (
     PlanSerializer,
     PortalRequestSerializer,
     ProductSerializer,
-    PromoCodeSerializer,
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
+from apps.users.models import AccountType
 from helpers import get_user
 
-MIN_TEAM_SEATS = 2
+logger = logging.getLogger(__name__)
+
+MIN_TEAM_SEATS = 1
+
+_CURRENCY_PARAM = OpenApiParameter(
+    name="currency",
+    description="ISO 4217 currency code (e.g. 'eur'). Overrides user preference.",
+    required=False,
+    type=str,
+)
+
+
+def _resolve_display_currency(request: Request) -> str:
+    """Resolve the display currency for a request.
+
+    Priority for anonymous: ``?currency=`` query param → ``"usd"``.
+    Priority for authenticated: ``?currency=`` → ``user.preferred_currency`` → ``"usd"``.
+    """
+    qp = request.query_params.get("currency", "").lower()
+    if qp in SUPPORTED_CURRENCIES:
+        return qp
+
+    user = getattr(request, "user", None)
+    if user is not None and getattr(user, "is_authenticated", False):
+        preferred: str | None = getattr(user, "preferred_currency", None)
+        if preferred and preferred.lower() in SUPPORTED_CURRENCIES:
+            return preferred.lower()
+
+    return "usd"
+
+
+def _get_exchange_rate(currency: str) -> tuple[str, float]:
+    """Return ``(currency, rate)`` for conversion from USD.
+
+    Rates are cached for 10 minutes (they update hourly via Celery beat).
+    Falls back to ``("usd", 1.0)`` if the rate is unavailable.
+    """
+    if currency == "usd":
+        return "usd", 1.0
+
+    cache_key = f"exchange_rate:{currency}"
+    cached: float | None = cache.get(cache_key)
+    if cached is not None:
+        return currency, cached
+
+    try:
+        er = ExchangeRate.objects.get(currency=currency)
+        rate = float(er.rate)
+        cache.set(cache_key, rate, timeout=600)
+        return currency, rate
+    except ExchangeRate.DoesNotExist:
+        logger.warning("No exchange rate found for %s, falling back to USD", currency)
+        return "usd", 1.0
+
+
+def _currency_context(request: Request) -> dict[str, object]:
+    """Build serializer context dict with currency and rate."""
+    currency, rate = _get_exchange_rate(_resolve_display_currency(request))
+    return {"currency": currency, "rate": rate}
+
 
 _customer_repo = DjangoStripeCustomerRepository()
 _subscription_repo = DjangoSubscriptionRepository()
@@ -73,7 +133,7 @@ async def _get_customer_and_paid_subscription(
 ) -> tuple[StripeCustomer, Subscription, str]:
     """Fetch the Stripe customer, active *paid* subscription, and its stripe_id.
 
-    Free-plan (local) subscriptions are excluded because PATCH/DELETE/promo
+    Free-plan (local) subscriptions are excluded because PATCH/DELETE
     operations require a real Stripe subscription. Returning ``stripe_sub_id``
     as a non-optional ``str`` lets callers avoid re-checking for ``None``.
     Raises NotFound when the customer or paid sub is missing.
@@ -105,6 +165,7 @@ class PlanListView(APIView):
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]  # DRF declares as instance var; ClassVar needed for RUF012
 
     @extend_schema(
+        parameters=[_CURRENCY_PARAM],
         responses=PlanSerializer(many=True),
         description=(
             "List all active plans with prices. Not paginated"
@@ -113,11 +174,18 @@ class PlanListView(APIView):
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
-        data = cache.get("active_plans")
-        if data is None:
-            plans = PlanModel.objects.filter(is_active=True).select_related("price")
-            data = PlanSerializer(plans, many=True).data
-            cache.set("active_plans", data, timeout=300)
+        qs = PlanModel.objects.filter(is_active=True).select_related("price")
+
+        # Authenticated users only see plans matching their account type
+        if request.user.is_authenticated:
+            context_filter = (
+                PlanContext.TEAM
+                if request.user.account_type == AccountType.ORG_MEMBER
+                else PlanContext.PERSONAL
+            )
+            qs = qs.filter(context=context_filter)
+
+        data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
         return Response(data)
 
 
@@ -125,6 +193,7 @@ class ProductListView(APIView):
     """GET /api/v1/billing/products — list active one-time products with prices."""
 
     @extend_schema(
+        parameters=[_CURRENCY_PARAM],
         responses=ProductSerializer(many=True),
         description=(
             "List all active one-time products with prices. Not paginated"
@@ -133,11 +202,8 @@ class ProductListView(APIView):
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
-        data = cache.get("active_products")
-        if data is None:
-            products = ProductModel.objects.filter(is_active=True).select_related("price")
-            data = ProductSerializer(products, many=True).data
-            cache.set("active_products", data, timeout=300)
+        products = ProductModel.objects.filter(is_active=True).select_related("price")
+        data = ProductSerializer(products, many=True, context=_currency_context(request)).data
         return Response(data)
 
 
@@ -161,10 +227,35 @@ class CheckoutSessionView(APIView):
         plan_price = _get_active_plan_price(data["plan_price_id"])
         quantity = _validate_quantity_for_plan(plan_price, data["quantity"])
 
+        is_team = plan_price.plan.context == PlanContext.TEAM
+
+        # Enforce account_type / plan context match
+        if is_team and user.account_type != AccountType.ORG_MEMBER:
+            raise ValidationError(
+                {
+                    "detail": "Only org accounts can check out team plans. "
+                    "Register at /api/v1/auth/register/org-owner/ first."
+                }
+            )
+        if not is_team and user.account_type != AccountType.PERSONAL:
+            raise ValidationError({"detail": "Org accounts cannot check out personal plans."})
+
+        # Team plans require org_name
+        if is_team:
+            if "org_name" not in data:
+                raise ValidationError({"org_name": ["Required for team plans."]})
+
         # Orgs are not eligible for trial periods
         trial_period_days = data["trial_period_days"]
-        if trial_period_days is not None and plan_price.plan.context == PlanContext.TEAM:
+        if trial_period_days is not None and is_team:
             trial_period_days = None
+
+        # Build metadata for the checkout session
+        metadata: dict[str, str] | None = None
+        if is_team:
+            metadata = {
+                "org_name": data["org_name"],
+            }
 
         async def _do() -> str:
             customer = await get_or_create_customer(
@@ -179,11 +270,11 @@ class CheckoutSessionView(APIView):
                 client_reference_id=str(user.id),
                 price_id=plan_price.stripe_price_id,
                 quantity=quantity,
-                promo_code=data["promo_code"],
                 locale=user.preferred_locale,
                 success_url=data["success_url"],
                 cancel_url=data["cancel_url"],
                 trial_period_days=trial_period_days,
+                metadata=metadata,
             )
 
         url = async_to_sync(_do)()
@@ -230,7 +321,11 @@ class SubscriptionView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
 
-    @extend_schema(responses={200: SubscriptionSerializer}, tags=["billing"])
+    @extend_schema(
+        parameters=[_CURRENCY_PARAM],
+        responses={200: SubscriptionSerializer},
+        tags=["billing"],
+    )
     def get(self, request: Request) -> Response:
         user = get_user(request)
         customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
@@ -247,7 +342,7 @@ class SubscriptionView(APIView):
             )
         except SubscriptionModel.DoesNotExist as exc:
             raise NotFound("No active subscription found.") from exc
-        return Response(SubscriptionSerializer(sub).data)
+        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
     @extend_schema(request=UpdateSubscriptionSerializer, responses={204: None}, tags=["billing"])
     def patch(self, request: Request) -> Response:
@@ -310,29 +405,6 @@ class SubscriptionView(APIView):
                 stripe_customer_id=customer.id,
                 at_period_end=True,
                 subscription_repo=_subscription_repo,
-            )
-
-        async_to_sync(_do)()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class ApplyPromoCodeView(APIView):
-    """POST /api/v1/billing/subscription/promo-code — apply a promo code."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
-
-    @extend_schema(request=PromoCodeSerializer, responses={204: None}, tags=["billing"])
-    def post(self, request: Request) -> Response:
-        user = get_user(request)
-        ser = PromoCodeSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-
-        async def _do() -> None:
-            _, _, stripe_sub_id = await _get_customer_and_paid_subscription(user.id)
-            await apply_promo_code(
-                stripe_subscription_id=stripe_sub_id,
-                promo_code=ser.validated_data["promo_code"],
             )
 
         async_to_sync(_do)()

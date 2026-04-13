@@ -342,7 +342,7 @@ class TestDjangoPlanRepository:
 
     def test_get_free_plan_ignores_team_context(self, repo, db):
         team_free = Plan.objects.create(
-            name="Team Free", context="team", tier="free", interval="month", is_active=True
+            name="Team Free", context="team", tier=1, interval="month", is_active=True
         )
         from apps.billing.models import PlanPrice as PlanPriceModel
 
@@ -353,7 +353,7 @@ class TestDjangoPlanRepository:
         inactive = Plan.objects.create(
             name="Personal Free",
             context="personal",
-            tier="free",
+            tier=1,
             interval="month",
             is_active=False,
         )

@@ -43,7 +43,6 @@ def test_user_creation() -> None:
     assert user.is_verified is False
     assert user.full_name == "Alice Example"
     assert user.avatar_url is None
-    assert user.deleted_at is None
 
 
 def test_user_with_all_fields() -> None:
@@ -58,12 +57,10 @@ def test_user_with_all_fields() -> None:
         preferred_currency="eur",
         is_verified=True,
         created_at=NOW,
-        deleted_at=NOW,
     )
     assert user.id == uid
     assert user.account_type == AccountType.ORG_MEMBER
     assert user.full_name == "Bob Smith"
-    assert user.deleted_at == NOW
 
 
 def test_user_is_frozen() -> None:
@@ -229,9 +226,9 @@ def test_plan_context_values() -> None:
 
 
 def test_plan_tier_values() -> None:
-    assert PlanTier.FREE == "free"
-    assert PlanTier.BASIC == "basic"
-    assert PlanTier.PRO == "pro"
+    assert PlanTier.FREE == 1
+    assert PlanTier.BASIC == 2
+    assert PlanTier.PRO == 3
 
 
 def test_plan_default_tier_is_basic() -> None:
@@ -298,8 +295,6 @@ def test_subscription_creation() -> None:
         created_at=NOW,
     )
     assert sub.quantity == 1
-    assert sub.promotion_code_id is None
-    assert sub.discount_percent is None
     assert sub.trial_ends_at is None
     assert sub.canceled_at is None
 

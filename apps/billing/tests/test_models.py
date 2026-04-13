@@ -116,7 +116,7 @@ class TestPlanFreePlans:
         inactive = Plan.objects.create(
             name="Personal Free",
             context="personal",
-            tier="free",
+            tier=1,
             interval="month",
             is_active=False,
         )
@@ -129,7 +129,7 @@ class TestPlanFreePlans:
         team_free = Plan.objects.create(
             name="Team Free",
             context="team",
-            tier="free",
+            tier=1,
             interval="month",
             is_active=True,
         )
@@ -150,7 +150,7 @@ class TestPlanUniqueConstraint:
         Plan.objects.create(
             name="Personal Basic Monthly",
             context="personal",
-            tier="basic",
+            tier=2,
             interval="month",
             is_active=True,
         )
@@ -158,7 +158,7 @@ class TestPlanUniqueConstraint:
             Plan.objects.create(
                 name="Personal Basic Monthly v2",
                 context="personal",
-                tier="basic",
+                tier=2,
                 interval="month",
                 is_active=True,
             )
@@ -169,14 +169,14 @@ class TestPlanUniqueConstraint:
         Plan.objects.create(
             name="Legacy 1",
             context="personal",
-            tier="pro",
+            tier=3,
             interval="year",
             is_active=False,
         )
         Plan.objects.create(
             name="Legacy 2",
             context="personal",
-            tier="pro",
+            tier=3,
             interval="year",
             is_active=False,
         )
@@ -207,6 +207,35 @@ class TestProductPrice:
             product=product, stripe_price_id="price_pp_str", amount=4999
         )
         assert "$49.99" in str(price)
+
+
+@pytest.mark.django_db
+class TestExchangeRate:
+    def test_str(self, db):
+        from apps.billing.models import ExchangeRate
+
+        er = ExchangeRate.objects.create(
+            currency="eur",
+            rate="0.91000000",
+            fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        )
+        assert "EUR" in str(er)
+        assert "0.91" in str(er)
+
+    def test_unique_currency(self, db):
+        from apps.billing.models import ExchangeRate
+
+        ExchangeRate.objects.create(
+            currency="gbp",
+            rate="0.79",
+            fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        )
+        with pytest.raises(IntegrityError):
+            ExchangeRate.objects.create(
+                currency="gbp",
+                rate="0.80",
+                fetched_at=datetime(2026, 4, 2, tzinfo=UTC),
+            )
 
 
 class TestActiveSubscriptionStatuses:

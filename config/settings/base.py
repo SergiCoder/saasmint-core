@@ -23,10 +23,7 @@ _ACTIVE_ENV = _REPO_ROOT / _ENV_FILE_MAP.get(_ENV_NAME, ".env.local")
 
 class _Env(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(
-            str(_ACTIVE_ENV),
-            str(_REPO_ROOT / ".env.django"),
-        ),
+        env_file=(str(_ACTIVE_ENV),),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -42,8 +39,8 @@ class _Env(BaseSettings):
     cors_allow_all_origins: bool = False
     csrf_trusted_origins: list[str] = []
     resend_api_key: str = ""
-    frontend_url: str = "http://localhost:3000"
-    email_from_address: str = "noreply@saasmint.com"
+    frontend_url: str = "https://localhost:3000"
+    email_from_address: str = "noreply@saasmint.net"
     oauth_google_client_id: str = ""
     oauth_google_client_secret: str = ""
     oauth_github_client_id: str = ""
@@ -179,7 +176,7 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "SaasMint Core API",
-    "DESCRIPTION": "Django backend API for SaasMint — billing, accounts, and organisations.",
+    "DESCRIPTION": "Django backend API for SaasMint — billing, accounts, and organizations.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": "/api/v[0-9]",
@@ -207,9 +204,13 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 CELERY_BEAT_SCHEDULE = {
-    "process-scheduled-deletions": {
-        "task": "apps.users.tasks.process_scheduled_deletions",
-        "schedule": 3600,  # every hour
+    "sync-exchange-rates": {
+        "task": "apps.billing.tasks.sync_exchange_rates",
+        "schedule": 86400,  # once per day
+    },
+    "cleanup-orphaned-org-accounts": {
+        "task": "apps.users.tasks.cleanup_orphaned_org_accounts",
+        "schedule": 86400,  # once per day
     },
 }
 

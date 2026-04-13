@@ -12,7 +12,6 @@ from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.exceptions import SubscriptionNotFoundError
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
-from saasmint_core.services.coupons import validate_promo_code
 
 
 async def get_or_create_customer(
@@ -67,7 +66,6 @@ async def create_checkout_session(
     price_id: str,
     client_reference_id: str,
     quantity: int = 1,
-    promo_code: str | None = None,
     locale: str = "en",
     success_url: str,
     cancel_url: str,
@@ -78,8 +76,6 @@ async def create_checkout_session(
     subscription_data: dict[str, object] = {}
     if trial_period_days is not None:
         subscription_data["trial_period_days"] = trial_period_days
-    if metadata is not None:
-        subscription_data["metadata"] = metadata
 
     params: dict[str, object] = {
         "customer": stripe_customer_id,
@@ -91,12 +87,12 @@ async def create_checkout_session(
         "cancel_url": cancel_url,
     }
 
-    if promo_code is not None:
-        promo = await validate_promo_code(promo_code)
-        params["discounts"] = [{"promotion_code": promo.id}]
-        params["allow_promotion_codes"] = False
-    else:
-        params["allow_promotion_codes"] = True
+    params["allow_promotion_codes"] = True
+    params["adaptive_pricing"] = {"enabled": True}
+
+    # Session-level metadata carries org fields for checkout.session.completed
+    if metadata is not None:
+        params["metadata"] = metadata
 
     if subscription_data:
         params["subscription_data"] = subscription_data

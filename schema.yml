@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: SaasMint Core API
   version: 1.0.0
-  description: Django backend API for SaasMint — billing, accounts, and organisations.
+  description: Django backend API for SaasMint — billing, accounts, and organizations.
 paths:
   /api/v1/account/:
     get:
@@ -299,7 +299,40 @@ paths:
       - cookieAuth: []
       - {}
       responses:
-        '200':
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          description: ''
+  /api/v1/auth/register/org-owner/:
+    post:
+      operationId: auth_register_org_owner_create
+      description: |-
+        POST /api/v1/auth/register/org-owner — register as an org owner.
+
+        Creates a user with account_type=ORG_MEMBER. No free plan is assigned;
+        the user must complete team checkout to create an org and subscription.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
           content:
             application/json:
               schema:
@@ -397,6 +430,12 @@ paths:
       operationId: billing_plans_list
       description: List all active plans with prices. Not paginated — the catalog
         is bounded to a small number of plans.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
       security:
@@ -446,6 +485,12 @@ paths:
       operationId: billing_products_list
       description: List all active one-time products with prices. Not paginated —
         the catalog is bounded to a small number of products.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
       security:
@@ -465,6 +510,12 @@ paths:
       operationId: billing_subscription_retrieve
       description: GET/PATCH/DELETE /api/v1/billing/subscription — manage the current
         subscription.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
       security:
@@ -512,30 +563,6 @@ paths:
       responses:
         '204':
           description: No response body
-  /api/v1/billing/subscription/promo-code/:
-    post:
-      operationId: billing_subscription_promo_code_create
-      description: POST /api/v1/billing/subscription/promo-code — apply a promo code.
-      tags:
-      - billing
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PromoCodeRequest'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/PromoCodeRequest'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/PromoCodeRequest'
-        required: true
-      security:
-      - JWT: []
-      - cookieAuth: []
-      responses:
-        '204':
-          description: No response body
   /api/v1/currencies/:
     get:
       operationId: currencies_retrieve
@@ -555,6 +582,64 @@ paths:
                 items:
                   type: string
           description: ''
+  /api/v1/invitations/{token}/accept/:
+    post:
+      operationId: invitations_accept_create
+      description: |-
+        POST /api/v1/invitations/{token}/accept/ — register and join an org.
+
+        Unauthenticated endpoint. The invitee provides registration data
+        (full_name, password) and is created as an org_member user.
+      parameters:
+      - in: path
+        name: token
+        schema:
+          type: string
+        required: true
+      tags:
+      - orgs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Org'
+          description: ''
+  /api/v1/invitations/{token}/decline/:
+    post:
+      operationId: invitations_decline_create
+      description: POST /api/v1/invitations/{token}/decline/ — decline an invitation.
+      parameters:
+      - in: path
+        name: token
+        schema:
+          type: string
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '204':
+          description: No response body
   /api/v1/locales/:
     get:
       operationId: locales_retrieve
@@ -577,7 +662,7 @@ paths:
   /api/v1/orgs/:
     get:
       operationId: orgs_list
-      description: GET /api/v1/orgs/ — list user's orgs; POST — create a new org.
+      description: GET /api/v1/orgs/ — list user's orgs.
       parameters:
       - in: query
         name: limit
@@ -602,33 +687,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Org'
-          description: ''
-    post:
-      operationId: orgs_create
-      description: GET /api/v1/orgs/ — list user's orgs; POST — create a new org.
-      tags:
-      - orgs
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateOrgRequest'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/CreateOrgRequest'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/CreateOrgRequest'
-        required: true
-      security:
-      - JWT: []
-      - cookieAuth: []
-      responses:
-        '201':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Org'
           description: ''
   /api/v1/orgs/{org_id}/:
     get:
@@ -686,9 +744,95 @@ paths:
               schema:
                 $ref: '#/components/schemas/Org'
           description: ''
+  /api/v1/orgs/{org_id}/invitations/:
+    get:
+      operationId: orgs_invitations_list
+      description: GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Invitation'
+          description: ''
+    post:
+      operationId: orgs_invitations_create
+      description: GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvitationRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CreateInvitationRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateInvitationRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invitation'
+          description: ''
+  /api/v1/orgs/{org_id}/invitations/{invitation_id}/:
     delete:
-      operationId: orgs_destroy
-      description: GET/PATCH/DELETE /api/v1/orgs/{org_id}/.
+      operationId: orgs_invitations_destroy
+      description: DELETE /api/v1/orgs/{org_id}/invitations/{invitation_id}/ — cancel
+        invitation.
+      parameters:
+      - in: path
+        name: invitation_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/orgs/{org_id}/leave/:
+    post:
+      operationId: orgs_leave_create
+      description: POST /api/v1/orgs/{org_id}/leave/ — member leaves voluntarily.
       parameters:
       - in: path
         name: org_id
@@ -707,7 +851,7 @@ paths:
   /api/v1/orgs/{org_id}/members/:
     get:
       operationId: orgs_members_list
-      description: GET /api/v1/orgs/{org_id}/members/ — list members; POST — add member.
+      description: GET /api/v1/orgs/{org_id}/members/ — list members.
       parameters:
       - in: query
         name: limit
@@ -738,46 +882,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/OrgMember'
-          description: ''
-    post:
-      operationId: orgs_members_create
-      description: GET /api/v1/orgs/{org_id}/members/ — list members; POST — add member.
-      parameters:
-      - in: path
-        name: org_id
-        schema:
-          type: string
-          format: uuid
-        required: true
-      tags:
-      - orgs
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AddMemberRequest'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/AddMemberRequest'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/AddMemberRequest'
-        required: true
-      security:
-      - JWT: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrgMember'
-          description: ''
-        '201':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OrgMember'
           description: ''
   /api/v1/orgs/{org_id}/members/{member_user_id}/:
     patch:
@@ -821,7 +925,8 @@ paths:
           description: ''
     delete:
       operationId: orgs_members_destroy
-      description: PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/.
+      description: Remove a member — decrements Stripe seats and hard-deletes their
+        account.
       parameters:
       - in: path
         name: member_user_id
@@ -843,6 +948,42 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/orgs/{org_id}/transfer-ownership/:
+    post:
+      operationId: orgs_transfer_ownership_create
+      description: POST /api/v1/orgs/{org_id}/transfer-ownership/ — transfer owner
+        role.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferOwnershipRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TransferOwnershipRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TransferOwnershipRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgMember'
+          description: ''
   /api/v1/phone-prefixes/:
     get:
       operationId: phone_prefixes_retrieve
@@ -893,21 +1034,6 @@ components:
       description: |-
         * `personal` - Personal
         * `org_member` - Org Member
-    AddMemberRequest:
-      type: object
-      properties:
-        user_id:
-          type: string
-          format: uuid
-        role:
-          allOf:
-          - $ref: '#/components/schemas/RoleEnum'
-          default: member
-        is_billing:
-          type: boolean
-          default: false
-      required:
-      - user_id
     ChangePasswordRequest:
       type: object
       properties:
@@ -934,11 +1060,6 @@ components:
           maximum: 10000
           minimum: 1
           default: 1
-        promo_code:
-          type: string
-          nullable: true
-          minLength: 1
-          maxLength: 255
         success_url:
           type: string
           format: uri
@@ -952,6 +1073,10 @@ components:
           maximum: 90
           minimum: 1
           nullable: true
+        org_name:
+          type: string
+          minLength: 1
+          maxLength: 255
       required:
       - cancel_url
       - plan_price_id
@@ -972,26 +1097,19 @@ components:
       description: |-
         * `personal` - Personal
         * `team` - Team
-    CreateOrgRequest:
+    CreateInvitationRequest:
       type: object
       properties:
-        name:
+        email:
           type: string
+          format: email
           minLength: 1
-          maxLength: 255
-        slug:
-          type: string
-          minLength: 1
-          maxLength: 255
-          pattern: ^[-a-zA-Z0-9_]+$
-        logo_url:
-          type: string
-          format: uri
-          nullable: true
-          minLength: 1
+        role:
+          allOf:
+          - $ref: '#/components/schemas/Role13fEnum'
+          default: member
       required:
-      - name
-      - slug
+      - email
     ForgotPasswordRequest:
       type: object
       properties:
@@ -1009,6 +1127,78 @@ components:
       description: |-
         * `month` - Monthly
         * `year` - Yearly
+    Invitation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        org:
+          type: string
+          format: uuid
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        role:
+          allOf:
+          - $ref: '#/components/schemas/Role13fEnum'
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/InvitationStatusEnum'
+          readOnly: true
+          default: pending
+        invited_by:
+          allOf:
+          - $ref: '#/components/schemas/_InvitedBy'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - email
+      - expires_at
+      - id
+      - invited_by
+      - org
+      - role
+      - status
+    InvitationAcceptRequest:
+      type: object
+      properties:
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 255
+        password:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 128
+      required:
+      - full_name
+      - password
+    InvitationStatusEnum:
+      enum:
+      - pending
+      - accepted
+      - expired
+      - cancelled
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `accepted` - Accepted
+        * `expired` - Expired
+        * `cancelled` - Cancelled
     LoginRequest:
       type: object
       properties:
@@ -1076,7 +1266,7 @@ components:
           readOnly: true
         role:
           allOf:
-          - $ref: '#/components/schemas/RoleEnum'
+          - $ref: '#/components/schemas/Role978Enum'
           readOnly: true
         is_billing:
           type: boolean
@@ -1096,7 +1286,7 @@ components:
       type: object
       properties:
         role:
-          $ref: '#/components/schemas/RoleEnum'
+          $ref: '#/components/schemas/Role978Enum'
         is_billing:
           type: boolean
     PatchedUpdateOrgRequest:
@@ -1215,6 +1405,8 @@ components:
       - tier
     PlanPrice:
       type: object
+      description: Shared logic for serializers that add display_amount / currency
+        fields.
       properties:
         id:
           type: string
@@ -1224,8 +1416,21 @@ components:
           type: integer
           readOnly: true
           description: Amount in USD cents
+        display_amount:
+          type: number
+          format: double
+          readOnly: true
+        currency:
+          type: string
+          readOnly: true
+        approximate:
+          type: boolean
+          readOnly: true
       required:
       - amount
+      - approximate
+      - currency
+      - display_amount
       - id
     PortalRequestRequest:
       type: object
@@ -1278,6 +1483,8 @@ components:
       - type
     ProductPrice:
       type: object
+      description: Shared logic for serializers that add display_amount / currency
+        fields.
       properties:
         id:
           type: string
@@ -1287,18 +1494,22 @@ components:
           type: integer
           readOnly: true
           description: Amount in USD cents
+        display_amount:
+          type: number
+          format: double
+          readOnly: true
+        currency:
+          type: string
+          readOnly: true
+        approximate:
+          type: boolean
+          readOnly: true
       required:
       - amount
+      - approximate
+      - currency
+      - display_amount
       - id
-    PromoCodeRequest:
-      type: object
-      properties:
-        promo_code:
-          type: string
-          minLength: 1
-          maxLength: 255
-      required:
-      - promo_code
     RefreshRequest:
       type: object
       properties:
@@ -1353,7 +1564,15 @@ components:
       required:
       - password
       - token
-    RoleEnum:
+    Role13fEnum:
+      enum:
+      - admin
+      - member
+      type: string
+      description: |-
+        * `admin` - Admin
+        * `member` - Member
+    Role978Enum:
       enum:
       - owner
       - admin
@@ -1363,26 +1582,6 @@ components:
         * `owner` - Owner
         * `admin` - Admin
         * `member` - Member
-    StatusEnum:
-      enum:
-      - active
-      - trialing
-      - past_due
-      - canceled
-      - incomplete
-      - incomplete_expired
-      - paused
-      - unpaid
-      type: string
-      description: |-
-        * `active` - Active
-        * `trialing` - Trialing
-        * `past_due` - Past Due
-        * `canceled` - Canceled
-        * `incomplete` - Incomplete
-        * `incomplete_expired` - Incomplete Expired
-        * `paused` - Paused
-        * `unpaid` - Unpaid
     Subscription:
       type: object
       properties:
@@ -1392,7 +1591,7 @@ components:
           readOnly: true
         status:
           allOf:
-          - $ref: '#/components/schemas/StatusEnum'
+          - $ref: '#/components/schemas/SubscriptionStatusEnum'
           readOnly: true
         plan:
           allOf:
@@ -1401,15 +1600,6 @@ components:
         quantity:
           type: integer
           readOnly: true
-        discount_percent:
-          type: integer
-          readOnly: true
-          nullable: true
-        discount_end_at:
-          type: string
-          format: date-time
-          readOnly: true
-          nullable: true
         trial_ends_at:
           type: string
           format: date-time
@@ -1437,13 +1627,31 @@ components:
       - created_at
       - current_period_end
       - current_period_start
-      - discount_end_at
-      - discount_percent
       - id
       - plan
       - quantity
       - status
       - trial_ends_at
+    SubscriptionStatusEnum:
+      enum:
+      - active
+      - trialing
+      - past_due
+      - canceled
+      - incomplete
+      - incomplete_expired
+      - paused
+      - unpaid
+      type: string
+      description: |-
+        * `active` - Active
+        * `trialing` - Trialing
+        * `past_due` - Past Due
+        * `canceled` - Canceled
+        * `incomplete` - Incomplete
+        * `incomplete_expired` - Incomplete Expired
+        * `paused` - Paused
+        * `unpaid` - Unpaid
     TierEnum:
       enum:
       - free
@@ -1467,6 +1675,14 @@ components:
       required:
       - access_token
       - refresh_token
+    TransferOwnershipRequest:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+      required:
+      - user_id
     TypeEnum:
       enum:
       - one_time
@@ -1581,6 +1797,24 @@ components:
           format: binary
       required:
       - avatar
+    _InvitedBy:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        full_name:
+          type: string
+          readOnly: true
+      required:
+      - email
+      - full_name
+      - id
     _MemberUser:
       type: object
       properties:

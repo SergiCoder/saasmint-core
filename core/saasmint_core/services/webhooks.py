@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, cast
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import stripe
 
@@ -24,6 +25,14 @@ from saasmint_core.repositories.subscription import SubscriptionRepository
 
 logger = logging.getLogger(__name__)
 
+# Callback type for team checkout completion.
+# Args: user_id, org_name, stripe_customer_id, livemode, stripe_subscription_id
+OnTeamCheckoutCompleted = Callable[[UUID, str, str, bool, str | None], Awaitable[None]]
+
+# Callback type for org deactivation after subscription cancellation.
+# Args: org_id
+OnOrgSubscriptionCanceled = Callable[[UUID], Awaitable[None]]
+
 
 @dataclass(frozen=True)
 class WebhookRepos:
@@ -31,6 +40,8 @@ class WebhookRepos:
     subscriptions: SubscriptionRepository
     customers: StripeCustomerRepository
     plans: PlanRepository
+    on_team_checkout_completed: OnTeamCheckoutCompleted | None = field(default=None)
+    on_org_subscription_canceled: OnOrgSubscriptionCanceled | None = field(default=None)
 
 
 async def handle_stripe_event(
@@ -87,6 +98,8 @@ async def handle_stripe_event(
 
 async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
     match event["type"]:
+        case "checkout.session.completed":
+            await _on_checkout_completed(event["data"]["object"], repos)
         case "customer.subscription.created" | "customer.subscription.updated":
             await _sync_subscription(event["data"]["object"], repos)
         case "customer.subscription.deleted":
@@ -99,39 +112,6 @@ async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
             logger.debug("Unhandled Stripe event type: %s", event["type"])
 
 
-def _extract_discount(sub_data: dict[str, Any]) -> tuple[str | None, float | None, datetime | None]:
-    """Extract promotion code, discount percent, and discount end from raw sub data.
-
-    Stripe API 2026-03-25.dahlia removes the singular ``subscription.discount``
-    field in favour of a ``discounts`` array (stackable discounts). We read the
-    first entry of ``discounts`` when present and fall back to the legacy
-    singular field for older fixtures / pre-Basil API versions.
-    """
-    discount: Any = None
-    discounts_list: Any = sub_data.get("discounts")
-    if discounts_list:
-        first = discounts_list[0]
-        # When expanded, entries are full Discount objects; otherwise they're
-        # plain IDs which carry no coupon info we can decode here.
-        if isinstance(first, dict):
-            discount = first
-    if discount is None:
-        discount = sub_data.get("discount")
-    if not discount or not isinstance(discount, dict):
-        return None, None, None
-
-    raw_promo = discount.get("promotion_code")
-    promotion_code_id = str(raw_promo) if raw_promo else None
-
-    coupon: dict[str, Any] = cast(dict[str, Any], discount.get("coupon") or {})
-    discount_percent = float(coupon["percent_off"]) if coupon.get("percent_off") else None
-
-    raw_end = discount.get("end")
-    discount_end_at = datetime.fromtimestamp(int(raw_end), tz=UTC) if raw_end is not None else None
-
-    return promotion_code_id, discount_percent, discount_end_at
-
-
 def _ts_to_dt(value: int | float | None) -> datetime | None:
     """Convert an optional Unix timestamp to a UTC datetime."""
     return datetime.fromtimestamp(int(value), tz=UTC) if value is not None else None
@@ -140,6 +120,41 @@ def _ts_to_dt(value: int | float | None) -> datetime | None:
 def _ts_to_dt_required(value: int | float) -> datetime:
     """Convert a Unix timestamp to a UTC datetime (required field)."""
     return datetime.fromtimestamp(int(value), tz=UTC)
+
+
+async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRepos) -> None:
+    """Handle checkout.session.completed — create org for team plan checkouts."""
+    metadata = session_data.get("metadata") or {}
+    org_name = metadata.get("org_name")
+
+    if not org_name:
+        # Not a team checkout with org metadata — nothing to do
+        logger.debug("checkout.session.completed without org metadata, skipping")
+        return
+
+    client_ref = session_data.get("client_reference_id")
+    if not client_ref:
+        logger.warning("checkout.session.completed missing client_reference_id")
+        return
+
+    user_id = UUID(client_ref)
+    stripe_customer_id = session_data.get("customer")
+    if not stripe_customer_id:
+        logger.warning("checkout.session.completed missing customer")
+        return
+    subscription_id = session_data.get("subscription")
+
+    livemode: bool = session_data.get("livemode", False)
+
+    if repos.on_team_checkout_completed is not None:
+        await repos.on_team_checkout_completed(
+            user_id, org_name, str(stripe_customer_id), livemode, subscription_id
+        )
+    else:
+        logger.warning(
+            "Team checkout completed for user %s but no callback registered",
+            user_id,
+        )
 
 
 async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
@@ -179,8 +194,6 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
     if plan_price is None:
         logger.warning("Received subscription event for unknown price %s", price_id)
         raise WebhookDataError(f"Unknown price {price_id}")
-    promotion_code_id, discount_percent, discount_end_at = _extract_discount(sub_data)
-
     subscription = Subscription(
         id=existing.id if existing else uuid4(),
         stripe_id=stripe_sub_id,
@@ -189,9 +202,6 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         status=SubscriptionStatus(str(sub_data["status"])),
         plan_id=plan_price.plan_id,
         quantity=int(first_item.get("quantity") or 1),
-        promotion_code_id=promotion_code_id,
-        discount_percent=discount_percent,
-        discount_end_at=discount_end_at,
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
         current_period_start=_ts_to_dt_required(period_start),
         current_period_end=_ts_to_dt_required(period_end),
@@ -230,10 +240,19 @@ async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos
     )
     await repos.subscriptions.save(canceled)
 
-    # Auto-fallback: personal users land back on the free plan so they keep
-    # using the product with free-tier limits. Org subs are skipped — there's
-    # no team-level free plan.
+    # Org subscriptions: deactivate the org so members lose access immediately.
     if existing.user_id is None:
+        if existing.stripe_customer_id is None:
+            return
+        customer = await repos.customers.get_by_id(existing.stripe_customer_id)
+        if customer is not None and customer.org_id is not None:
+            if repos.on_org_subscription_canceled is not None:
+                await repos.on_org_subscription_canceled(customer.org_id)
+            else:
+                logger.warning(
+                    "Org subscription %s canceled but no deactivation callback registered",
+                    stripe_sub_id,
+                )
         return
 
     free_plan = await repos.plans.get_free_plan()

@@ -45,8 +45,6 @@ def _sub_event(
     stripe_sub_id: str = "sub_webhook",
     stripe_customer_id: str = "cus_webhook",
     price_id: str = "price_webhook",
-    discount: object = None,
-    discounts: list[object] | None = None,
     trial_end: int | None = None,
     canceled_at: int | None = None,
     quantity: int = 1,
@@ -71,8 +69,6 @@ def _sub_event(
                 },
                 "current_period_start": NOW_TS,
                 "current_period_end": NOW_TS + 86400,
-                "discount": discount,
-                "discounts": discounts,
                 "trial_end": trial_end,
                 "canceled_at": canceled_at,
             }
@@ -354,174 +350,6 @@ async def test_sync_subscription_updates_existing() -> None:
 
     updated = subscription_repo._store[existing_sub.id]
     assert updated.id == existing_sub.id  # same ID preserved
-
-
-@pytest.mark.anyio
-async def test_sync_subscription_with_full_discount_and_trial() -> None:
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_discount")
-    await customer_repo.save(customer)
-    plan = make_plan()
-    plan_repo._plans[plan.id] = plan
-    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_discount")
-    plan_repo._prices[price.id] = price
-
-    discount = {
-        "promotion_code": "promo_abc",
-        "coupon": {"percent_off": 20},
-        "end": NOW_TS + 86400,
-    }
-
-    repos = _make_repos(
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_customer_id="cus_discount",
-        price_id="price_discount",
-        discount=discount,
-        trial_end=NOW_TS + 604800,
-        canceled_at=None,
-    )
-
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    sub = next(iter(subscription_repo._store.values()))
-    assert sub.promotion_code_id == "promo_abc"
-    assert sub.discount_percent == 20.0
-    assert sub.discount_end_at is not None
-    assert sub.trial_ends_at is not None
-
-
-@pytest.mark.anyio
-async def test_sync_subscription_with_discount_no_promo_no_percent() -> None:
-    """Discount block present but no promotion_code and no percent_off."""
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_disc2")
-    await customer_repo.save(customer)
-    plan = make_plan()
-    plan_repo._plans[plan.id] = plan
-    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_disc2")
-    plan_repo._prices[price.id] = price
-
-    discount = {
-        "promotion_code": None,
-        "coupon": {"percent_off": None},
-        "end": None,
-    }
-
-    repos = _make_repos(
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_customer_id="cus_disc2",
-        price_id="price_disc2",
-        discount=discount,
-    )
-
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    sub = next(iter(subscription_repo._store.values()))
-    assert sub.promotion_code_id is None
-    assert sub.discount_percent is None
-    assert sub.discount_end_at is None
-
-
-@pytest.mark.anyio
-async def test_sync_subscription_with_discount_coupon_none() -> None:
-    """Discount present but coupon key is None — exercises the `or {}` fallback."""
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_disc3")
-    await customer_repo.save(customer)
-    plan = make_plan()
-    plan_repo._plans[plan.id] = plan
-    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_disc3")
-    plan_repo._prices[price.id] = price
-
-    discount = {
-        "promotion_code": "promo_xyz",
-        "coupon": None,
-        "end": NOW_TS + 86400,
-    }
-
-    repos = _make_repos(
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_customer_id="cus_disc3",
-        price_id="price_disc3",
-        discount=discount,
-    )
-
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    sub = next(iter(subscription_repo._store.values()))
-    assert sub.promotion_code_id == "promo_xyz"
-    assert sub.discount_percent is None
-    assert sub.discount_end_at is not None
-
-
-@pytest.mark.anyio
-async def test_sync_subscription_with_basil_discounts_array() -> None:
-    """Stripe API 2026-03-25.dahlia: ``discounts[]`` array replaces singular ``discount``."""
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_basil")
-    await customer_repo.save(customer)
-    plan = make_plan()
-    plan_repo._plans[plan.id] = plan
-    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_basil")
-    plan_repo._prices[price.id] = price
-
-    discounts = [
-        {
-            "promotion_code": "promo_basil",
-            "coupon": {"percent_off": 15},
-            "end": NOW_TS + 86400,
-        }
-    ]
-
-    repos = _make_repos(
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_customer_id="cus_basil",
-        price_id="price_basil",
-        discounts=discounts,
-    )
-
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    sub = next(iter(subscription_repo._store.values()))
-    assert sub.promotion_code_id == "promo_basil"
-    assert sub.discount_percent == 15.0
-    assert sub.discount_end_at is not None
 
 
 @pytest.mark.anyio
@@ -932,7 +760,7 @@ async def test_cancellation_logs_when_no_free_plan_configured() -> None:
     assert len(subscription_repo._store) == 1  # no fallback created
 
 
-# ── Basil API: period fields on items + discount edge cases ─────────────────
+# ── Basil API: period fields on items ────────────────────────────────────────
 
 
 @pytest.mark.anyio
@@ -980,8 +808,6 @@ async def test_sync_subscription_reads_period_from_items_first() -> None:
                 # Top-level period fields differ — item values should win.
                 "current_period_start": NOW_TS,
                 "current_period_end": NOW_TS + 86400,
-                "discount": None,
-                "discounts": None,
                 "trial_end": None,
                 "canceled_at": None,
             }
@@ -1034,8 +860,6 @@ async def test_sync_subscription_missing_period_raises_webhook_data_error() -> N
                         }
                     ]
                 },
-                "discount": None,
-                "discounts": None,
                 "trial_end": None,
                 "canceled_at": None,
             }
@@ -1045,40 +869,6 @@ async def test_sync_subscription_missing_period_raises_webhook_data_error() -> N
     with patch("stripe.Webhook.construct_event", return_value=event):
         with pytest.raises(WebhookDataError, match="missing current_period"):
             await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-
-@pytest.mark.anyio
-async def test_sync_subscription_discounts_array_with_string_ids_ignored() -> None:
-    """When discounts[] contains string IDs (unexpanded), discount is treated as None."""
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_str_disc")
-    await customer_repo.save(customer)
-    plan = make_plan()
-    plan_repo._plans[plan.id] = plan
-    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_str_disc")
-    plan_repo._prices[price.id] = price
-
-    repos = _make_repos(
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_customer_id="cus_str_disc",
-        price_id="price_str_disc",
-        discounts=["di_string_only"],
-    )
-
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    sub = next(iter(subscription_repo._store.values()))
-    assert sub.promotion_code_id is None
-    assert sub.discount_percent is None
 
 
 @pytest.mark.anyio

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 
-from asgiref.sync import async_to_sync
-
 from config.celery import app
 
 logger = logging.getLogger(__name__)
@@ -28,30 +26,25 @@ def send_password_reset_email_task(email: str, token: str) -> None:
 
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
-def process_scheduled_deletions() -> None:
-    """Hard-delete users whose scheduled_deletion_at has passed."""
-    from saasmint_core.services.gdpr import execute_account_deletion
+def cleanup_orphaned_org_accounts() -> None:
+    """Delete org_member accounts that never completed checkout.
 
-    from apps.billing.repositories import (
-        DjangoStripeCustomerRepository,
-        DjangoSubscriptionRepository,
+    Targets users with account_type=ORG_MEMBER who have no org membership
+    and were created more than 24 hours ago.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from apps.orgs.models import OrgMember
+    from apps.users.models import AccountType, User
+
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    orphans = User.objects.filter(
+        account_type=AccountType.ORG_MEMBER,
+        created_at__lt=cutoff,
+    ).exclude(
+        id__in=OrgMember.objects.values_list("user_id", flat=True),
     )
-    from apps.users.repositories import DjangoUserRepository
-
-    user_repo = DjangoUserRepository()
-    customer_repo = DjangoStripeCustomerRepository()
-    subscription_repo = DjangoSubscriptionRepository()
-
-    pending_users = async_to_sync(user_repo.list_pending_deletions)()
-
-    for user in pending_users:
-        try:
-            async_to_sync(execute_account_deletion)(
-                user_id=user.id,
-                user_repo=user_repo,
-                customer_repo=customer_repo,
-                subscription_repo=subscription_repo,
-            )
-            logger.info("Executed scheduled deletion for user %s", user.id)
-        except Exception:
-            logger.exception("Failed scheduled deletion for user %s", user.id)
+    count = orphans.count()
+    if count:
+        orphans.delete()
+        logger.info("Cleaned up %d orphaned org-member accounts", count)

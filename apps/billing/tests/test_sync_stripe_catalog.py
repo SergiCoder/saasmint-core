@@ -92,7 +92,7 @@ class TestLookupKeys:
         plan = Plan.objects.create(
             name="Personal Pro Monthly",
             context="personal",
-            tier="pro",
+            tier=3,
             interval="month",
             is_active=True,
         )
@@ -127,7 +127,7 @@ def paid_plan_with_price():
         name="Personal Basic Monthly",
         description="Basic monthly",
         context="personal",
-        tier="basic",
+        tier=2,
         interval="month",
         is_active=True,
     )
@@ -269,7 +269,7 @@ class TestSyncPlans:
         Plan.objects.create(
             name="Orphan",
             context="personal",
-            tier="basic",
+            tier=2,
             interval="month",
             is_active=True,
         )
@@ -288,7 +288,7 @@ class TestSyncPlans:
         plan = Plan.objects.create(
             name="Personal Free",
             context="personal",
-            tier="free",
+            tier=1,
             interval="month",
             is_active=True,
         )
@@ -308,7 +308,7 @@ class TestSyncPlans:
         plan = Plan.objects.create(
             name="Retired",
             context="personal",
-            tier="basic",
+            tier=2,
             interval="month",
             is_active=False,
         )

@@ -48,7 +48,6 @@ class TestUserSerializer:
         assert data["pronouns"] == "they/them"
         assert data["bio"] == "Hello world"
         assert "updated_at" in data
-        assert "scheduled_deletion_at" in data
 
     def test_phone_null_when_both_prefix_and_number_are_none(self):
         """When phone_prefix and phone are both None, phone should serialize as None."""

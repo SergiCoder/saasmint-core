@@ -8,7 +8,7 @@ import pytest
 from django.core.cache import cache
 
 from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
-from apps.users.models import User
+from apps.users.models import AccountType, User
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +104,7 @@ def free_plan(db):
     plan = Plan.objects.create(
         name="Personal Free",
         context="personal",
-        tier="free",
+        tier=1,
         interval="month",
         is_active=True,
     )
@@ -121,6 +121,33 @@ def free_subscription(free_plan, user):
         quantity=1,
         current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
         current_period_end=datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
+    )
+
+
+@pytest.fixture
+def org_member_user(db):
+    return User.objects.create_user(
+        email="orgowner@example.com",
+        full_name="Org Owner",
+        account_type=AccountType.ORG_MEMBER,
+    )
+
+
+@pytest.fixture
+def org_member_client(org_member_user):
+    from rest_framework.test import APIClient
+
+    client = APIClient()
+    client.force_authenticate(user=org_member_user)
+    return client
+
+
+@pytest.fixture
+def org_member_stripe_customer(org_member_user):
+    return StripeCustomer.objects.create(
+        stripe_id="cus_org_test",
+        user=org_member_user,
+        livemode=False,
     )
 
 

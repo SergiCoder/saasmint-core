@@ -22,15 +22,12 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
             provider=provider,
             provider_user_id=user_info.provider_user_id,
         )
-        user = social.user
-        if user.deleted_at is not None:
-            raise ValueError("Account has been deleted.")
-        return user
+        return social.user
     except SocialAccount.DoesNotExist:
         pass
 
     try:
-        user = User.objects.get(email=user_info.email, deleted_at__isnull=True)
+        user = User.objects.get(email=user_info.email)
     except User.DoesNotExist:
         try:
             with transaction.atomic():
@@ -43,7 +40,7 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
                 )
         except IntegrityError:
             # Race: another request created the user between our get and create
-            user = User.objects.get(email=user_info.email, deleted_at__isnull=True)
+            user = User.objects.get(email=user_info.email)
         else:
             assign_free_plan(user)
 

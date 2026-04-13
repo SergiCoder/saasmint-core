@@ -7,7 +7,7 @@ from django.core.cache import cache
 from rest_framework.test import APIClient
 
 from apps.orgs.models import Org, OrgMember, OrgRole
-from apps.users.models import User
+from apps.users.models import AccountType, User
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +22,7 @@ def user(db):
     return User.objects.create_user(
         email="orgowner@example.com",
         full_name="Org Owner",
+        account_type=AccountType.ORG_MEMBER,
     )
 
 
@@ -30,6 +31,7 @@ def other_user(db):
     return User.objects.create_user(
         email="other@example.com",
         full_name="Other User",
+        account_type=AccountType.ORG_MEMBER,
     )
 
 
@@ -56,6 +58,7 @@ def admin_user(db):
     return User.objects.create_user(
         email="admin@example.com",
         full_name="Admin User",
+        account_type=AccountType.ORG_MEMBER,
     )
 
 
@@ -73,6 +76,7 @@ def member_user(db):
     return User.objects.create_user(
         email="member@example.com",
         full_name="Member User",
+        account_type=AccountType.ORG_MEMBER,
     )
 
 
@@ -120,6 +124,7 @@ def second_admin_user(db):
     return User.objects.create_user(
         email="admin2@example.com",
         full_name="Admin2",
+        account_type=AccountType.ORG_MEMBER,
     )
 
 
@@ -149,6 +154,7 @@ _TEST_DRF = {
     ],
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {
+        "auth": "1000/hour",
         "billing": "1000/hour",
         "account": "1000/hour",
         "account_export": "1000/hour",

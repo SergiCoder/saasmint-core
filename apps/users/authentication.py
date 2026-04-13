@@ -93,7 +93,7 @@ def rotate_refresh_token(raw_token: str) -> tuple[User, str]:
         )
 
     user = rt.user
-    if not user.is_active or user.deleted_at is not None:
+    if not user.is_active:
         raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
 
     # Revoke old, issue new
@@ -153,7 +153,7 @@ def _verify_one_time_token(model_class: Any, raw_token: str, label: str) -> User
         raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
 
     user: User = obj.user
-    if not user.is_active or user.deleted_at is not None:
+    if not user.is_active:
         raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
 
     obj.used_at = datetime.now(UTC)
@@ -229,21 +229,12 @@ class JWTAuthentication(BaseAuthentication):
         user: User | None = cache.get(cache_key)
         if user is None:
             try:
-                user = User.objects.get(id=user_id, deleted_at__isnull=True, is_active=True)
+                user = User.objects.get(id=user_id, is_active=True)
             except User.DoesNotExist:
                 raise AuthenticationFailed(
                     {"detail": "User not found.", "code": "user_not_found"}
                 ) from None
             cache.set(cache_key, user, timeout=_AUTH_CACHE_TTL)
-
-        # Safety net: reject users whose scheduled deletion date has passed
-        if user.scheduled_deletion_at is not None and user.scheduled_deletion_at <= datetime.now(
-            UTC
-        ):
-            cache.delete(cache_key)
-            raise AuthenticationFailed(
-                {"detail": "Account has been deleted.", "code": "account_deleted"}
-            )
 
         return (user, token)
 

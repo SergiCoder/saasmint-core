@@ -286,7 +286,7 @@ class TestAccountViewPATCHEdgeCases:
 @pytest.mark.django_db
 class TestAccountViewDELETE:
     @patch("apps.users.views._billing_repos", return_value=(MagicMock(), MagicMock()))
-    @patch("apps.users.views.request_account_deletion", new_callable=AsyncMock, return_value=None)
+    @patch("apps.users.views.delete_account", new_callable=AsyncMock, return_value=None)
     def test_delete_immediate_returns_204(self, mock_delete, _mock_repos, authed_client, user):
         resp = authed_client.delete("/api/v1/account/")
         assert resp.status_code == 204
@@ -294,36 +294,9 @@ class TestAccountViewDELETE:
         call_kwargs = mock_delete.call_args.kwargs
         assert call_kwargs["user_id"] == user.id
 
-    @patch("apps.users.views._billing_repos", return_value=(MagicMock(), MagicMock()))
-    @patch("apps.users.views.request_account_deletion", new_callable=AsyncMock)
-    def test_delete_scheduled_returns_200(self, mock_delete, _mock_repos, authed_client, user):
-        from datetime import UTC, datetime
-
-        scheduled = datetime(2024, 2, 1, tzinfo=UTC)
-        mock_delete.return_value = scheduled
-        resp = authed_client.delete("/api/v1/account/")
-        assert resp.status_code == 200
-        assert resp.json()["scheduled_deletion_at"] == scheduled.isoformat()
-
     def test_unauthenticated_delete_rejected(self):
         client = APIClient()
         resp = client.delete("/api/v1/account/")
-        assert resp.status_code in (401, 403)
-
-
-@pytest.mark.django_db
-class TestCancelDeletionView:
-    @patch("apps.users.views._billing_repos", return_value=(MagicMock(), MagicMock()))
-    @patch("apps.users.views.cancel_account_deletion", new_callable=AsyncMock)
-    def test_cancel_deletion_returns_user(self, mock_cancel, _mock_repos, authed_client, user):
-        resp = authed_client.post("/api/v1/account/cancel-deletion/")
-        assert resp.status_code == 200
-        mock_cancel.assert_called_once()
-        assert resp.json()["id"] == str(user.id)
-
-    def test_unauthenticated_cancel_deletion_rejected(self):
-        client = APIClient()
-        resp = client.post("/api/v1/account/cancel-deletion/")
         assert resp.status_code in (401, 403)
 
 

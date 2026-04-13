@@ -72,8 +72,6 @@ class UserChangeForm(BaseUserChangeForm):  # type: ignore[type-arg]  # django-st
             "is_superuser",
             "groups",
             "user_permissions",
-            "deleted_at",
-            "scheduled_deletion_at",
         )
         labels: ClassVar[dict[str, str]] = {
             "phone_prefix": "Phone",
@@ -102,8 +100,6 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs generi
         "id",
         "registration_method",
         "created_at",
-        "deleted_at",
-        "scheduled_deletion_at",
     )
 
     fieldsets = (
@@ -131,7 +127,7 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs generi
             "Permissions",
             {"fields": ("is_active", "is_staff", "is_superuser", "groups", "user_permissions")},
         ),
-        ("Timestamps", {"fields": ("created_at", "deleted_at", "scheduled_deletion_at")}),
+        ("Timestamps", {"fields": ("created_at",)}),
     )
     add_fieldsets = (
         (

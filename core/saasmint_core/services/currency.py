@@ -110,3 +110,29 @@ def format_amount(amount: int, currency: str) -> float:
     if currency.lower() in ZERO_DECIMAL_CURRENCIES:
         return float(amount)
     return amount / 100
+
+
+def round_friendly(amount: float, currency: str) -> float:
+    """Round a display amount to a user-friendly number.
+
+    Zero-decimal currencies (JPY, KRW, …) round to the nearest 10/100
+    depending on magnitude. Standard currencies round to ``.99`` or
+    ``.49`` — whichever is closest.
+    """
+    if amount <= 0:
+        return 0.0
+
+    if currency.lower() in ZERO_DECIMAL_CURRENCIES:
+        if amount >= 1000:
+            step = 100
+        else:
+            step = 10
+        rounded = (int(amount) // step + 1) * step
+        return float(rounded) if amount % step else amount
+
+    whole = int(amount)
+    options = [whole + 0.49, whole + 0.99, whole + 1.49]
+    if amount <= whole:
+        options = [whole - 0.01, *options]
+    candidates = [o for o in options if o >= amount]
+    return min(candidates)

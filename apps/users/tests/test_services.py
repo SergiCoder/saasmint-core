@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -103,36 +102,3 @@ class TestResolveOAuthUserReturningSocial:
         info = _info(email="nodup@example.com", provider_user_id="g-nodup")
         resolve_oauth_user("google", info)
         assert SocialAccount.objects.filter(user=user, provider="google").count() == 1
-
-
-@pytest.mark.django_db
-class TestResolveOAuthUserDeletedUser:
-    def test_deleted_user_via_social_raises(self):
-        user = User.objects.create_user(
-            email="deleted@example.com",
-            full_name="Deleted",
-            registration_method="google",
-        )
-        user.deleted_at = datetime.now(UTC)
-        user.save()
-        SocialAccount.objects.create(user=user, provider="google", provider_user_id="g-del")
-
-        info = _info(email="deleted@example.com", provider_user_id="g-del")
-        with pytest.raises(ValueError, match="deleted"):
-            resolve_oauth_user("google", info)
-
-    def test_deleted_user_without_social_raises(self):
-        """A soft-deleted user with matching email but no social account
-        is filtered out by deleted_at. Since email is globally unique,
-        create_user fails with IntegrityError and the fallback get also
-        misses (deleted_at filter), raising DoesNotExist."""
-        user = User.objects.create_user(
-            email="gone@example.com",
-            full_name="Gone",
-        )
-        user.deleted_at = datetime.now(UTC)
-        user.save()
-
-        info = _info(email="gone@example.com", provider_user_id="g-new")
-        with pytest.raises(User.DoesNotExist):
-            resolve_oauth_user("google", info)

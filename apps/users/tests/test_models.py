@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 from django.core.cache import cache
 
@@ -69,16 +67,6 @@ class TestUserModel:
         user.save()
         assert cache.get(cache_key) is None
 
-    def test_save_clears_cache_when_soft_deleted(self):
-        user = User.objects.create_user(email="softdel@example.com", full_name="Soft Del")
-        cache_key = f"auth_user:{user.id}"
-        cache.set(cache_key, user, timeout=60)
-        assert cache.get(cache_key) is not None
-
-        user.deleted_at = datetime.now(UTC)
-        user.save()
-        assert cache.get(cache_key) is None
-
     def test_save_always_clears_cache(self):
         user = User.objects.create_user(email="active@example.com", full_name="Active User")
         cache_key = f"auth_user:{user.id}"
@@ -103,7 +91,6 @@ class TestUserModel:
         assert user.job_title is None
         assert user.pronouns is None
         assert user.bio is None
-        assert user.scheduled_deletion_at is None
 
     def test_new_fields_can_be_set(self):
         user = User.objects.create_user(
@@ -122,20 +109,6 @@ class TestUserModel:
         assert user.job_title == "Engineer"
         assert user.pronouns == "they/them"
         assert user.bio == "A brief bio"
-
-    def test_scheduled_deletion_at_can_be_set_and_cleared(self):
-        user = User.objects.create_user(email="sched@example.com", full_name="Sched User")
-        assert user.scheduled_deletion_at is None
-
-        user.scheduled_deletion_at = datetime.now(UTC)
-        user.save(update_fields=["scheduled_deletion_at"])
-        user.refresh_from_db()
-        assert user.scheduled_deletion_at is not None
-
-        user.scheduled_deletion_at = None
-        user.save(update_fields=["scheduled_deletion_at"])
-        user.refresh_from_db()
-        assert user.scheduled_deletion_at is None
 
 
 @pytest.mark.django_db

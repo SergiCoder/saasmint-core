@@ -98,9 +98,6 @@ class DjangoSubscriptionRepository:
             status=SubscriptionStatus(obj.status),
             plan_id=obj.plan_id,
             quantity=obj.quantity,
-            promotion_code_id=obj.promotion_code_id,
-            discount_percent=obj.discount_percent,
-            discount_end_at=obj.discount_end_at,
             trial_ends_at=obj.trial_ends_at,
             current_period_start=obj.current_period_start,
             current_period_end=obj.current_period_end,
@@ -160,9 +157,6 @@ class DjangoSubscriptionRepository:
                 "status": subscription.status.value,
                 "plan_id": subscription.plan_id,
                 "quantity": subscription.quantity,
-                "promotion_code_id": subscription.promotion_code_id,
-                "discount_percent": subscription.discount_percent,
-                "discount_end_at": subscription.discount_end_at,
                 "trial_ends_at": subscription.trial_ends_at,
                 "current_period_start": subscription.current_period_start,
                 "current_period_end": subscription.current_period_end,
@@ -214,6 +208,12 @@ class DjangoPlanRepository:
 
     async def list_active(self) -> list[Plan]:
         return [self._plan_to_domain(obj) async for obj in PlanModel.objects.filter(is_active=True)]
+
+    async def list_active_by_context(self, context: PlanContext) -> list[Plan]:
+        return [
+            self._plan_to_domain(obj)
+            async for obj in PlanModel.objects.filter(is_active=True, context=context)
+        ]
 
     async def get_free_plan(self) -> Plan | None:
         obj = await PlanModel.free_plans().afirst()
@@ -331,9 +331,13 @@ def get_webhook_repos() -> WebhookRepos:
     """Build the WebhookRepos used by webhook processing (view + Celery task)."""
     from saasmint_core.services.webhooks import WebhookRepos
 
+    from apps.orgs.services import deactivate_org, on_team_checkout_completed
+
     return WebhookRepos(
         events=DjangoStripeEventRepository(),
         subscriptions=DjangoSubscriptionRepository(),
         customers=DjangoStripeCustomerRepository(),
         plans=DjangoPlanRepository(),
+        on_team_checkout_completed=on_team_checkout_completed,
+        on_org_subscription_canceled=deactivate_org,
     )

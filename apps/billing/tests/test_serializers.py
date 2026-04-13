@@ -14,7 +14,6 @@ from apps.billing.serializers import (
     PortalRequestSerializer,
     ProductPriceSerializer,
     ProductSerializer,
-    PromoCodeSerializer,
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
@@ -30,11 +29,11 @@ class TestPlanPriceSerializer:
         data = PlanPriceSerializer(plan_price).data
         assert data["id"] == str(plan_price.id)
         assert data["amount"] == 999
+        assert data["display_amount"] == 9.99
+        assert data["currency"] == "usd"
 
-    def test_all_fields_read_only(self):
-        assert set(PlanPriceSerializer.Meta.read_only_fields) == set(
-            PlanPriceSerializer.Meta.fields
-        )
+    def test_model_fields_read_only(self):
+        assert set(PlanPriceSerializer.Meta.read_only_fields) == {"id", "amount"}
 
 
 @pytest.mark.django_db
@@ -43,7 +42,7 @@ class TestPlanSerializer:
         data = PlanSerializer(plan).data
         assert data["name"] == "Personal Monthly"
         assert data["context"] == "personal"
-        assert data["tier"] == "basic"
+        assert data["tier"] == 2
         assert data["interval"] == "month"
         assert data["price"]["amount"] == 999
 
@@ -130,18 +129,6 @@ class TestCheckoutRequestSerializer:
         )
         assert not ser.is_valid()
         assert "quantity" in ser.errors
-
-    def test_promo_code_optional(self, settings):
-        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
-        ser = CheckoutRequestSerializer(
-            data={
-                "plan_price_id": _PLAN_PRICE_UUID,
-                "success_url": "https://example.com/success",
-                "cancel_url": "https://example.com/cancel",
-            }
-        )
-        ser.is_valid()
-        assert ser.validated_data["promo_code"] is None
 
     def test_allowed_host_wildcard_excluded(self, settings):
         settings.CORS_ALLOW_ALL_ORIGINS = False
@@ -284,14 +271,26 @@ class TestUpdateSubscriptionSerializer:
         assert ser.validated_data["prorate"] is False
 
 
-class TestPromoCodeSerializer:
-    def test_valid(self):
-        ser = PromoCodeSerializer(data={"promo_code": "SAVE20"})
-        assert ser.is_valid(), ser.errors
+@pytest.mark.django_db
+class TestPlanPriceSerializerCurrency:
+    """PlanPriceSerializer with non-USD currency context."""
 
-    def test_missing(self):
-        ser = PromoCodeSerializer(data={})
-        assert not ser.is_valid()
+    def test_converts_amount_with_eur_context(self, plan_price):
+        ctx = {"currency": "eur", "rate": 0.91}
+        data = PlanPriceSerializer(plan_price, context=ctx).data
+        assert data["currency"] == "eur"
+        # 999 * 0.91 = 909.09 → round → 909 → /100 → 9.09 → friendly → 9.49
+        assert data["display_amount"] == 9.49
+        assert data["approximate"] is True
+        assert data["amount"] == 999  # original unchanged
+
+    def test_converts_amount_with_jpy_zero_decimal(self, plan_price):
+        ctx = {"currency": "jpy", "rate": 149.5}
+        data = PlanPriceSerializer(plan_price, context=ctx).data
+        assert data["currency"] == "jpy"
+        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → friendly → 149400.0
+        assert data["display_amount"] == 149400.0
+        assert data["approximate"] is True
 
 
 @pytest.mark.django_db
@@ -307,10 +306,22 @@ class TestProductPriceSerializer:
         assert data["id"] == str(price.id)
         assert data["amount"] == 999
 
-    def test_all_fields_read_only(self):
-        assert set(ProductPriceSerializer.Meta.read_only_fields) == set(
-            ProductPriceSerializer.Meta.fields
+    def test_model_fields_read_only(self):
+        assert set(ProductPriceSerializer.Meta.read_only_fields) == {"id", "amount"}
+
+    def test_converts_amount_with_currency_context(self):
+        product = Product.objects.create(
+            name="Credits", type="one_time", credits=50, is_active=True
         )
+        price = ProductPrice.objects.create(
+            product=product, stripe_price_id="price_pp_ctx", amount=500
+        )
+        ctx = {"currency": "gbp", "rate": 0.79}
+        data = ProductPriceSerializer(price, context=ctx).data
+        assert data["currency"] == "gbp"
+        # 500 * 0.79 = 395 → round → 395 → /100 → 3.95 → friendly → 3.99 (rounds up)
+        assert data["display_amount"] == 3.99
+        assert data["approximate"] is True
 
 
 @pytest.mark.django_db

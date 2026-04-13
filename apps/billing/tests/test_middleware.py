@@ -53,13 +53,6 @@ class TestDomainExceptionHandler:
         assert resp is not None
         assert resp.status_code == 409
 
-    def test_invalid_promo_code_returns_422(self, context):
-        from saasmint_core.exceptions import InvalidPromoCodeError
-
-        resp = domain_exception_handler(InvalidPromoCodeError("bad code"), context)
-        assert resp is not None
-        assert resp.status_code == 422
-
     def test_insufficient_permission_returns_403(self, context):
         from saasmint_core.exceptions import InsufficientPermissionError
 

@@ -202,50 +202,6 @@ class TestDashboardTemplateSubscriptionBadges:
         assert resp.status_code == 200
         assert b"Trial ends" in resp.content
 
-    def test_subscription_with_discount_shows_discount_section(
-        self, logged_in_client, stripe_customer, plan
-    ):
-        from datetime import UTC, datetime
-
-        from apps.billing.models import Subscription
-
-        Subscription.objects.create(
-            stripe_id="sub_with_discount",
-            stripe_customer=stripe_customer,
-            status="active",
-            plan=plan,
-            quantity=1,
-            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
-            discount_percent=20,
-        )
-        resp = logged_in_client.get("/dashboard/")
-        assert resp.status_code == 200
-        assert b"Discount" in resp.content
-        assert b"20%" in resp.content
-
-    def test_subscription_with_discount_and_end_date_shows_until_date(
-        self, logged_in_client, stripe_customer, plan
-    ):
-        from datetime import UTC, datetime
-
-        from apps.billing.models import Subscription
-
-        Subscription.objects.create(
-            stripe_id="sub_with_discount_end",
-            stripe_customer=stripe_customer,
-            status="active",
-            plan=plan,
-            quantity=1,
-            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
-            discount_percent=15,
-            discount_end_at=datetime(2026, 3, 1, tzinfo=UTC),
-        )
-        resp = logged_in_client.get("/dashboard/")
-        assert resp.status_code == 200
-        assert b"until" in resp.content
-
 
 @pytest.mark.django_db
 class TestHijackAcquireView:

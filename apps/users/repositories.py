@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from uuid import UUID
 
 from saasmint_core.domain.user import AccountType, User
@@ -26,15 +25,13 @@ class DjangoUserRepository:
             is_verified=obj.is_verified,
             created_at=obj.created_at,
             updated_at=obj.updated_at,
-            deleted_at=obj.deleted_at,
-            scheduled_deletion_at=obj.scheduled_deletion_at,
         )
 
     async def get_by_id(self, user_id: UUID) -> User | None:
-        return await aget_or_none(UserModel, self._to_domain, id=user_id, deleted_at__isnull=True)
+        return await aget_or_none(UserModel, self._to_domain, id=user_id)
 
     async def get_by_email(self, email: str) -> User | None:
-        return await aget_or_none(UserModel, self._to_domain, email=email, deleted_at__isnull=True)
+        return await aget_or_none(UserModel, self._to_domain, email=email)
 
     async def save(self, user: User) -> User:
         await UserModel.objects.aupdate_or_create(
@@ -48,36 +45,12 @@ class DjangoUserRepository:
                 "preferred_currency": user.preferred_currency,
                 "pronouns": user.pronouns,
                 "is_verified": user.is_verified,
-                "deleted_at": user.deleted_at,
             },
         )
         return user
 
-    async def delete(self, user_id: UUID) -> None:
-        obj = await UserModel.objects.filter(id=user_id, deleted_at__isnull=True).afirst()
-        if obj is not None:
-            obj.deleted_at = datetime.now(UTC)
-            await obj.asave(update_fields=["deleted_at"])
-
     async def hard_delete(self, user_id: UUID) -> None:
         await UserModel.objects.filter(id=user_id).adelete()
-
-    async def schedule_deletion(self, user_id: UUID, scheduled_at: datetime) -> None:
-        await UserModel.objects.filter(id=user_id).aupdate(scheduled_deletion_at=scheduled_at)
-
-    async def cancel_scheduled_deletion(self, user_id: UUID) -> None:
-        await UserModel.objects.filter(id=user_id).aupdate(scheduled_deletion_at=None)
-
-    async def list_pending_deletions(self) -> list[User]:
-        now = datetime.now(UTC)
-        return [
-            self._to_domain(obj)
-            async for obj in UserModel.objects.filter(
-                scheduled_deletion_at__isnull=False,
-                scheduled_deletion_at__lte=now,
-                deleted_at__isnull=True,
-            )
-        ]
 
     async def list_by_org(self, org_id: UUID, *, limit: int = 100, offset: int = 0) -> list[User]:
         from apps.orgs.models import OrgMember  # lazy import — avoids circular
@@ -86,6 +59,6 @@ class DjangoUserRepository:
         return [
             self._to_domain(obj)
             async for obj in UserModel.objects.filter(
-                id__in=member_user_ids, deleted_at__isnull=True
+                id__in=member_user_ids,
             )[offset : offset + limit]
         ]

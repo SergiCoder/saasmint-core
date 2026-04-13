@@ -38,13 +38,6 @@ def test_get_by_id_not_found(repo):
     assert result is None
 
 
-def test_get_by_id_excludes_soft_deleted(repo, orm_user):
-    orm_user.deleted_at = datetime.now(UTC)
-    orm_user.save()
-    result = async_to_sync(repo.get_by_id)(orm_user.id)
-    assert result is None
-
-
 def test_get_by_email(repo, orm_user):
     domain_user = async_to_sync(repo.get_by_email)("repo@example.com")
     assert domain_user is not None
@@ -86,22 +79,6 @@ def test_save_updates_existing(repo, orm_user):
     assert refreshed.full_name == "Updated Via Repo"
 
 
-def test_delete_soft_deletes(repo, orm_user):
-    async_to_sync(repo.delete)(orm_user.id)
-    result = async_to_sync(repo.get_by_id)(orm_user.id)
-    assert result is None
-    # ORM record should still exist with deleted_at set
-    obj = User.objects.get(id=orm_user.id)
-    assert obj.deleted_at is not None
-
-
-def test_get_by_email_excludes_soft_deleted(repo, orm_user):
-    orm_user.deleted_at = datetime.now(UTC)
-    orm_user.save()
-    result = async_to_sync(repo.get_by_email)(orm_user.email)
-    assert result is None
-
-
 def test_hard_delete_removes_row(repo, orm_user):
     async_to_sync(repo.hard_delete)(orm_user.id)
     assert not User.objects.filter(id=orm_user.id).exists()
@@ -111,82 +88,12 @@ def test_hard_delete_nonexistent_user_is_noop(repo):
     async_to_sync(repo.hard_delete)(uuid4())
 
 
-def test_schedule_deletion_sets_timestamp(repo, orm_user):
-    from datetime import timedelta
-
-    scheduled_at = datetime.now(UTC) + timedelta(days=30)
-    async_to_sync(repo.schedule_deletion)(orm_user.id, scheduled_at)
-    orm_user.refresh_from_db()
-    assert orm_user.scheduled_deletion_at == scheduled_at
-
-
-def test_cancel_scheduled_deletion_clears_timestamp(repo, orm_user):
-    from datetime import timedelta
-
-    scheduled_at = datetime.now(UTC) + timedelta(days=30)
-    async_to_sync(repo.schedule_deletion)(orm_user.id, scheduled_at)
-    orm_user.refresh_from_db()
-    assert orm_user.scheduled_deletion_at is not None
-
-    async_to_sync(repo.cancel_scheduled_deletion)(orm_user.id)
-    orm_user.refresh_from_db()
-    assert orm_user.scheduled_deletion_at is None
-
-
-def test_list_pending_deletions_returns_past_due_users(repo, orm_user):
-    from datetime import timedelta
-
-    orm_user.scheduled_deletion_at = datetime.now(UTC) - timedelta(hours=1)
-    orm_user.save(update_fields=["scheduled_deletion_at"])
-
-    result = async_to_sync(repo.list_pending_deletions)()
-    assert len(result) == 1
-    assert result[0].id == orm_user.id
-
-
-def test_list_pending_deletions_excludes_future(repo, orm_user):
-    from datetime import timedelta
-
-    orm_user.scheduled_deletion_at = datetime.now(UTC) + timedelta(days=30)
-    orm_user.save(update_fields=["scheduled_deletion_at"])
-
-    result = async_to_sync(repo.list_pending_deletions)()
-    assert len(result) == 0
-
-
-def test_list_pending_deletions_excludes_soft_deleted(repo, orm_user):
-    from datetime import timedelta
-
-    orm_user.scheduled_deletion_at = datetime.now(UTC) - timedelta(hours=1)
-    orm_user.deleted_at = datetime.now(UTC)
-    orm_user.save(update_fields=["scheduled_deletion_at", "deleted_at"])
-
-    result = async_to_sync(repo.list_pending_deletions)()
-    assert len(result) == 0
-
-
-def test_list_pending_deletions_empty_when_none_scheduled(repo, orm_user):
-    result = async_to_sync(repo.list_pending_deletions)()
-    assert len(result) == 0
-
-
 def test_to_domain_maps_pronouns(repo, orm_user):
     orm_user.pronouns = "they/them"
     orm_user.save(update_fields=["pronouns"])
     domain_user = async_to_sync(repo.get_by_id)(orm_user.id)
     assert domain_user is not None
     assert domain_user.pronouns == "they/them"
-
-
-def test_to_domain_maps_scheduled_deletion_at(repo, orm_user):
-    from datetime import timedelta
-
-    scheduled = datetime.now(UTC) + timedelta(days=10)
-    orm_user.scheduled_deletion_at = scheduled
-    orm_user.save(update_fields=["scheduled_deletion_at"])
-    domain_user = async_to_sync(repo.get_by_id)(orm_user.id)
-    assert domain_user is not None
-    assert domain_user.scheduled_deletion_at == scheduled
 
 
 class TestListByOrg:
@@ -227,11 +134,3 @@ class TestListByOrg:
 
         result_offset = async_to_sync(repo.list_by_org)(org.id, limit=2, offset=2)
         assert len(result_offset) == 2
-
-    def test_excludes_soft_deleted_users(self, repo, org, members):
-        members[1].deleted_at = datetime.now(UTC)
-        members[1].save()
-        result = async_to_sync(repo.list_by_org)(org.id)
-        assert len(result) == 3
-        returned_emails = {u.email for u in result}
-        assert members[1].email not in returned_emails

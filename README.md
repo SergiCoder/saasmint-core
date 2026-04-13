@@ -8,7 +8,7 @@ A production-ready Django backend for building SaaS applications with Stripe bil
 - **Django backend** — native JWT auth (email/password + OAuth), user management, and admin panel
 - **Admin dashboard** — extended Django admin with subscription status, Stripe event log, and user impersonation via django-hijack
 - **Webhook processing** — idempotent event handling with database-backed deduplication
-- **Organisations** — multi-tenant orgs with role-based membership (owner, admin, member)
+- **Organizations** — multi-tenant orgs with role-based membership (owner, admin, member), email invitations, and ownership transfer
 - **Multi-plan support** — personal and team plans (free, basic, pro) with seat-based team pricing, or define your own
 - **One-time products** — credit packs (Boost) for non-subscription purchases via Stripe Checkout
 - **Dev seed data** — one command to populate the database with realistic test users, orgs, and subscriptions
@@ -92,8 +92,8 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 | `CSRF_TRUSTED_ORIGINS` | JSON array of trusted origins for CSRF (e.g. `["https://localhost:8443"]`) |
 | `DJANGO_SETTINGS_MODULE` | Python dotted path to the Django settings module (e.g. `config.settings.dev`) |
 | `RESEND_API_KEY` | [Resend](https://resend.com) API key for transactional email (verification, password reset) |
-| `EMAIL_FROM_ADDRESS` | Sender address for outbound email (defaults to `noreply@saasmint.com`) |
-| `FRONTEND_URL` | Base URL of the frontend app, used in email links (defaults to `http://localhost:3000`) |
+| `EMAIL_FROM_ADDRESS` | Sender address for outbound email (defaults to `noreply@saasmint.net`) |
+| `FRONTEND_URL` | Base URL of the frontend app, used in email links (defaults to `https://localhost:3000`) |
 | `OAUTH_GOOGLE_CLIENT_ID` | Google OAuth 2.0 client ID (optional) |
 | `OAUTH_GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 client secret (optional) |
 | `OAUTH_GITHUB_CLIENT_ID` | GitHub OAuth app client ID (optional) |
@@ -118,7 +118,7 @@ saasmint-core/
 │   ├── admin_panel/     # Extended Django admin (subscription status column, site_url → /dashboard/)
 │   ├── billing/         # Stripe billing, subscriptions, and webhook processing
 │   ├── dashboard/       # Server-rendered dashboard, hijack impersonation landing views
-│   ├── orgs/            # Organisation management and membership
+│   ├── orgs/            # Organization management and membership
 │   └── users/           # User auth, Django JWT authentication, and profile management
 ├── middleware/           # Django middleware (exception handling, security headers)
 ├── infra/               # Docker, Caddy TLS proxy, and dev entrypoint

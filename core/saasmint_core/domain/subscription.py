@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -38,10 +38,10 @@ class PlanContext(StrEnum):
     TEAM = "team"
 
 
-class PlanTier(StrEnum):
-    FREE = "free"
-    BASIC = "basic"
-    PRO = "pro"
+class PlanTier(IntEnum):
+    FREE = 1
+    BASIC = 2
+    PRO = 3
 
 
 class Plan(BaseModel):
@@ -75,9 +75,6 @@ class Subscription(BaseModel):
     status: SubscriptionStatus
     plan_id: UUID
     quantity: int = 1
-    promotion_code_id: str | None = None
-    discount_percent: float | None = None
-    discount_end_at: datetime | None = None
     trial_ends_at: datetime | None = None
     current_period_start: datetime
     current_period_end: datetime

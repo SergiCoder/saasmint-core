@@ -1,0 +1,50 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Delete orgs{% endblock %}
+{% block content_title %}<h1>Delete organizations</h1>{% endblock %}
+
+{% block content %}
+<p>Are you sure you want to <strong>permanently delete</strong> the following organization(s)?
+This action <strong>cannot be undone</strong>.</p>
+
+<p style="margin-top:.75rem;">For each organization this will:</p>
+<ul style="margin:.5rem 0 1.5rem 1.5rem;">
+  <li>Cancel the Stripe team subscription (no refund)</li>
+  <li>Cancel all pending invitations</li>
+  <li>Hard-delete <strong>all member user accounts</strong></li>
+  <li>Hard-delete the organization record</li>
+</ul>
+
+{% for org in orgs %}
+<div class="module" style="margin-bottom:1rem; padding:.75rem 1rem; border:1px solid #ddd; border-radius:6px;">
+  <h2 style="margin:0 0 .5rem;">{{ org.name }} <span style="color:#888; font-weight:normal; font-size:.85rem;">({{ org.slug }})</span></h2>
+  <p style="font-size:.875rem; color:#555;">
+    Members: <strong>{{ org.member_count }}</strong>
+    &nbsp;&middot;&nbsp;
+    Created: {{ org.created_at|date:"Y-m-d" }}
+    {% if org.created_by %}&nbsp;&middot;&nbsp; Owner: {{ org.created_by.email }}{% endif %}
+  </p>
+</div>
+{% endfor %}
+
+<form method="post">
+  {% csrf_token %}
+  {% if not single_org %}
+  {% for org in orgs %}
+  <input type="hidden" name="_selected_action" value="{{ org.id }}">
+  {% endfor %}
+  <input type="hidden" name="action" value="delete_org_action">
+  {% endif %}
+  <input type="hidden" name="confirm" value="yes">
+
+  <div style="margin-top:1.5rem; display:flex; gap:.5rem;">
+    <input type="submit" value="Yes, delete permanently" class="default" style="background:#dc2626; color:#fff; padding:.5rem 1rem; border:none; border-radius:4px; cursor:pointer; font-weight:600;">
+    {% if single_org %}
+    <a href="{% url 'admin:orgs_org_change' orgs.0.pk %}" style="padding:.5rem 1rem; background:#f3f4f6; border:1px solid #ddd; border-radius:4px; text-decoration:none; color:#333; font-weight:600;">No, take me back</a>
+    {% else %}
+    <a href="{% url 'admin:orgs_org_changelist' %}" style="padding:.5rem 1rem; background:#f3f4f6; border:1px solid #ddd; border-radius:4px; text-decoration:none; color:#333; font-weight:600;">No, take me back</a>
+    {% endif %}
+  </div>
+</form>
+{% endblock %}

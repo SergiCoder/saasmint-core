@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import django.db.models
 import pytest
 from django.db import IntegrityError
 
@@ -32,10 +31,11 @@ class TestOrg:
         org.refresh_from_db()
         assert org.deleted_at is not None
 
-    def test_created_by_protected(self, org, user):
-        """Deleting the user should be blocked because Org references them via PROTECT."""
-        with pytest.raises(django.db.models.ProtectedError):
-            user.delete()
+    def test_created_by_set_null_on_delete(self, org, user):
+        """Deleting the user sets Org.created_by to NULL (SET_NULL)."""
+        user.delete()
+        org.refresh_from_db()
+        assert org.created_by is None
 
 
 @pytest.mark.django_db
@@ -86,3 +86,89 @@ class TestOrgRole:
         assert "owner" in values
         assert "admin" in values
         assert "member" in values
+
+
+@pytest.mark.django_db
+class TestInvitation:
+    def test_str(self, org, user):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.orgs.models import Invitation
+
+        inv = Invitation.objects.create(
+            org=org,
+            email="invite@example.com",
+            role=OrgRole.MEMBER,
+            token="test-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        assert "invite@example.com" in str(inv)
+        assert "Test Org" in str(inv)
+        assert "pending" in str(inv)
+
+    def test_default_status_is_pending(self, org, user):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.orgs.models import Invitation, InvitationStatus
+
+        inv = Invitation.objects.create(
+            org=org,
+            email="default@example.com",
+            role=OrgRole.MEMBER,
+            token="default-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        assert inv.status == InvitationStatus.PENDING
+
+    def test_unique_pending_per_org_email(self, org, user):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.orgs.models import Invitation
+
+        Invitation.objects.create(
+            org=org,
+            email="dup@example.com",
+            role=OrgRole.MEMBER,
+            token="first-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        with pytest.raises(IntegrityError):
+            Invitation.objects.create(
+                org=org,
+                email="dup@example.com",
+                role=OrgRole.MEMBER,
+                token="second-token",  # noqa: S106
+                invited_by=user,
+                expires_at=timezone.now() + timedelta(days=7),
+            )
+
+    def test_cascade_delete_on_org(self, org, user):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.orgs.models import Invitation
+
+        Invitation.objects.create(
+            org=org,
+            email="cascade@example.com",
+            role=OrgRole.MEMBER,
+            token="cascade-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        org_id = org.id
+        org.delete()
+        assert not Invitation.objects.filter(org_id=org_id).exists()
+
+    def test_is_active_default_true(self, org):
+        assert org.is_active is True

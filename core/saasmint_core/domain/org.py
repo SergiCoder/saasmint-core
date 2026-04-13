@@ -18,6 +18,7 @@ class Org(BaseModel):
     name: str
     slug: str
     logo_url: str | None = None
+    is_active: bool = True
     created_by: UUID
     created_at: datetime
     deleted_at: datetime | None = None
@@ -32,3 +33,24 @@ class OrgMember(BaseModel):
     role: OrgRole
     is_billing: bool = False
     joined_at: datetime
+
+
+class InvitationStatus(StrEnum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class Invitation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    org_id: UUID
+    email: str
+    role: OrgRole
+    token: str
+    status: InvitationStatus = InvitationStatus.PENDING
+    invited_by: UUID
+    created_at: datetime
+    expires_at: datetime
