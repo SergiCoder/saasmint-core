@@ -238,36 +238,6 @@ def _decrement_subscription_seats(org_id: UUID) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Leave Org
-# ---------------------------------------------------------------------------
-
-
-class OrgLeaveView(APIView):
-    """POST /api/v1/orgs/{org_id}/leave/ — member leaves voluntarily."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
-
-    @extend_schema(request=None, responses={204: None}, tags=["orgs"])
-    def post(self, request: Request, org_id: UUID) -> Response:
-        user = get_user(request)
-        _, member = _get_org_and_member(user.id, org_id)
-
-        if member.role == OrgRole.OWNER:
-            raise InsufficientPermissionError(
-                "Owner cannot leave. Transfer ownership or delete the org first."
-            )
-
-        member.delete()
-        _decrement_subscription_seats(org_id)
-
-        # Hard-delete the user's account (CASCADE handles related models)
-        user.delete()
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-# ---------------------------------------------------------------------------
 # Transfer Ownership
 # ---------------------------------------------------------------------------
 

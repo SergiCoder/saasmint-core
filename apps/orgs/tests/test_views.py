@@ -281,55 +281,6 @@ class TestOrgMemberDetailViewDELETE:
 
 
 # ---------------------------------------------------------------------------
-# Leave Org (POST /api/v1/orgs/{orgId}/leave/)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestOrgLeaveView:
-    @patch("apps.orgs.views._decrement_subscription_seats")
-    def test_member_can_leave_and_account_deleted(
-        self,
-        mock_seats,
-        member_client,
-        org,
-        owner_membership,
-        member_user,
-        member_membership,
-    ):
-        member_id = member_user.id
-        resp = member_client.post(f"/api/v1/orgs/{org.id}/leave/")
-        assert resp.status_code == 204
-        assert not OrgMember.objects.filter(org=org, user_id=member_id).exists()
-        # User account is hard-deleted
-        assert not User.objects.filter(id=member_id).exists()
-
-    @patch("apps.orgs.views._decrement_subscription_seats")
-    def test_admin_can_leave_and_account_deleted(
-        self,
-        mock_seats,
-        admin_client,
-        org,
-        owner_membership,
-        admin_membership,
-        admin_user,
-    ):
-        admin_id = admin_user.id
-        resp = admin_client.post(f"/api/v1/orgs/{org.id}/leave/")
-        assert resp.status_code == 204
-        assert not OrgMember.objects.filter(org=org, user_id=admin_id).exists()
-        assert not User.objects.filter(id=admin_id).exists()
-
-    def test_owner_cannot_leave(self, authed_client, org, owner_membership):
-        resp = authed_client.post(f"/api/v1/orgs/{org.id}/leave/")
-        assert resp.status_code == 403
-
-    def test_non_member_denied(self, org, other_user, owner_membership):
-        client = APIClient()
-        client.force_authenticate(user=other_user)
-        resp = client.post(f"/api/v1/orgs/{org.id}/leave/")
-        assert resp.status_code == 403
-
 
 # ---------------------------------------------------------------------------
 # Transfer Ownership (POST /api/v1/orgs/{orgId}/transfer-ownership/)

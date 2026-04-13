@@ -6,7 +6,6 @@ from apps.orgs.views import (
     InvitationCancelView,
     InvitationListCreateView,
     OrgDetailView,
-    OrgLeaveView,
     OrgListView,
     OrgMemberDetailView,
     OrgMemberListView,
@@ -22,7 +21,6 @@ urlpatterns = [
         OrgMemberDetailView.as_view(),
         name="org-member-detail",
     ),
-    path("<uuid:org_id>/leave/", OrgLeaveView.as_view(), name="org-leave"),
     path(
         "<uuid:org_id>/transfer-ownership/",
         OrgTransferOwnershipView.as_view(),
