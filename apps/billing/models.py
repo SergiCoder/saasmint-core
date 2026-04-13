@@ -201,7 +201,7 @@ class ProductPrice(models.Model):
 class ExchangeRate(models.Model):
     """USD-based exchange rate for display-currency conversion.
 
-    Synced hourly from Stripe by the ``sync_exchange_rates`` Celery task.
+    Synced daily from Stripe by the ``sync_exchange_rates`` Celery task.
     One row per supported currency (excluding USD).
     """
 

@@ -8,7 +8,7 @@ A production-ready Django backend for building SaaS applications with Stripe bil
 - **Django backend** — native JWT auth (email/password + OAuth), user management, and admin panel
 - **Admin dashboard** — extended Django admin with subscription status, Stripe event log, and user impersonation via django-hijack
 - **Webhook processing** — idempotent event handling with database-backed deduplication
-- **Organizations** — multi-tenant orgs with role-based membership (owner, admin, member)
+- **Organizations** — multi-tenant orgs with role-based membership (owner, admin, member), email invitations, and ownership transfer
 - **Multi-plan support** — personal and team plans (free, basic, pro) with seat-based team pricing, or define your own
 - **One-time products** — credit packs (Boost) for non-subscription purchases via Stripe Checkout
 - **Dev seed data** — one command to populate the database with realistic test users, orgs, and subscriptions
