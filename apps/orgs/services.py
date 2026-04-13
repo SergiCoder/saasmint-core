@@ -44,20 +44,25 @@ def generate_unique_slug(name: str) -> str:
 async def on_team_checkout_completed(
     user_id: UUID,
     org_name: str,
+    stripe_customer_id: str,
+    livemode: bool,
     stripe_subscription_id: str | None,
 ) -> None:
-    """Create an org after a successful team plan checkout.
+    """Create an org and its Stripe customer after a team plan checkout.
 
     Called from the checkout.session.completed webhook handler.
     The user already has account_type=ORG_MEMBER from registration.
-    Creates the Org and adds the user as owner + billing contact.
+    Creates the Org, adds the user as owner + billing contact, and
+    links the Stripe customer to the org.
     """
     from asgiref.sync import sync_to_async
+
+    from apps.billing.models import StripeCustomer
 
     user = await User.objects.aget(id=user_id)
 
     try:
-        _org, _member = await sync_to_async(_create_org_with_owner)(user, org_name)
+        org, _member = await sync_to_async(_create_org_with_owner)(user, org_name)
     except IntegrityError:
         logger.error(
             "Org creation failed during team checkout for user %s (name='%s')",
@@ -66,11 +71,18 @@ async def on_team_checkout_completed(
         )
         raise
 
+    await StripeCustomer.objects.acreate(
+        stripe_id=stripe_customer_id,
+        org=org,
+        livemode=livemode,
+    )
+
     logger.info(
-        "Team checkout completed: org '%s' (slug=%s) created for user %s",
+        "Team checkout completed: org '%s' (slug=%s) created for user %s, Stripe customer %s",
         org_name,
-        _org.slug,
+        org.slug,
         user_id,
+        stripe_customer_id,
     )
 
 
