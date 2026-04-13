@@ -1,4 +1,4 @@
-"""Organisation, membership, and invitation API views."""
+"""Organization, membership, and invitation API views."""
 
 from __future__ import annotations
 
@@ -486,7 +486,7 @@ class InvitationAcceptView(APIView):
         if org.deleted_at is not None:
             from rest_framework.exceptions import ValidationError
 
-            raise ValidationError({"detail": "This organisation no longer exists."})
+            raise ValidationError({"detail": "This organization no longer exists."})
 
         # Email must not already be registered
         if User.objects.filter(email=invitation.email, deleted_at__isnull=True).exists():

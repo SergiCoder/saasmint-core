@@ -176,7 +176,7 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "SaasMint Core API",
-    "DESCRIPTION": "Django backend API for SaasMint — billing, accounts, and organisations.",
+    "DESCRIPTION": "Django backend API for SaasMint — billing, accounts, and organizations.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": "/api/v[0-9]",

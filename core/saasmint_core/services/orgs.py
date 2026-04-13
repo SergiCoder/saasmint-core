@@ -1,4 +1,4 @@
-"""Organisation role hierarchy and permission checks."""
+"""Organization role hierarchy and permission checks."""
 
 from __future__ import annotations
 

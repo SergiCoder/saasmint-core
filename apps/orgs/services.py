@@ -1,4 +1,4 @@
-"""Organisation lifecycle services — team checkout, member management, invitations."""
+"""Organization lifecycle services — team checkout, member management, invitations."""
 
 from __future__ import annotations
 

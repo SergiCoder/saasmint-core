@@ -1,4 +1,4 @@
-"""Django ORM models for organisations, memberships, and invitations."""
+"""Django ORM models for organizations, memberships, and invitations."""
 
 from __future__ import annotations
 

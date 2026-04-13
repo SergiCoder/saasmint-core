@@ -8,7 +8,7 @@ A production-ready Django backend for building SaaS applications with Stripe bil
 - **Django backend** — native JWT auth (email/password + OAuth), user management, and admin panel
 - **Admin dashboard** — extended Django admin with subscription status, Stripe event log, and user impersonation via django-hijack
 - **Webhook processing** — idempotent event handling with database-backed deduplication
-- **Organisations** — multi-tenant orgs with role-based membership (owner, admin, member)
+- **Organizations** — multi-tenant orgs with role-based membership (owner, admin, member)
 - **Multi-plan support** — personal and team plans (free, basic, pro) with seat-based team pricing, or define your own
 - **One-time products** — credit packs (Boost) for non-subscription purchases via Stripe Checkout
 - **Dev seed data** — one command to populate the database with realistic test users, orgs, and subscriptions
@@ -118,7 +118,7 @@ saasmint-core/
 │   ├── admin_panel/     # Extended Django admin (subscription status column, site_url → /dashboard/)
 │   ├── billing/         # Stripe billing, subscriptions, and webhook processing
 │   ├── dashboard/       # Server-rendered dashboard, hijack impersonation landing views
-│   ├── orgs/            # Organisation management and membership
+│   ├── orgs/            # Organization management and membership
 │   └── users/           # User auth, Django JWT authentication, and profile management
 ├── middleware/           # Django middleware (exception handling, security headers)
 ├── infra/               # Docker, Caddy TLS proxy, and dev entrypoint

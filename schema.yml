@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: SaasMint Core API
   version: 1.0.0
-  description: Django backend API for SaasMint — billing, accounts, and organisations.
+  description: Django backend API for SaasMint — billing, accounts, and organizations.
 paths:
   /api/v1/account/:
     get:
