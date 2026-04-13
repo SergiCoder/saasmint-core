@@ -224,7 +224,7 @@ class TestOrgMemberDetailViewPATCH:
 
 @pytest.mark.django_db
 class TestOrgMemberDetailViewDELETE:
-    @patch("apps.orgs.views._decrement_subscription_seats")
+    @patch("apps.orgs.services.decrement_subscription_seats")
     def test_owner_removes_member_and_deletes_account(
         self,
         mock_seats,
@@ -245,7 +245,7 @@ class TestOrgMemberDetailViewDELETE:
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{user.id}/")
         assert resp.status_code == 403
 
-    @patch("apps.orgs.views._decrement_subscription_seats")
+    @patch("apps.orgs.services.decrement_subscription_seats")
     def test_admin_removes_member(
         self,
         mock_seats,
@@ -620,3 +620,110 @@ class TestUnauthenticatedAccess:
         client = APIClient()
         resp = client.delete(f"/api/v1/orgs/{org.id}/members/{user.id}/")
         assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# Invitation Detail (GET /api/v1/invitations/{token}/)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestInvitationDetailView:
+    def test_get_pending_invitation(self, org, owner_membership, user):
+        Invitation.objects.create(
+            org=org,
+            email="detail@example.com",
+            role=OrgRole.MEMBER,
+            token="detail-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()  # unauthenticated
+        resp = client.get("/api/v1/invitations/detail-token/")
+        assert resp.status_code == 200
+        assert resp.data["email"] == "detail@example.com"
+        assert resp.data["org_name"] == org.name
+
+    def test_nonexistent_token_returns_404(self):
+        client = APIClient()
+        resp = client.get("/api/v1/invitations/nonexistent/")
+        assert resp.status_code == 404
+
+    def test_accepted_invitation_returns_404(self, org, owner_membership, user):
+        Invitation.objects.create(
+            org=org,
+            email="done@example.com",
+            role=OrgRole.MEMBER,
+            token="done-token",  # noqa: S106
+            invited_by=user,
+            status=InvitationStatus.ACCEPTED,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.get("/api/v1/invitations/done-token/")
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Inactive org filtering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestInactiveOrgFiltering:
+    def test_inactive_org_excluded_from_list(self, authed_client, org, owner_membership):
+        org.is_active = False
+        org.save(update_fields=["is_active"])
+        resp = authed_client.get("/api/v1/orgs/")
+        assert resp.data["count"] == 0
+
+    def test_inactive_org_returns_404_on_detail(self, authed_client, org, owner_membership):
+        org.is_active = False
+        org.save(update_fields=["is_active"])
+        resp = authed_client.get(f"/api/v1/orgs/{org.id}/")
+        assert resp.status_code == 404
+
+    def test_inactive_org_returns_404_on_members(self, authed_client, org, owner_membership):
+        org.is_active = False
+        org.save(update_fields=["is_active"])
+        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/")
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Seat limit validation on invitation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestInvitationSeatLimit:
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_invitation_rejected_when_seat_limit_reached(
+        self, mock_email, authed_client, org, owner_membership, user
+    ):
+        from datetime import UTC, datetime
+
+        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
+
+        customer = StripeCustomer.objects.create(
+            stripe_id="cus_seat_limit", org=org, livemode=False
+        )
+        plan = Plan.objects.create(name="Team", context="team", interval="month", is_active=True)
+        PlanPrice.objects.create(plan=plan, stripe_price_id="price_seat_limit", amount=1500)
+        Subscription.objects.create(
+            stripe_id="sub_seat_limit",
+            stripe_customer=customer,
+            status="active",
+            plan=plan,
+            quantity=1,  # only 1 seat
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        # org already has 1 member (owner) and sub has quantity=1
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "overflow@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "seat limit" in resp.data["detail"].lower()

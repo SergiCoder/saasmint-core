@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -201,6 +201,99 @@ class TestCheckoutSessionView:
         client = APIClient()
         resp = client.post("/api/v1/billing/checkout-sessions/", {}, format="json")
         assert resp.status_code in (401, 403)
+
+    def test_personal_user_cannot_checkout_team_plan(
+        self, authed_client, team_plan, team_plan_price
+    ):
+        """Personal account_type users are rejected when checking out a team plan."""
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                "org_name": "My Org",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "org accounts" in resp.data["detail"].lower()
+
+    def test_org_member_cannot_checkout_personal_plan(self, org_member_client, plan_price):
+        """Org member account_type users are rejected when checking out a personal plan."""
+        resp = org_member_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(plan_price.id),
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "personal plans" in resp.data["detail"].lower()
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_team_checkout_requires_org_name(
+        self,
+        mock_get_customer,
+        mock_create,
+        org_member_client,
+        org_member_stripe_customer,
+        team_plan,
+        team_plan_price,
+    ):
+        """Team plan checkout must include org_name."""
+        mock_get_customer.return_value = MagicMock(
+            stripe_id="cus_org_test", user_id=org_member_stripe_customer.user_id
+        )
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        resp = org_member_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                # no org_name
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "org_name" in resp.data
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_team_checkout_passes_metadata(
+        self,
+        mock_get_customer,
+        mock_create,
+        org_member_client,
+        org_member_stripe_customer,
+        team_plan,
+        team_plan_price,
+    ):
+        """Team checkout should pass org_name in metadata to Stripe."""
+        mock_get_customer.return_value = MagicMock(
+            stripe_id="cus_org_test", user_id=org_member_stripe_customer.user_id
+        )
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        org_member_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                "org_name": "My Team Org",
+            },
+            format="json",
+        )
+        assert mock_create.call_args.kwargs["metadata"] == {"org_name": "My Team Org"}
 
 
 @pytest.mark.django_db
