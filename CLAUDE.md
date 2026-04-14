@@ -20,6 +20,7 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 - `current_period_end` for free subs is the sentinel `FREE_SUBSCRIPTION_PERIOD_END` (year 9999) — they never renew.
 - `Product` / `ProductPrice` are one-time purchases (credit packs / Boost), separate from subscription plans.
 - Stripe API version is pinned to `2026-03-25.dahlia`. Notable: `cancel_at_period_end=True` is replaced by `cancel_at="min_period_end"` (clear with `cancel_at=""`); `current_period_start/end` live on subscription items, not the subscription itself.
+- `manage.py seed_catalog` is the idempotent, USD-only seeder for Plans, PlanPrices, and Boost Products. It runs automatically from `infra/entrypoint.sh` after `migrate` on every deploy, using placeholder `stripe_price_id` values.
 - `make sync-stripe` (runs `manage.py sync_stripe_catalog`) is the source of truth for pushing local Plans/Products into Stripe. It should run after every `migrate` in deploy pipelines so Stripe matches the DB; it is idempotent via Stripe `lookup_key`s.
 
 ## Prism commands

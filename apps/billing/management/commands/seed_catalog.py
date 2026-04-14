@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -16,7 +18,16 @@ from apps.billing.models import (
     ProductType,
 )
 
-PLANS: list[dict[str, object]] = [
+
+class _PlanSpec(TypedDict):
+    name: str
+    description: str
+    context: PlanContext
+    tier: PlanTier
+    interval: PlanInterval
+
+
+PLANS: list[_PlanSpec] = [
     {
         "name": "Personal Free",
         "description": (
@@ -153,13 +164,13 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f"  + Plan: {plan.name}")
 
+        # Load all active plans once to avoid a get() per PLAN_PRICES row.
+        plans_by_identity: dict[tuple[str, int, str], Plan] = {
+            (p.context, p.tier, p.interval): p
+            for p in Plan.objects.filter(is_active=True)
+        }
         for context, tier, interval, amount in PLAN_PRICES:
-            plan = Plan.objects.get(
-                context=context,
-                tier=tier,
-                interval=interval,
-                is_active=True,
-            )
+            plan = plans_by_identity[context, tier, interval]
             price_id = f"price_placeholder_{context}_{tier}_{interval}"
             _, created = PlanPrice.objects.get_or_create(
                 plan=plan,
