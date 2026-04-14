@@ -51,22 +51,13 @@ paths:
       description: |-
         DELETE /api/v1/account — GDPR right to erasure.
 
-        Returns 204 if the account was deleted immediately (no active subscription).
-        Returns 200 with ``{"scheduled_deletion_at": "..."}`` if deletion is
-        scheduled for the end of the current billing period.
+        Immediately hard-deletes the user and all associated data.
       tags:
       - account
       security:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: {}
-          description: ''
         '204':
           description: No response body
   /api/v1/account/avatar/:
@@ -103,22 +94,6 @@ paths:
       responses:
         '204':
           description: No response body
-  /api/v1/account/cancel-deletion/:
-    post:
-      operationId: account_cancel_deletion_create
-      description: POST /api/v1/account/cancel-deletion — undo scheduled account deletion.
-      tags:
-      - account
-      security:
-      - JWT: []
-      - cookieAuth: []
-      responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/User'
-          description: ''
   /api/v1/account/export/:
     get:
       operationId: account_export_retrieve
@@ -438,10 +413,6 @@ paths:
         description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
-      security:
-      - JWT: []
-      - cookieAuth: []
-      - {}
       responses:
         '200':
           content:
@@ -582,6 +553,33 @@ paths:
                 items:
                   type: string
           description: ''
+  /api/v1/invitations/{token}/:
+    get:
+      operationId: invitations_retrieve
+      description: |-
+        GET /api/v1/invitations/{token}/ — fetch invitation details by token.
+
+        Unauthenticated endpoint. Returns invitation info including the
+        organization name so the accept/decline page can display it.
+      parameters:
+      - in: path
+        name: token
+        schema:
+          type: string
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invitation'
+          description: ''
   /api/v1/invitations/{token}/accept/:
     post:
       operationId: invitations_accept_create
@@ -619,7 +617,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Org'
+                $ref: '#/components/schemas/InvitationAcceptResponse'
           description: ''
   /api/v1/invitations/{token}/decline/:
     post:
@@ -691,7 +689,7 @@ paths:
   /api/v1/orgs/{org_id}/:
     get:
       operationId: orgs_retrieve
-      description: GET/PATCH/DELETE /api/v1/orgs/{org_id}/.
+      description: GET/PATCH /api/v1/orgs/{org_id}/.
       parameters:
       - in: path
         name: org_id
@@ -713,7 +711,7 @@ paths:
           description: ''
     patch:
       operationId: orgs_partial_update
-      description: GET/PATCH/DELETE /api/v1/orgs/{org_id}/.
+      description: GET/PATCH /api/v1/orgs/{org_id}/.
       parameters:
       - in: path
         name: org_id
@@ -815,25 +813,6 @@ paths:
           type: string
           format: uuid
         required: true
-      - in: path
-        name: org_id
-        schema:
-          type: string
-          format: uuid
-        required: true
-      tags:
-      - orgs
-      security:
-      - JWT: []
-      - cookieAuth: []
-      responses:
-        '204':
-          description: No response body
-  /api/v1/orgs/{org_id}/leave/:
-    post:
-      operationId: orgs_leave_create
-      description: POST /api/v1/orgs/{org_id}/leave/ — member leaves voluntarily.
-      parameters:
       - in: path
         name: org_id
         schema:
@@ -1138,6 +1117,9 @@ components:
           type: string
           format: uuid
           readOnly: true
+        org_name:
+          type: string
+          readOnly: true
         email:
           type: string
           format: email
@@ -1170,6 +1152,7 @@ components:
       - id
       - invited_by
       - org
+      - org_name
       - role
       - status
     InvitationAcceptRequest:
@@ -1187,6 +1170,22 @@ components:
       required:
       - full_name
       - password
+    InvitationAcceptResponse:
+      type: object
+      properties:
+        org:
+          $ref: '#/components/schemas/Org'
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+      required:
+      - access_token
+      - org
+      - refresh_token
+      - token_type
     InvitationStatusEnum:
       enum:
       - pending
@@ -1381,7 +1380,7 @@ components:
           allOf:
           - $ref: '#/components/schemas/TierEnum'
           readOnly: true
-          default: basic
+          default: 2
         interval:
           allOf:
           - $ref: '#/components/schemas/IntervalEnum'
@@ -1654,14 +1653,14 @@ components:
         * `unpaid` - Unpaid
     TierEnum:
       enum:
-      - free
-      - basic
-      - pro
-      type: string
+      - 1
+      - 2
+      - 3
+      type: integer
       description: |-
-        * `free` - Free
-        * `basic` - Basic
-        * `pro` - Pro
+        * `1` - Free
+        * `2` - Basic
+        * `3` - Pro
     TokenResponse:
       type: object
       properties:
@@ -1757,11 +1756,6 @@ components:
           type: string
           format: date-time
           readOnly: true
-        scheduled_deletion_at:
-          type: string
-          format: date-time
-          readOnly: true
-          nullable: true
       required:
       - account_type
       - avatar_url
@@ -1778,7 +1772,6 @@ components:
       - preferred_locale
       - pronouns
       - registration_method
-      - scheduled_deletion_at
       - timezone
       - updated_at
     VerifyEmailRequest:

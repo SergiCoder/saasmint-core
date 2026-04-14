@@ -15,12 +15,15 @@ RUN uv sync --no-dev
 COPY config /app/config
 COPY apps /app/apps
 COPY middleware /app/middleware
-COPY manage.py /app/
+COPY manage.py helpers.py /app/
+COPY templates /app/templates
+COPY static /app/static
+COPY infra/entrypoint.sh infra/uvicorn-log-config.json /app/infra/
 
-RUN mkdir -p /app/media \
+RUN mkdir -p /app/media /app/staticfiles \
     && addgroup --system --gid 1000 app \
     && adduser --system --uid 1000 --ingroup app app \
-    && chown -R app:app /opt/venv /tmp/uv-cache /app/media
+    && chown -R app:app /opt/venv /tmp/uv-cache /app/media /app/staticfiles
 USER app
 
 ENV DJANGO_PORT=8001

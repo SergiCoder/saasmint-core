@@ -20,7 +20,7 @@ from apps.billing.management.commands.sync_stripe_catalog import (
     _product_lookup_key,
     _slug,
 )
-from apps.billing.models import Plan, PlanPrice, Product, ProductPrice
+from apps.billing.models import Plan, PlanPrice, PlanTier, Product, ProductPrice
 
 pytestmark = pytest.mark.django_db
 
@@ -92,7 +92,7 @@ class TestLookupKeys:
         plan = Plan.objects.create(
             name="Personal Pro Monthly",
             context="personal",
-            tier=3,
+            tier=PlanTier.PRO,
             interval="month",
             is_active=True,
         )
@@ -127,7 +127,7 @@ def paid_plan_with_price():
         name="Personal Basic Monthly",
         description="Basic monthly",
         context="personal",
-        tier=2,
+        tier=PlanTier.BASIC,
         interval="month",
         is_active=True,
     )
@@ -269,7 +269,7 @@ class TestSyncPlans:
         Plan.objects.create(
             name="Orphan",
             context="personal",
-            tier=2,
+            tier=PlanTier.BASIC,
             interval="month",
             is_active=True,
         )
@@ -288,7 +288,7 @@ class TestSyncPlans:
         plan = Plan.objects.create(
             name="Personal Free",
             context="personal",
-            tier=1,
+            tier=PlanTier.FREE,
             interval="month",
             is_active=True,
         )
@@ -308,7 +308,7 @@ class TestSyncPlans:
         plan = Plan.objects.create(
             name="Retired",
             context="personal",
-            tier=2,
+            tier=PlanTier.BASIC,
             interval="month",
             is_active=False,
         )

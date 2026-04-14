@@ -172,6 +172,7 @@ class PlanListView(APIView):
             " — the catalog is bounded to a small number of plans."
         ),
         tags=["billing"],
+        auth=[],
     )
     def get(self, request: Request) -> Response:
         qs = PlanModel.objects.filter(is_active=True).select_related("price")

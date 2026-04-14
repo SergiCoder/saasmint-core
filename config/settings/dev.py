@@ -7,8 +7,8 @@ DEBUG = True
 # (e.g. stripe-cli forwarding to http://django:8001/...) aren't rejected.
 ALLOWED_HOSTS = ["*"]
 CORS_ALLOW_ALL_ORIGINS = True
-# Trust the X-Forwarded-Proto header from Caddy so build_absolute_uri()
-# generates https:// URLs behind the TLS proxy.
+# Caddy terminates TLS and forwards X-Forwarded-Proto: https — trust it so
+# request.build_absolute_uri() produces https:// URLs (needed for OAuth redirects).
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True
 USE_X_FORWARDED_PORT = True

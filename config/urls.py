@@ -3,6 +3,7 @@
 from django.conf import settings
 from django.contrib import admin
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
+from django.http import HttpRequest, JsonResponse
 from django.urls import include, path
 
 from apps.dashboard.views import HijackAcquireView, HijackReleaseView
@@ -13,7 +14,13 @@ from apps.users.views_references import (
     TimezoneListView,
 )
 
+
+def health_check(request: HttpRequest) -> JsonResponse:
+    return JsonResponse({"status": "ok"})
+
+
 urlpatterns = [
+    path("api/v1/health/", health_check, name="health-check"),
     path("admin/", admin.site.urls),
     path("hijack/acquire/", HijackAcquireView.as_view(), name="hijack-acquire"),
     path("hijack/release/", HijackReleaseView.as_view(), name="hijack-release"),

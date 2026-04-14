@@ -13,13 +13,14 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 ## Billing model
 
 - Single-currency (USD) catalog. `PlanPrice` / `ProductPrice` store `amount` in cents, no `currency` column. Pricing endpoints accept an optional `?currency=` query param; amounts are converted for display using `ExchangeRate` (synced daily from Stripe by the `sync_exchange_rates` Celery beat task). The catalog and Stripe charges remain in USD.
-- `Plan` has `(context, tier, interval)` — `context` is `personal` or `team`, `tier` is `free`/`basic`/`pro`. Active rows are unique on that triple.
+- `Plan` has `(context, tier, interval)` — `context` is `personal` or `team`, `tier` is an `IntegerChoices` enum (`1=free`, `2=basic`, `3=pro`). Active rows are unique on that triple.
 - `Subscription` covers two shapes:
   - Paid: `stripe_id` + `stripe_customer_id` set, lifecycle synced via webhooks.
   - Free: `stripe_id IS NULL`, `user_id` set directly. Created on signup (`apps.billing.services.assign_free_plan`) and on personal subscription cancellation (auto-fallback in `_on_subscription_deleted`). `Subscription.is_free` distinguishes them.
 - `current_period_end` for free subs is the sentinel `FREE_SUBSCRIPTION_PERIOD_END` (year 9999) — they never renew.
 - `Product` / `ProductPrice` are one-time purchases (credit packs / Boost), separate from subscription plans.
 - Stripe API version is pinned to `2026-03-25.dahlia`. Notable: `cancel_at_period_end=True` is replaced by `cancel_at="min_period_end"` (clear with `cancel_at=""`); `current_period_start/end` live on subscription items, not the subscription itself.
+- `manage.py seed_catalog` is the idempotent, USD-only seeder for Plans, PlanPrices, and Boost Products. It runs automatically from `infra/entrypoint.sh` after `migrate` on every deploy, using placeholder `stripe_price_id` values.
 - `make sync-stripe` (runs `manage.py sync_stripe_catalog`) is the source of truth for pushing local Plans/Products into Stripe. It should run after every `migrate` in deploy pipelines so Stripe matches the DB; it is idempotent via Stripe `lookup_key`s.
 
 ## Prism commands

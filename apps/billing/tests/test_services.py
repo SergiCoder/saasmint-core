@@ -10,6 +10,7 @@ from saasmint_core.domain.subscription import FREE_SUBSCRIPTION_PERIOD_END
 from apps.billing.models import (
     Plan,
     PlanPrice,
+    PlanTier,
     StripeCustomer,
     Subscription,
     SubscriptionStatus,
@@ -74,7 +75,7 @@ class TestAssignFreePlan:
         plan = Plan.objects.create(
             name="Personal Free",
             context="personal",
-            tier=1,
+            tier=PlanTier.FREE,
             interval="month",
             is_active=False,
         )
@@ -88,7 +89,7 @@ class TestAssignFreePlan:
         paid_plan = Plan.objects.create(
             name="Personal Basic",
             context="personal",
-            tier=2,
+            tier=PlanTier.BASIC,
             interval="month",
             is_active=True,
         )
