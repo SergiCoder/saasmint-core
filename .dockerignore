@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+core/.venv
+__pycache__
+*.pyc
+*.pyo
+.env*
+!.env.base
+**/tests/
+infra/certs/
+infra/Caddyfile
+schema.yml
+.mypy_cache
+.pytest_cache
+.ruff_cache

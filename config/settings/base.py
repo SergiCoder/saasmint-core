@@ -23,10 +23,7 @@ _ACTIVE_ENV = _REPO_ROOT / _ENV_FILE_MAP.get(_ENV_NAME, ".env.local")
 
 class _Env(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=(
-            str(_ACTIVE_ENV),
-            str(_REPO_ROOT / ".env.django"),
-        ),
+        env_file=(str(_ACTIVE_ENV),),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -34,9 +31,6 @@ class _Env(BaseSettings):
     django_secret_key: str
     stripe_secret_key: str
     stripe_webhook_secret: str
-    supabase_url: str = ""
-    supabase_anon_key: str = ""
-    supabase_jwt_secret: str
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://localhost:5432/saasmint"
     debug: bool = False
@@ -44,6 +38,15 @@ class _Env(BaseSettings):
     cors_allowed_origins: list[str] = []
     cors_allow_all_origins: bool = False
     csrf_trusted_origins: list[str] = []
+    resend_api_key: str = ""
+    frontend_url: str = "https://localhost:3000"
+    email_from_address: str = "noreply@saasmint.net"
+    oauth_google_client_id: str = ""
+    oauth_google_client_secret: str = ""
+    oauth_github_client_id: str = ""
+    oauth_github_client_secret: str = ""
+    oauth_microsoft_client_id: str = ""
+    oauth_microsoft_client_secret: str = ""
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
@@ -141,7 +144,10 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
-_auth_classes = ["apps.users.authentication.SupabaseJWTAuthentication"]
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+
+_auth_classes = ["apps.users.authentication.JWTAuthentication"]
 if env.enable_session_auth:
     _auth_classes.append("rest_framework.authentication.SessionAuthentication")
 
@@ -158,10 +164,11 @@ REST_FRAMEWORK = {
         "anon": "100/hour",
         "user": "1000/hour",
         "auth": "10/minute",
-        "billing": "30/hour",
-        "account": "10/hour",
+        "billing": "100/hour",
+        "account": "120/hour",
         "account_export": "3/hour",
         "orgs": "60/hour",
+        "references": "120/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
@@ -169,7 +176,7 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "SaasMint Core API",
-    "DESCRIPTION": "Django backend API for SaasMint — billing, accounts, and organisations.",
+    "DESCRIPTION": "Django backend API for SaasMint — billing, accounts, and organizations.",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": "/api/v[0-9]",
@@ -196,15 +203,33 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
+CELERY_BEAT_SCHEDULE = {
+    "sync-exchange-rates": {
+        "task": "apps.billing.tasks.sync_exchange_rates",
+        "schedule": 86400,  # once per day
+    },
+    "cleanup-orphaned-org-accounts": {
+        "task": "apps.users.tasks.cleanup_orphaned_org_accounts",
+        "schedule": 86400,  # once per day
+    },
+}
 
 # Stripe
 STRIPE_SECRET_KEY = env.stripe_secret_key
 STRIPE_WEBHOOK_SECRET = env.stripe_webhook_secret
 
-# Supabase
-SUPABASE_URL = env.supabase_url
-SUPABASE_ANON_KEY = env.supabase_anon_key
-SUPABASE_JWT_SECRET = env.supabase_jwt_secret
+# Email (Resend)
+RESEND_API_KEY = env.resend_api_key
+EMAIL_FROM_ADDRESS = env.email_from_address
+FRONTEND_URL = env.frontend_url
+
+# OAuth
+OAUTH_GOOGLE_CLIENT_ID = env.oauth_google_client_id
+OAUTH_GOOGLE_CLIENT_SECRET = env.oauth_google_client_secret
+OAUTH_GITHUB_CLIENT_ID = env.oauth_github_client_id
+OAUTH_GITHUB_CLIENT_SECRET = env.oauth_github_client_secret
+OAUTH_MICROSOFT_CLIENT_ID = env.oauth_microsoft_client_id
+OAUTH_MICROSOFT_CLIENT_SECRET = env.oauth_microsoft_client_secret
 
 # django-hijack
 HIJACK_REGISTER_ADMIN_ACTIONS = True

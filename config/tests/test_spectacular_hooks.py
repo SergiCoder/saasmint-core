@@ -8,7 +8,9 @@ from config.spectacular_hooks import preprocess_exclude_spectacular_views
 
 
 def _make_endpoint(
-    module: str, path: str = "/api/v1/test/", method: str = "GET",
+    module: str,
+    path: str = "/api/v1/test/",
+    method: str = "GET",
 ) -> tuple[str, str, str, MagicMock]:
     callback = MagicMock()
     callback.cls.__module__ = module

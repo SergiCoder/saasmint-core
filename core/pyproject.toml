@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic[email]>=2.12.5",
     "stripe>=15.0",
+    "httpx>=0.28",
 ]
 
 [project.optional-dependencies]

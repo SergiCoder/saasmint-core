@@ -17,6 +17,7 @@ from saasmint_core.domain.subscription import (
     PlanContext,
     PlanInterval,
     PlanPrice,
+    PlanTier,
     Subscription,
     SubscriptionStatus,
 )
@@ -31,8 +32,8 @@ NOW = datetime(2024, 1, 1, tzinfo=UTC)
 def test_user_creation() -> None:
     user = User(
         id=uuid4(),
-        supabase_uid="sup_123",
         email="alice@example.com",
+        full_name="Alice Example",
         created_at=NOW,
     )
     assert user.email == "alice@example.com"
@@ -40,16 +41,14 @@ def test_user_creation() -> None:
     assert user.preferred_locale == "en"
     assert user.preferred_currency == "usd"
     assert user.is_verified is False
-    assert user.full_name is None
+    assert user.full_name == "Alice Example"
     assert user.avatar_url is None
-    assert user.deleted_at is None
 
 
 def test_user_with_all_fields() -> None:
     uid = uuid4()
     user = User(
         id=uid,
-        supabase_uid="sup_xyz",
         email="bob@example.com",
         full_name="Bob Smith",
         avatar_url="https://example.com/avatar.png",
@@ -58,16 +57,14 @@ def test_user_with_all_fields() -> None:
         preferred_currency="eur",
         is_verified=True,
         created_at=NOW,
-        deleted_at=NOW,
     )
     assert user.id == uid
     assert user.account_type == AccountType.ORG_MEMBER
     assert user.full_name == "Bob Smith"
-    assert user.deleted_at == NOW
 
 
 def test_user_is_frozen() -> None:
-    user = User(id=uuid4(), supabase_uid="s", email="a@b.com", created_at=NOW)
+    user = User(id=uuid4(), email="a@b.com", full_name="Test", created_at=NOW)
     with pytest.raises(ValidationError):
         user.email = "other@b.com"  # type: ignore[misc]  # intentional: testing that frozen dataclass raises ValidationError on mutation
 
@@ -79,7 +76,7 @@ def test_account_type_values() -> None:
 
 def test_user_invalid_email() -> None:
     with pytest.raises(ValidationError):
-        User(id=uuid4(), supabase_uid="s", email="not-an-email", created_at=NOW)
+        User(id=uuid4(), email="not-an-email", full_name="Test", created_at=NOW)
 
 
 # ── Org ───────────────────────────────────────────────────────────────────────
@@ -228,6 +225,33 @@ def test_plan_context_values() -> None:
     assert PlanContext.TEAM == "team"
 
 
+def test_plan_tier_values() -> None:
+    assert PlanTier.FREE == 1
+    assert PlanTier.BASIC == 2
+    assert PlanTier.PRO == 3
+
+
+def test_plan_default_tier_is_basic() -> None:
+    plan = Plan(
+        id=uuid4(),
+        name="Starter",
+        context=PlanContext.PERSONAL,
+        interval=PlanInterval.MONTH,
+    )
+    assert plan.tier == PlanTier.BASIC
+
+
+def test_plan_explicit_free_tier() -> None:
+    plan = Plan(
+        id=uuid4(),
+        name="Personal Free",
+        context=PlanContext.PERSONAL,
+        tier=PlanTier.FREE,
+        interval=PlanInterval.MONTH,
+    )
+    assert plan.tier == PlanTier.FREE
+
+
 def test_plan_creation() -> None:
     plan = Plan(
         id=uuid4(),
@@ -254,11 +278,9 @@ def test_plan_price_creation() -> None:
         id=uuid4(),
         plan_id=uuid4(),
         stripe_price_id="price_abc",
-        currency="usd",
         amount=999,
     )
     assert price.amount == 999
-    assert price.currency == "usd"
 
 
 def test_subscription_creation() -> None:
@@ -273,8 +295,6 @@ def test_subscription_creation() -> None:
         created_at=NOW,
     )
     assert sub.quantity == 1
-    assert sub.promotion_code_id is None
-    assert sub.discount_percent is None
     assert sub.trial_ends_at is None
     assert sub.canceled_at is None
 
@@ -408,3 +428,102 @@ def test_stripe_event_model_copy_processed() -> None:
     processed = event.model_copy(update={"processed_at": NOW})
     assert processed.processed_at == NOW
     assert event.processed_at is None
+
+
+# ── Subscription.is_free ────────────────────────────────────────────────────
+
+
+def test_subscription_is_free_when_no_stripe_id() -> None:
+    sub = Subscription(
+        id=uuid4(),
+        stripe_id=None,
+        stripe_customer_id=None,
+        user_id=uuid4(),
+        status=SubscriptionStatus.ACTIVE,
+        plan_id=uuid4(),
+        current_period_start=NOW,
+        current_period_end=NOW,
+        created_at=NOW,
+    )
+    assert sub.is_free is True
+
+
+def test_subscription_is_not_free_when_has_stripe_id() -> None:
+    sub = Subscription(
+        id=uuid4(),
+        stripe_id="sub_paid",
+        stripe_customer_id=uuid4(),
+        status=SubscriptionStatus.ACTIVE,
+        plan_id=uuid4(),
+        current_period_start=NOW,
+        current_period_end=NOW,
+        created_at=NOW,
+    )
+    assert sub.is_free is False
+
+
+# ── FREE_SUBSCRIPTION_PERIOD_END sentinel ───────────────────────────────────
+
+
+def test_free_subscription_period_end_sentinel() -> None:
+    from saasmint_core.domain.subscription import FREE_SUBSCRIPTION_PERIOD_END
+
+    assert FREE_SUBSCRIPTION_PERIOD_END.year == 9999
+    assert FREE_SUBSCRIPTION_PERIOD_END.tzinfo is not None
+
+
+# ── Product / ProductPrice domain models ────────────────────────────────────
+
+
+def test_product_creation() -> None:
+    from saasmint_core.domain.product import Product, ProductType
+
+    product = Product(
+        id=uuid4(),
+        name="100 Credits",
+        type=ProductType.ONE_TIME,
+        credits=100,
+    )
+    assert product.name == "100 Credits"
+    assert product.type == ProductType.ONE_TIME
+    assert product.credits == 100
+    assert product.is_active is True
+
+
+def test_product_inactive() -> None:
+    from saasmint_core.domain.product import Product, ProductType
+
+    product = Product(
+        id=uuid4(),
+        name="Retired Pack",
+        type=ProductType.ONE_TIME,
+        credits=50,
+        is_active=False,
+    )
+    assert product.is_active is False
+
+
+def test_product_is_frozen() -> None:
+    from saasmint_core.domain.product import Product, ProductType
+
+    product = Product(
+        id=uuid4(),
+        name="100 Credits",
+        type=ProductType.ONE_TIME,
+        credits=100,
+    )
+    with pytest.raises(ValidationError):
+        product.name = "Changed"  # type: ignore[misc]
+
+
+def test_product_price_creation() -> None:
+    from saasmint_core.domain.product import ProductPrice
+
+    price = ProductPrice(
+        id=uuid4(),
+        product_id=uuid4(),
+        stripe_price_id="price_credits_100",
+        amount=999,
+    )
+    assert price.amount == 999
+    assert price.stripe_price_id == "price_credits_100"

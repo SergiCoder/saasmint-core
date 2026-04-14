@@ -16,10 +16,10 @@ from apps.users.models import User
 # ---------------------------------------------------------------------------
 
 
-def _make_user(db: object, email: str, supabase_uid: str, **kwargs: Any) -> User:
+def _make_user(db: object, email: str, **kwargs: Any) -> User:
+    kwargs.setdefault("full_name", email.split("@")[0].replace("_", " ").title())
     return User.objects.create_user(
         email=email,
-        supabase_uid=supabase_uid,
         **kwargs,
     )
 
@@ -128,14 +128,14 @@ class TestUserAdminExtendedQueryset:
 
     def test_user_without_customer_has_null_annotation(self, db, admin_instance):
         mock_request = MagicMock()
-        user = _make_user(db, "noplan@example.com", "sup_noplan")
+        user = _make_user(db, "noplan@example.com")
         qs = admin_instance.get_queryset(mock_request)
         annotated = qs.get(pk=user.pk)
         assert getattr(annotated, "_subscription_status", None) is None
 
     def test_user_with_active_subscription_annotated(self, db, admin_instance):
         mock_request = MagicMock()
-        user = _make_user(db, "active@example.com", "sup_active")
+        user = _make_user(db, "active@example.com")
         plan = Plan.objects.create(name="Pro", context="personal", interval="month", is_active=True)
         customer = StripeCustomer.objects.create(
             stripe_id="cus_admin_active", user=user, livemode=False
@@ -148,7 +148,7 @@ class TestUserAdminExtendedQueryset:
 
     def test_user_with_trialing_subscription_annotated(self, db, admin_instance):
         mock_request = MagicMock()
-        user = _make_user(db, "trial@example.com", "sup_trial")
+        user = _make_user(db, "trial@example.com")
         plan = Plan.objects.create(
             name="Free", context="personal", interval="month", is_active=True
         )
@@ -163,7 +163,7 @@ class TestUserAdminExtendedQueryset:
 
     def test_user_with_only_canceled_subscription_has_null_annotation(self, db, admin_instance):
         mock_request = MagicMock()
-        user = _make_user(db, "canceled@example.com", "sup_canceled")
+        user = _make_user(db, "canceled@example.com")
         plan = Plan.objects.create(
             name="Basic", context="personal", interval="month", is_active=True
         )
@@ -176,9 +176,31 @@ class TestUserAdminExtendedQueryset:
         annotated = qs.get(pk=user.pk)
         assert getattr(annotated, "_subscription_status", None) is None
 
+    def test_user_with_free_subscription_annotated(self, db, admin_instance):
+        """Free subs have null stripe_customer but a direct user FK; must still annotate."""
+        mock_request = MagicMock()
+        user = _make_user(db, "free@example.com")
+        plan = Plan.objects.create(
+            name="Personal Free", context="personal", interval="month", is_active=True
+        )
+        Subscription.objects.create(
+            stripe_id=None,
+            stripe_customer=None,
+            user=user,
+            status="active",
+            plan=plan,
+            quantity=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(9999, 12, 31, tzinfo=UTC),
+        )
+
+        qs = admin_instance.get_queryset(mock_request)
+        annotated = qs.get(pk=user.pk)
+        assert annotated._subscription_status == "active"
+
     def test_most_recent_active_subscription_status_used(self, db, admin_instance):
         mock_request = MagicMock()
-        user = _make_user(db, "multi@example.com", "sup_multi")
+        user = _make_user(db, "multi@example.com")
         plan = Plan.objects.create(
             name="Pro Multi", context="personal", interval="month", is_active=True
         )
@@ -209,7 +231,6 @@ class TestUserAdminChangelistRendering:
 
         superuser = User.objects.create_superuser(
             email="super@example.com",
-            supabase_uid="sup_super",
         )
         client = Client()
         client.force_login(superuser)
@@ -221,9 +242,8 @@ class TestUserAdminChangelistRendering:
 
         superuser = User.objects.create_superuser(
             email="super2@example.com",
-            supabase_uid="sup_super2",
         )
-        regular = _make_user(db, "reg@example.com", "sup_reg")
+        regular = _make_user(db, "reg@example.com")
         plan = Plan.objects.create(
             name="Pro Changelist", context="personal", interval="month", is_active=True
         )
@@ -248,8 +268,9 @@ class TestUserAdminChangelistRendering:
 class TestUserAdminExtendedInheritance:
     """Verify UserAdminExtended inherits configuration from apps.users.admin.UserAdmin."""
 
-    def test_inherits_list_filter(self, admin_instance, base_admin):
-        assert admin_instance.list_filter == base_admin.list_filter
+    def test_extends_list_filter_from_base(self, admin_instance, base_admin):
+        for base_filter in base_admin.list_filter:
+            assert base_filter in admin_instance.list_filter
 
     def test_inherits_search_fields(self, admin_instance, base_admin):
         assert admin_instance.search_fields == base_admin.search_fields

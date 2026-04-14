@@ -6,7 +6,7 @@ unexport VIRTUAL_ENV  # prevent uv from using a stale venv from the parent shell
 # ─── Development ──────────────────────────────────────────────────────────────
 
 .PHONY: dev
-dev: ## Run Django + Celery + infra
+dev: ## Run Django + Celery + infra + Stripe webhook forwarder
 	docker compose up --build
 
 .PHONY: stop
@@ -37,9 +37,13 @@ seed: ## Seed dev data — plans, test users, Stripe products
 
 # ─── Stripe ───────────────────────────────────────────────────────────────────
 
-.PHONY: stripe-listen
-stripe-listen: ## Forward Stripe webhooks to local backend
-	stripe listen --forward-to localhost:8001/api/v1/webhooks/stripe
+.PHONY: stripe-logs
+stripe-logs: ## Tail the Stripe webhook forwarder logs
+	docker compose logs -f stripe-cli
+
+.PHONY: sync-stripe
+sync-stripe: ## Push local Plans/Products to Stripe (creates real prices)
+	docker compose exec django uv run python manage.py sync_stripe_catalog
 
 # ─── Testing ──────────────────────────────────────────────────────────────────
 
@@ -96,7 +100,7 @@ setup: install https-setup ## Full first-time project setup
 	@cp -n .env.base .env.local 2>/dev/null || true
 	@echo ""
 	@echo "Setup complete. Next steps:"
-	@echo "  1. Fill in .env.local with your Supabase and Stripe test keys"
+	@echo "  1. Fill in .env.local with your Stripe test keys"
 	@echo "  2. Follow the mkcert instructions above to enable local HTTPS"
 	@echo "  3. make dev"
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.core.serializers.json import DjangoJSONEncoder
 from django.db import models
 from saasmint_core.domain.subscription import (
     ACTIVE_SUBSCRIPTION_STATUSES as _CORE_ACTIVE_STATUSES,
@@ -18,6 +19,12 @@ class PlanContext(models.TextChoices):
 class PlanInterval(models.TextChoices):
     MONTH = "month", "Monthly"
     YEAR = "year", "Yearly"
+
+
+class PlanTier(models.IntegerChoices):
+    FREE = 1, "Free"
+    BASIC = 2, "Basic"
+    PRO = 3, "Pro"
 
 
 class SubscriptionStatus(models.TextChoices):
@@ -37,34 +44,45 @@ ACTIVE_SUBSCRIPTION_STATUSES = tuple(SubscriptionStatus(s.value) for s in _CORE_
 class Plan(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
+    description = models.TextField(default="", blank=True)
     context = models.CharField(max_length=20, choices=PlanContext.choices)
+    tier = models.IntegerField(choices=PlanTier.choices, default=PlanTier.BASIC)
     interval = models.CharField(max_length=10, choices=PlanInterval.choices)
     is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = "plans"
-
-    def __str__(self) -> str:
-        return f"{self.name} ({self.interval})"
-
-
-class PlanPrice(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    plan = models.ForeignKey(Plan, on_delete=models.CASCADE, related_name="prices")
-    stripe_price_id = models.CharField(max_length=255, unique=True)
-    currency = models.CharField(max_length=3)
-    amount = models.IntegerField(help_text="Amount in minor units (cents)")
-
-    class Meta:
-        db_table = "plan_prices"
+        ordering = ("context", "tier", "interval")
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(
-                fields=["plan", "currency"], name="plan_prices_plan_currency_uniq"
+                fields=("context", "tier", "interval"),
+                condition=models.Q(is_active=True),
+                name="uniq_active_plan_per_context_tier_interval",
             ),
         ]
 
     def __str__(self) -> str:
-        return f"{self.plan.name} — {self.currency.upper()} {self.amount}"
+        return f"{self.name} ({self.interval})"
+
+    @classmethod
+    def free_plans(cls) -> models.QuerySet[Plan]:
+        """Queryset of active personal plans on the free tier."""
+        return cls.objects.filter(
+            is_active=True, context=PlanContext.PERSONAL, tier=PlanTier.FREE
+        ).select_related("price")
+
+
+class PlanPrice(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    plan = models.OneToOneField(Plan, on_delete=models.CASCADE, related_name="price")
+    stripe_price_id = models.CharField(max_length=255, unique=True)
+    amount = models.IntegerField(help_text="Amount in USD cents")
+
+    class Meta:
+        db_table = "plan_prices"
+
+    def __str__(self) -> str:
+        return f"{self.plan.name} — ${self.amount / 100:.2f}"
 
 
 class StripeCustomer(models.Model):
@@ -105,18 +123,26 @@ class StripeCustomer(models.Model):
 
 class Subscription(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    stripe_id = models.CharField(max_length=255, unique=True)
+    stripe_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
     stripe_customer = models.ForeignKey(
-        StripeCustomer, on_delete=models.CASCADE, related_name="subscriptions"
+        StripeCustomer,
+        on_delete=models.CASCADE,
+        related_name="subscriptions",
+        null=True,
+        blank=True,
+    )
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="subscriptions",
+        null=True,
+        blank=True,
     )
     status = models.CharField(
         max_length=30, choices=SubscriptionStatus.choices, default=SubscriptionStatus.INCOMPLETE
     )
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="subscriptions")
     quantity = models.IntegerField(default=1)
-    promotion_code_id = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001  # nullable CharField intentional: NULL means no promo code applied (distinguishable from empty string)
-    discount_percent = models.IntegerField(null=True, blank=True)
-    discount_end_at = models.DateTimeField(null=True, blank=True)
     trial_ends_at = models.DateTimeField(null=True, blank=True)
     current_period_start = models.DateTimeField()
     current_period_end = models.DateTimeField()
@@ -128,10 +154,66 @@ class Subscription(models.Model):
         get_latest_by = "created_at"
         indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.Index(fields=["stripe_customer", "status"], name="idx_sub_customer_status"),
+            models.Index(fields=["user", "status"], name="idx_sub_user_status"),
+        ]
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.CheckConstraint(
+                condition=(models.Q(user__isnull=False) | models.Q(stripe_customer__isnull=False)),
+                name="subscription_has_owner",
+            ),
         ]
 
     def __str__(self) -> str:
         return f"{self.stripe_id} ({self.status})"
+
+
+class ProductType(models.TextChoices):
+    ONE_TIME = "one_time", "One-time"
+
+
+class Product(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255)
+    type = models.CharField(max_length=30, choices=ProductType.choices)
+    credits = models.IntegerField(help_text="Number of credits granted on purchase")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = "products"
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.credits} credits)"
+
+
+class ProductPrice(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    product = models.OneToOneField(Product, on_delete=models.CASCADE, related_name="price")
+    stripe_price_id = models.CharField(max_length=255, unique=True)
+    amount = models.IntegerField(help_text="Amount in USD cents")
+
+    class Meta:
+        db_table = "product_prices"
+
+    def __str__(self) -> str:
+        return f"{self.product.name} — ${self.amount / 100:.2f}"
+
+
+class ExchangeRate(models.Model):
+    """USD-based exchange rate for display-currency conversion.
+
+    Synced daily from Stripe by the ``sync_exchange_rates`` Celery task.
+    One row per supported currency (excluding USD).
+    """
+
+    currency = models.CharField(max_length=3, unique=True)
+    rate = models.DecimalField(max_digits=18, decimal_places=8)
+    fetched_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "exchange_rates"
+
+    def __str__(self) -> str:
+        return f"{self.currency.upper()}: {self.rate}"
 
 
 class StripeEvent(models.Model):
@@ -139,7 +221,9 @@ class StripeEvent(models.Model):
     stripe_id = models.CharField(max_length=255, unique=True)
     type = models.CharField(max_length=255)
     livemode = models.BooleanField()
-    payload = models.JSONField()
+    # DjangoJSONEncoder handles Decimal (Stripe sends `unit_amount_decimal`
+    # and similar as Decimal after `to_dict()`), datetime, UUID, etc.
+    payload = models.JSONField(encoder=DjangoJSONEncoder)
     processed_at = models.DateTimeField(null=True, blank=True)
     error = models.TextField(null=True, blank=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no error (distinguishable from empty string)
     created_at = models.DateTimeField(auto_now_add=True)

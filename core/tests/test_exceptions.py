@@ -8,7 +8,6 @@ from saasmint_core.exceptions import (
     AccountTypeConflictError,
     DomainError,
     InsufficientPermissionError,
-    InvalidPromoCodeError,
     OrgMemberNotFoundError,
     OrgNotFoundError,
     SubscriptionAlreadyActiveError,
@@ -24,7 +23,6 @@ _ALL_EXCEPTIONS = [
     SubscriptionNotFoundError,
     SubscriptionAlreadyActiveError,
     AccountTypeConflictError,
-    InvalidPromoCodeError,
     InsufficientPermissionError,
     OrgMemberNotFoundError,
     WebhookVerificationError,
@@ -55,8 +53,3 @@ def test_exception_message_preserved() -> None:
 def test_webhook_verification_error() -> None:
     with pytest.raises(WebhookVerificationError):
         raise WebhookVerificationError("bad signature")
-
-
-def test_invalid_promo_code_error() -> None:
-    with pytest.raises(InvalidPromoCodeError):
-        raise InvalidPromoCodeError("code SAVE20 is expired")

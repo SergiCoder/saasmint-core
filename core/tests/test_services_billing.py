@@ -7,12 +7,13 @@ from uuid import uuid4
 
 import pytest
 
-from saasmint_core.exceptions import InvalidPromoCodeError, SubscriptionNotFoundError
+from saasmint_core.exceptions import SubscriptionNotFoundError
 from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
     create_checkout_session,
     get_or_create_customer,
+    resume_subscription,
 )
 from tests.conftest import (
     InMemoryStripeCustomerRepository,
@@ -132,38 +133,6 @@ async def test_create_checkout_session_without_promo() -> None:
 
 
 @pytest.mark.anyio
-async def test_create_checkout_session_with_promo_code() -> None:
-    mock_promo = MagicMock()
-    mock_promo.id = "promo_id_abc"
-    mock_coupon = MagicMock()
-    mock_coupon.valid = True
-    mock_promo.coupon = mock_coupon
-    mock_list = MagicMock()
-    mock_list.data = [mock_promo]
-
-    mock_session = MagicMock()
-    mock_session.url = "https://checkout.stripe.com/pay/cs_promo"
-
-    with (
-        patch("stripe.PromotionCode.list", return_value=mock_list),
-        patch("stripe.checkout.Session.create", return_value=mock_session) as mock_create,
-    ):
-        url = await create_checkout_session(
-            stripe_customer_id="cus_abc",
-            client_reference_id="user_123",
-            price_id="price_abc",
-            promo_code="SAVE20",
-            success_url="https://example.com/success",
-            cancel_url="https://example.com/cancel",
-        )
-
-    assert url == "https://checkout.stripe.com/pay/cs_promo"
-    call_kwargs = mock_create.call_args.kwargs
-    assert call_kwargs["allow_promotion_codes"] is False
-    assert call_kwargs["discounts"] == [{"promotion_code": "promo_id_abc"}]
-
-
-@pytest.mark.anyio
 async def test_create_checkout_session_with_trial_and_metadata() -> None:
     mock_session = MagicMock()
     mock_session.url = "https://checkout.stripe.com/pay/cs_trial"
@@ -182,7 +151,8 @@ async def test_create_checkout_session_with_trial_and_metadata() -> None:
     call_kwargs = mock_create.call_args.kwargs
     sub_data = call_kwargs["subscription_data"]
     assert sub_data["trial_period_days"] == 14
-    assert sub_data["metadata"] == {"plan": "pro"}
+    # Metadata is now at session level, not subscription_data level
+    assert call_kwargs["metadata"] == {"plan": "pro"}
 
 
 @pytest.mark.anyio
@@ -243,26 +213,9 @@ async def test_create_checkout_session_with_metadata_only() -> None:
         )
 
     call_kwargs = mock_create.call_args.kwargs
-    sub_data = call_kwargs["subscription_data"]
-    assert sub_data["metadata"] == {"plan": "pro"}
-    assert "trial_period_days" not in sub_data
-
-
-@pytest.mark.anyio
-async def test_create_checkout_session_invalid_promo_code_raises() -> None:
-    mock_list = MagicMock()
-    mock_list.data = []
-
-    with patch("stripe.PromotionCode.list", return_value=mock_list):
-        with pytest.raises(InvalidPromoCodeError):
-            await create_checkout_session(
-                stripe_customer_id="cus_abc",
-                client_reference_id="user_123",
-                price_id="price_abc",
-                promo_code="BADCODE",
-                success_url="https://example.com/success",
-                cancel_url="https://example.com/cancel",
-            )
+    # Metadata is now at session level, not in subscription_data
+    assert call_kwargs["metadata"] == {"plan": "pro"}
+    assert "subscription_data" not in call_kwargs
 
 
 # ── create_billing_portal_session ─────────────────────────────────────────────
@@ -300,7 +253,7 @@ async def test_cancel_subscription_at_period_end() -> None:
             subscription_repo=repo,
         )
 
-    mock_modify.assert_called_once_with("sub_cancel", cancel_at_period_end=True)
+    mock_modify.assert_called_once_with("sub_cancel", cancel_at="min_period_end")
 
 
 @pytest.mark.anyio
@@ -327,5 +280,65 @@ async def test_cancel_subscription_no_active_raises() -> None:
     with pytest.raises(SubscriptionNotFoundError):
         await cancel_subscription(
             stripe_customer_id=uuid4(),
+            subscription_repo=repo,
+        )
+
+
+@pytest.mark.anyio
+async def test_cancel_subscription_free_sub_raises() -> None:
+    """A free-plan subscription has no stripe_id and cannot be canceled via Stripe."""
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    free_sub = make_subscription(stripe_customer_id=customer_id, stripe_id=None, user_id=uuid4())
+    await repo.save(free_sub)
+
+    with pytest.raises(SubscriptionNotFoundError):
+        await cancel_subscription(
+            stripe_customer_id=customer_id,
+            subscription_repo=repo,
+        )
+
+
+# ── resume_subscription ───────────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_resume_subscription_clears_cancel_at() -> None:
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_resume")
+    await repo.save(sub)
+
+    with patch("stripe.Subscription.modify") as mock_modify:
+        await resume_subscription(
+            stripe_customer_id=customer_id,
+            subscription_repo=repo,
+        )
+
+    mock_modify.assert_called_once_with("sub_resume", cancel_at="")
+
+
+@pytest.mark.anyio
+async def test_resume_subscription_no_active_raises() -> None:
+    repo = InMemorySubscriptionRepository()  # empty
+
+    with pytest.raises(SubscriptionNotFoundError):
+        await resume_subscription(
+            stripe_customer_id=uuid4(),
+            subscription_repo=repo,
+        )
+
+
+@pytest.mark.anyio
+async def test_resume_subscription_free_sub_raises() -> None:
+    """A free-plan subscription has no stripe_id and cannot be resumed via Stripe."""
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    free_sub = make_subscription(stripe_customer_id=customer_id, stripe_id=None, user_id=uuid4())
+    await repo.save(free_sub)
+
+    with pytest.raises(SubscriptionNotFoundError):
+        await resume_subscription(
+            stripe_customer_id=customer_id,
             subscription_repo=repo,
         )

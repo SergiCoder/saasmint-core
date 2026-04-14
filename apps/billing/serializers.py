@@ -6,19 +6,36 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 from rest_framework import serializers
+from saasmint_core.services.currency import format_amount, round_friendly
 
-from apps.billing.models import Plan, PlanPrice, Subscription
+from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, Subscription
+
+
+def _convert_amount(amount: int, currency: str, rate: float) -> float:
+    """Convert a USD-cents amount to a display amount in the target currency."""
+    converted = round(amount * rate)  # round() returns int when ndigits is omitted
+    raw = format_amount(converted, currency)
+    if currency != "usd":
+        return round_friendly(raw, currency)
+    return raw
 
 
 def _validate_redirect_url(url: str) -> str:
     """Ensure a redirect URL belongs to an allowed domain."""
     allowed_origins: list[str] = getattr(settings, "CORS_ALLOWED_ORIGINS", [])
     allowed_hosts: list[str] = getattr(settings, "ALLOWED_HOSTS", [])
+    cors_allow_all: bool = getattr(settings, "CORS_ALLOW_ALL_ORIGINS", False)
 
     parsed = urlparse(url)
 
     if parsed.scheme not in ("http", "https"):
         raise serializers.ValidationError("Only HTTP(S) redirect URLs are allowed.")
+
+    # Dev convenience: when CORS is wide open, accept any HTTP(S) origin so
+    # local frontends (mkcert localhost, docker network hosts, etc.) work
+    # without an explicit allowlist. Prod never enables this flag.
+    if cors_allow_all:
+        return url
 
     origin = f"{parsed.scheme}://{parsed.netloc}"
     hostname = parsed.hostname or ""
@@ -35,23 +52,76 @@ def _validate_redirect_url(url: str) -> str:
     raise serializers.ValidationError("URL domain is not in the list of allowed origins.")
 
 
-class PlanPriceSerializer(serializers.ModelSerializer[PlanPrice]):
+class _DisplayCurrencyMixin:
+    """Shared logic for serializers that add display_amount / currency fields."""
+
+    def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
+        return _convert_amount(
+            obj.amount,
+            self.context.get("currency", "usd"),  # type: ignore[attr-defined]
+            self.context.get("rate", 1.0),  # type: ignore[attr-defined]
+        )
+
+    def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
+        return str(self.context.get("currency", "usd"))  # type: ignore[attr-defined]
+
+    def get_approximate(self, obj: PlanPrice | ProductPrice) -> bool:
+        currency: str = self.context.get("currency", "usd")  # type: ignore[attr-defined]
+        return currency != "usd"
+
+
+class PlanPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[PlanPrice]):
+    display_amount = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
+    approximate = serializers.SerializerMethodField()
+
     class Meta:
         model = PlanPrice
-        fields = ("id", "currency", "amount")
-        read_only_fields = fields
+        fields = ("id", "amount", "display_amount", "currency", "approximate")
+        read_only_fields = ("id", "amount")
 
 
 class PlanSerializer(serializers.ModelSerializer[Plan]):
-    prices = PlanPriceSerializer(many=True, read_only=True)
+    price = PlanPriceSerializer(read_only=True)
 
     class Meta:
         model = Plan
-        fields = ("id", "name", "context", "interval", "is_active", "prices")
+        fields = (
+            "id",
+            "name",
+            "description",
+            "context",
+            "tier",
+            "interval",
+            "is_active",
+            "price",
+        )
+        read_only_fields = fields
+
+
+class ProductPriceSerializer(_DisplayCurrencyMixin, serializers.ModelSerializer[ProductPrice]):
+    display_amount = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
+    approximate = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProductPrice
+        fields = ("id", "amount", "display_amount", "currency", "approximate")
+        read_only_fields = ("id", "amount")
+
+
+class ProductSerializer(serializers.ModelSerializer[Product]):
+    price = ProductPriceSerializer(read_only=True)
+
+    class Meta:
+        model = Product
+        fields = ("id", "name", "type", "credits", "is_active", "price")
         read_only_fields = fields
 
 
 class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
+    plan = PlanSerializer(read_only=True)
+
     class Meta:
         model = Subscription
         fields = (
@@ -59,8 +129,6 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "status",
             "plan",
             "quantity",
-            "discount_percent",
-            "discount_end_at",
             "trial_ends_at",
             "current_period_start",
             "current_period_end",
@@ -71,16 +139,14 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
 
 
 class CheckoutRequestSerializer(serializers.Serializer[object]):
-    plan_price_id = serializers.CharField(max_length=255)
+    plan_price_id = serializers.UUIDField()
     quantity = serializers.IntegerField(default=1, min_value=1, max_value=10000)
-    promo_code = serializers.CharField(
-        required=False, allow_null=True, default=None, max_length=255
-    )
     success_url = serializers.URLField()
     cancel_url = serializers.URLField()
     trial_period_days = serializers.IntegerField(
         required=False, allow_null=True, default=None, min_value=1, max_value=90
     )
+    org_name = serializers.CharField(max_length=255, required=False)
 
     def validate_success_url(self, value: str) -> str:
         return _validate_redirect_url(value)
@@ -97,17 +163,25 @@ class PortalRequestSerializer(serializers.Serializer[object]):
 
 
 class UpdateSubscriptionSerializer(serializers.Serializer[object]):
-    plan_price_id = serializers.CharField(max_length=255, required=False)
+    plan_price_id = serializers.UUIDField(required=False)
     prorate = serializers.BooleanField(default=True)
     quantity = serializers.IntegerField(min_value=1, max_value=10000, required=False)
+    cancel_at_period_end = serializers.BooleanField(required=False)
 
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
-        if "plan_price_id" not in attrs and "quantity" not in attrs:
+        has_plan_change = "plan_price_id" in attrs or "quantity" in attrs
+        has_cancel_toggle = "cancel_at_period_end" in attrs
+
+        if not has_plan_change and not has_cancel_toggle:
             raise serializers.ValidationError(
-                "At least one of 'plan_price_id' or 'quantity' is required."
+                "At least one of 'plan_price_id', 'quantity', or "
+                "'cancel_at_period_end' is required."
+            )
+        # Cancel/resume is a standalone toggle — mixing it with plan/seat
+        # changes makes the intent ambiguous (e.g. upgrade-then-cancel).
+        # Clients should send two requests instead.
+        if has_cancel_toggle and has_plan_change:
+            raise serializers.ValidationError(
+                "'cancel_at_period_end' cannot be combined with 'plan_price_id' or 'quantity'."
             )
         return attrs
-
-
-class PromoCodeSerializer(serializers.Serializer[object]):
-    promo_code = serializers.CharField(max_length=255)

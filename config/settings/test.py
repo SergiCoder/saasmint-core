@@ -2,13 +2,11 @@
 
 import os
 
-# Provide dummy values for required secrets that aren't in .env.base / .env.django.
+# Provide dummy values for required secrets that aren't in .env.base.
 # These are set BEFORE base.py is imported so _Env() picks them up.
 _TEST_DEFAULTS = {
     "STRIPE_SECRET_KEY": "sk_test_fake",
     "STRIPE_WEBHOOK_SECRET": "whsec_test_fake",
-    "SUPABASE_URL": "http://localhost:54321",
-    "SUPABASE_JWT_SECRET": "test-jwt-secret-at-least-32-chars-long!!",
     "DJANGO_SECRET_KEY": "django-insecure-test-key",
 }
 

@@ -14,9 +14,10 @@
   /* ── Center admin layout to 960px like the dashboard ── */
 
   /* Only center the dashboard index page — list/detail pages keep full width */
-  body.dashboard #container {
+  body.dashboard #container > *:not(#header) {
     max-width: 960px;
-    margin: 0 auto;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   /* Header: full-width dark background via pseudo-element */
@@ -47,6 +48,7 @@
   {% if debug %}
   <a href="{% url 'swagger-ui' %}">Swagger</a> /
   <a href="{% url 'redoc' %}">ReDoc</a> /
+  <a href="{% url 'schema' %}">Schema</a> /
   {% endif %}
   {% if user.has_usable_password %}
     <a href="{% url 'admin:password_change' %}">Change password</a> /

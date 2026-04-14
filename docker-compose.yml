@@ -18,6 +18,15 @@ services:
       timeout: 5s
       retries: 5
 
+  adminer:
+    image: adminer:latest
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      - postgres
+
   redis:
     image: redis:7-alpine
     ports:
@@ -46,11 +55,10 @@ services:
     build:
       context: .
       dockerfile: infra/Dockerfile
-    entrypoint: ["/app/entrypoint.dev.sh"]
+    entrypoint: ["/app/infra/entrypoint.dev.sh"]
     ports:
       - "8001:8001"
     env_file:
-      - .env.django
       - .env.local
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-saasmint}:${POSTGRES_PASSWORD:-saasmint}@postgres:5432/${POSTGRES_DB:-saasmint}
@@ -62,7 +70,6 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
-      - ./infra/entrypoint.dev.sh:/app/entrypoint.dev.sh:ro
 
   # ─── Celery worker ────────────────────────────────────────────────────────
 
@@ -72,7 +79,6 @@ services:
       dockerfile: infra/Dockerfile
     command: uv run celery -A config.celery worker --loglevel=info
     env_file:
-      - .env.django
       - .env.local
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-saasmint}:${POSTGRES_PASSWORD:-saasmint}@postgres:5432/${POSTGRES_DB:-saasmint}
@@ -84,6 +90,24 @@ services:
         condition: service_healthy
     volumes:
       - .:/app
+
+  # ─── Stripe webhook forwarder ─────────────────────────────────────────────
+
+  stripe-cli:
+    image: stripe/stripe-cli:latest
+    command:
+      - listen
+      - --forward-to
+      - django:8001/api/v1/webhooks/stripe
+      - --skip-verify
+    volumes:
+      # Not :ro — stripe-cli writes device metadata to config.toml on startup.
+      # The host config is created by `stripe login` and pins a stable webhook
+      # signing secret across runs, so STRIPE_WEBHOOK_SECRET in .env.local
+      # only needs to be set once.
+      - ${HOME}/.config/stripe:/root/.config/stripe
+    depends_on:
+      - django
 
 volumes:
   postgres_data:

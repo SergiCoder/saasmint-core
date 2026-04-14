@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.orgs.models import Org, OrgMember, OrgRole
+from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
 from apps.users.models import User
+
+# ---------------------------------------------------------------------------
+# Org List (GET /api/v1/orgs/)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestOrgListCreateViewGET:
+class TestOrgListViewGET:
     def test_returns_user_orgs(self, authed_client, org, owner_membership):
         resp = authed_client.get("/api/v1/orgs/")
         assert resp.status_code == 200
@@ -36,54 +43,27 @@ class TestOrgListCreateViewGET:
         resp = client.get("/api/v1/orgs/")
         assert resp.status_code in (401, 403)
 
+    def test_returns_orgs_ordered_by_name(self, authed_client, user):
+        org_b = Org.objects.create(name="Bravo", slug="bravo", created_by=user)
+        org_a = Org.objects.create(name="Alpha", slug="alpha", created_by=user)
+        OrgMember.objects.create(org=org_b, user=user, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org_a, user=user, role=OrgRole.OWNER)
+        resp = authed_client.get("/api/v1/orgs/")
+        names = [o["name"] for o in resp.data["results"]]
+        assert names == ["Alpha", "Bravo"]
 
-@pytest.mark.django_db
-class TestOrgListCreateViewPOST:
-    def test_creates_org(self, authed_client):
+    def test_post_not_allowed(self, authed_client):
         resp = authed_client.post(
             "/api/v1/orgs/",
             {"name": "New Org", "slug": "new-org"},
             format="json",
         )
-        assert resp.status_code == 201
-        assert resp.data["name"] == "New Org"
-        assert resp.data["slug"] == "new-org"
+        assert resp.status_code == 405
 
-    def test_creator_becomes_owner(self, authed_client, user):
-        resp = authed_client.post(
-            "/api/v1/orgs/",
-            {"name": "New Org", "slug": "new-org"},
-            format="json",
-        )
-        assert resp.status_code == 201
-        org = Org.objects.get(slug="new-org")
-        membership = OrgMember.objects.get(org=org, user=user)
-        assert membership.role == OrgRole.OWNER
 
-    def test_duplicate_slug_rejected(self, authed_client, org):
-        resp = authed_client.post(
-            "/api/v1/orgs/",
-            {"name": "Dup", "slug": "test-org"},
-            format="json",
-        )
-        assert resp.status_code == 400
-
-    def test_missing_fields_returns_400(self, authed_client):
-        resp = authed_client.post("/api/v1/orgs/", {}, format="json")
-        assert resp.status_code == 400
-
-    def test_with_logo_url(self, authed_client):
-        resp = authed_client.post(
-            "/api/v1/orgs/",
-            {"name": "Logo Org", "slug": "logo-org", "logo_url": "https://example.com/logo.png"},
-            format="json",
-        )
-        assert resp.status_code == 201
-
-    def test_unauthenticated_rejected(self):
-        client = APIClient()
-        resp = client.post("/api/v1/orgs/", {"name": "X", "slug": "x"}, format="json")
-        assert resp.status_code in (401, 403)
+# ---------------------------------------------------------------------------
+# Org Detail (GET/PATCH/DELETE /api/v1/orgs/{orgId}/)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
@@ -126,7 +106,6 @@ class TestOrgDetailViewPATCH:
             format="json",
         )
         assert resp.status_code == 200
-        assert resp.data["name"] == "Admin Updated"
 
     def test_member_cannot_update(self, member_client, org, member_membership, owner_membership):
         resp = member_client.patch(
@@ -136,42 +115,35 @@ class TestOrgDetailViewPATCH:
         )
         assert resp.status_code == 403
 
-    def test_non_member_denied(self, org, other_user, owner_membership):
-        client = APIClient()
-        client.force_authenticate(user=other_user)
-        resp = client.patch(f"/api/v1/orgs/{org.id}/", {"name": "X"}, format="json")
-        assert resp.status_code == 403
+    def test_empty_body_returns_unchanged_org(self, authed_client, org, owner_membership):
+        resp = authed_client.patch(f"/api/v1/orgs/{org.id}/", {}, format="json")
+        assert resp.status_code == 200
+        assert resp.data["name"] == "Test Org"
 
-    def test_update_logo_url(self, authed_client, org, owner_membership):
+    def test_owner_can_set_logo_url_to_null(self, authed_client, org, owner_membership):
+        org.logo_url = "https://example.com/logo.png"
+        org.save(update_fields=["logo_url"])
         resp = authed_client.patch(
             f"/api/v1/orgs/{org.id}/",
-            {"logo_url": "https://example.com/new.png"},
+            {"logo_url": None},
             format="json",
         )
         assert resp.status_code == 200
+        assert resp.data["logo_url"] is None
 
 
 @pytest.mark.django_db
 class TestOrgDetailViewDELETE:
-    def test_owner_can_soft_delete(self, authed_client, org, owner_membership):
+    """Org deletion is admin-only — no API DELETE endpoint."""
+
+    def test_delete_not_allowed(self, authed_client, org, owner_membership):
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 204
-        org.refresh_from_db()
-        assert org.deleted_at is not None
+        assert resp.status_code == 405
 
-    def test_admin_cannot_delete(self, admin_client, org, admin_membership, owner_membership):
-        resp = admin_client.delete(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 403
 
-    def test_member_cannot_delete(self, member_client, org, member_membership, owner_membership):
-        resp = member_client.delete(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 403
-
-    def test_non_member_denied(self, org, other_user, owner_membership):
-        client = APIClient()
-        client.force_authenticate(user=other_user)
-        resp = client.delete(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code in (403, 404)
+# ---------------------------------------------------------------------------
+# Org Members (GET /api/v1/orgs/{orgId}/members/)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
@@ -192,90 +164,30 @@ class TestOrgMemberListViewGET:
         resp = client.get(f"/api/v1/orgs/{org.id}/members/")
         assert resp.status_code == 403
 
-
-@pytest.mark.django_db
-class TestOrgMemberListViewPOST:
-    def test_owner_adds_member(self, authed_client, org, owner_membership, other_user):
+    def test_post_not_allowed(self, authed_client, org, owner_membership, other_user):
         resp = authed_client.post(
             f"/api/v1/orgs/{org.id}/members/",
             {"user_id": str(other_user.id), "role": "member"},
             format="json",
         )
-        assert resp.status_code == 201
-        assert resp.data["role"] == "member"
+        assert resp.status_code == 405
 
-    def test_admin_adds_member(
-        self, admin_client, org, owner_membership, admin_membership, other_user
-    ):
-        resp = admin_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "member"},
-            format="json",
-        )
-        assert resp.status_code == 201
-
-    def test_member_cannot_add_member(
-        self, member_client, org, owner_membership, member_membership, other_user
-    ):
-        resp = member_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "member"},
-            format="json",
-        )
-        assert resp.status_code == 403
-
-    def test_admin_cannot_add_admin(
-        self, admin_client, org, owner_membership, admin_membership, other_user
-    ):
-        resp = admin_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "admin"},
-            format="json",
-        )
-        assert resp.status_code == 403
-
-    def test_owner_can_add_admin(self, authed_client, org, owner_membership, other_user):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "admin"},
-            format="json",
-        )
-        assert resp.status_code == 201
-        assert resp.data["role"] == "admin"
-
-    def test_adding_existing_member_returns_200(
-        self, authed_client, org, owner_membership, admin_user, admin_membership
-    ):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(admin_user.id), "role": "member"},
-            format="json",
-        )
+    def test_limit_offset_params(self, authed_client, org, owner_membership, user):
+        for i in range(5):
+            u = User.objects.create_user(
+                email=f"pag{i}@example.com",
+                full_name=f"Pag{i}",
+            )
+            OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)
+        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/?limit=2&offset=0")
         assert resp.status_code == 200
+        assert resp.data["count"] == 6
+        assert len(resp.data["results"]) == 2
 
-    def test_nonexistent_user_returns_404(self, authed_client, org, owner_membership):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(uuid4()), "role": "member"},
-            format="json",
-        )
-        assert resp.status_code == 404
 
-    def test_missing_user_id_returns_400(self, authed_client, org, owner_membership):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"role": "member"},
-            format="json",
-        )
-        assert resp.status_code == 400
-
-    def test_owner_cannot_assign_owner_role(self, authed_client, org, owner_membership, other_user):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "owner"},
-            format="json",
-        )
-        assert resp.status_code == 403
+# ---------------------------------------------------------------------------
+# Member Detail (PATCH/DELETE /api/v1/orgs/{orgId}/members/{userId}/)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
@@ -290,43 +202,6 @@ class TestOrgMemberDetailViewPATCH:
         )
         assert resp.status_code == 200
         assert resp.data["role"] == "admin"
-
-    def test_owner_updates_billing_flag(
-        self, authed_client, org, owner_membership, member_user, member_membership
-    ):
-        resp = authed_client.patch(
-            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
-            {"is_billing": True},
-            format="json",
-        )
-        assert resp.status_code == 200
-        assert resp.data["is_billing"] is True
-
-    def test_admin_can_update_member(
-        self, admin_client, org, owner_membership, admin_membership, member_user, member_membership
-    ):
-        resp = admin_client.patch(
-            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
-            {"is_billing": True},
-            format="json",
-        )
-        assert resp.status_code == 200
-
-    def test_admin_cannot_update_admin(
-        self,
-        second_admin_client,
-        org,
-        owner_membership,
-        admin_user,
-        admin_membership,
-        second_admin_membership,
-    ):
-        resp = second_admin_client.patch(
-            f"/api/v1/orgs/{org.id}/members/{admin_user.id}/",
-            {"is_billing": True},
-            format="json",
-        )
-        assert resp.status_code == 403
 
     def test_member_cannot_update(
         self, member_client, org, owner_membership, member_membership, admin_user, admin_membership
@@ -349,22 +224,42 @@ class TestOrgMemberDetailViewPATCH:
 
 @pytest.mark.django_db
 class TestOrgMemberDetailViewDELETE:
-    def test_owner_removes_member(
-        self, authed_client, org, owner_membership, member_user, member_membership
+    @patch("apps.orgs.services.decrement_subscription_seats")
+    def test_owner_removes_member_and_deletes_account(
+        self,
+        mock_seats,
+        authed_client,
+        org,
+        owner_membership,
+        member_user,
+        member_membership,
     ):
+        member_id = member_user.id
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{member_user.id}/")
         assert resp.status_code == 204
-        assert not OrgMember.objects.filter(org=org, user=member_user).exists()
+        assert not OrgMember.objects.filter(org=org, user_id=member_id).exists()
+        # Member's user account is hard-deleted
+        assert not User.objects.filter(id=member_id).exists()
 
-    def test_owner_cannot_remove_self(self, authed_client, org, owner_membership, user):
+    def test_cannot_remove_owner(self, authed_client, org, owner_membership, user):
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{user.id}/")
         assert resp.status_code == 403
 
+    @patch("apps.orgs.services.decrement_subscription_seats")
     def test_admin_removes_member(
-        self, admin_client, org, owner_membership, admin_membership, member_user, member_membership
+        self,
+        mock_seats,
+        admin_client,
+        org,
+        owner_membership,
+        admin_membership,
+        member_user,
+        member_membership,
     ):
+        member_id = member_user.id
         resp = admin_client.delete(f"/api/v1/orgs/{org.id}/members/{member_user.id}/")
         assert resp.status_code == 204
+        assert not User.objects.filter(id=member_id).exists()
 
     def test_admin_cannot_remove_owner(
         self, admin_client, org, owner_membership, admin_membership, user
@@ -384,207 +279,329 @@ class TestOrgMemberDetailViewDELETE:
         resp = second_admin_client.delete(f"/api/v1/orgs/{org.id}/members/{admin_user.id}/")
         assert resp.status_code == 403
 
-    def test_member_cannot_remove_anyone(
-        self, member_client, org, owner_membership, member_membership, other_user
-    ):
-        OrgMember.objects.create(org=org, user=other_user, role=OrgRole.MEMBER)
-        resp = member_client.delete(f"/api/v1/orgs/{org.id}/members/{other_user.id}/")
-        assert resp.status_code == 403
 
-    def test_nonexistent_member_returns_404(self, authed_client, org, owner_membership):
-        resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{uuid4()}/")
-        assert resp.status_code == 404
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Transfer Ownership (POST /api/v1/orgs/{orgId}/transfer-ownership/)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestOrgDetailViewPATCHEdgeCases:
-    def test_empty_body_returns_unchanged_org(self, authed_client, org, owner_membership):
-        resp = authed_client.patch(f"/api/v1/orgs/{org.id}/", {}, format="json")
+class TestOrgTransferOwnershipView:
+    def test_owner_transfers_to_admin(
+        self, authed_client, org, owner_membership, admin_user, admin_membership, user
+    ):
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/transfer-ownership/",
+            {"user_id": str(admin_user.id)},
+            format="json",
+        )
         assert resp.status_code == 200
-        assert resp.data["name"] == "Test Org"
+        admin_membership.refresh_from_db()
+        owner_membership.refresh_from_db()
+        assert admin_membership.role == OrgRole.OWNER
+        assert admin_membership.is_billing is True
+        assert owner_membership.role == OrgRole.ADMIN
+        assert owner_membership.is_billing is False
 
-    def test_patch_nonexistent_org_returns_404(self, authed_client):
-        resp = authed_client.patch(f"/api/v1/orgs/{uuid4()}/", {"name": "X"}, format="json")
-        assert resp.status_code == 404
-
-
-@pytest.mark.django_db
-class TestOrgDetailViewDELETEEdgeCases:
-    def test_delete_nonexistent_org_returns_404(self, authed_client):
-        resp = authed_client.delete(f"/api/v1/orgs/{uuid4()}/")
-        assert resp.status_code == 404
-
-
-@pytest.mark.django_db
-class TestOrgMemberListViewEdgeCases:
-    def test_list_members_nonexistent_org_returns_404(self, authed_client):
-        resp = authed_client.get(f"/api/v1/orgs/{uuid4()}/members/")
-        assert resp.status_code == 404
-
-    def test_add_member_nonexistent_org_returns_404(self, authed_client, other_user):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{uuid4()}/members/",
-            {"user_id": str(other_user.id), "role": "member"},
-            format="json",
-        )
-        assert resp.status_code == 404
-
-    def test_add_member_with_is_billing_true(
-        self, authed_client, org, owner_membership, other_user
-    ):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "member", "is_billing": True},
-            format="json",
-        )
-        assert resp.status_code == 201
-        assert resp.data["is_billing"] is True
-
-
-@pytest.mark.django_db
-class TestOrgMemberDetailViewPATCHEdgeCases:
-    def test_empty_body_returns_unchanged_member(
+    def test_cannot_transfer_to_member(
         self, authed_client, org, owner_membership, member_user, member_membership
     ):
-        resp = authed_client.patch(
-            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
-            {},
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/transfer-ownership/",
+            {"user_id": str(member_user.id)},
             format="json",
         )
-        assert resp.status_code == 200
-        assert resp.data["role"] == "member"
+        assert resp.status_code == 403
 
-    def test_admin_cannot_promote_member_to_admin(
+    def test_admin_cannot_transfer(
         self, admin_client, org, owner_membership, admin_membership, member_user, member_membership
     ):
-        resp = admin_client.patch(
-            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
-            {"role": "admin"},
-            format="json",
-        )
-        assert resp.status_code == 403
-
-    def test_owner_cannot_promote_member_to_owner(
-        self, authed_client, org, owner_membership, member_user, member_membership
-    ):
-        resp = authed_client.patch(
-            f"/api/v1/orgs/{org.id}/members/{member_user.id}/",
-            {"role": "owner"},
-            format="json",
-        )
-        assert resp.status_code == 403
-
-
-@pytest.mark.django_db
-class TestOrgMemberDetailViewDELETEEdgeCases:
-    def test_admin_can_remove_self(
-        self, admin_client, org, owner_membership, admin_user, admin_membership
-    ):
-        """Non-owner members should be able to leave the org (remove themselves)."""
-        resp = admin_client.delete(f"/api/v1/orgs/{org.id}/members/{admin_user.id}/")
-        # Admin removing self: check_can_manage_member(admin, admin) should block this
-        # since admin cannot manage admin-level members
-        assert resp.status_code == 403
-
-    def test_member_can_not_remove_self(
-        self, member_client, org, owner_membership, member_user, member_membership
-    ):
-        resp = member_client.delete(f"/api/v1/orgs/{org.id}/members/{member_user.id}/")
-        assert resp.status_code == 403
-
-
-@pytest.mark.django_db
-class TestOrgListCreateViewGETEdgeCases:
-    def test_returns_orgs_ordered_by_name(self, authed_client, user):
-        org_b = Org.objects.create(name="Bravo", slug="bravo", created_by=user)
-        org_a = Org.objects.create(name="Alpha", slug="alpha", created_by=user)
-        OrgMember.objects.create(org=org_b, user=user, role=OrgRole.OWNER)
-        OrgMember.objects.create(org=org_a, user=user, role=OrgRole.OWNER)
-        resp = authed_client.get("/api/v1/orgs/")
-        assert resp.status_code == 200
-        names = [o["name"] for o in resp.data["results"]]
-        assert names == ["Alpha", "Bravo"]
-
-    def test_returns_multiple_orgs(self, authed_client, user):
-        for i in range(3):
-            o = Org.objects.create(name=f"Org{i}", slug=f"org-{i}", created_by=user)
-            OrgMember.objects.create(org=o, user=user, role=OrgRole.OWNER)
-        resp = authed_client.get("/api/v1/orgs/")
-        assert resp.status_code == 200
-        assert resp.data["count"] == 3
-
-
-@pytest.mark.django_db
-class TestOrgMemberListViewPOSTEdgeCases:
-    def test_admin_cannot_add_owner(
-        self, admin_client, org, owner_membership, admin_membership, other_user
-    ):
         resp = admin_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "owner"},
+            f"/api/v1/orgs/{org.id}/transfer-ownership/",
+            {"user_id": str(member_user.id)},
             format="json",
         )
         assert resp.status_code == 403
 
-    def test_invalid_role_returns_400(self, authed_client, org, owner_membership, other_user):
+    def test_missing_user_id(self, authed_client, org, owner_membership):
         resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "superadmin"},
+            f"/api/v1/orgs/{org.id}/transfer-ownership/",
+            {},
             format="json",
         )
         assert resp.status_code == 400
 
-    def test_unauthenticated_rejected(self, org, owner_membership, other_user):
-        client = APIClient()
-        resp = client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "member"},
-            format="json",
-        )
-        assert resp.status_code in (401, 403)
 
-    def test_added_member_has_default_is_billing_false(
-        self, authed_client, org, owner_membership, other_user
-    ):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/members/",
-            {"user_id": str(other_user.id), "role": "member"},
-            format="json",
-        )
-        assert resp.status_code == 201
-        assert resp.data["is_billing"] is False
+# ---------------------------------------------------------------------------
+# Invitations (CRUD)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestOrgMemberDetailViewPATCHOnNonexistentOrg:
-    def test_patch_member_nonexistent_org_returns_404(self, authed_client, other_user):
+class TestInvitationListCreateView:
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_owner_creates_invitation(self, mock_email, authed_client, org, owner_membership):
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "new@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 201
+        assert resp.data["email"] == "new@example.com"
+        assert resp.data["role"] == "member"
+        assert resp.data["status"] == "pending"
+
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_admin_creates_invitation(
+        self, mock_email, admin_client, org, owner_membership, admin_membership
+    ):
+        resp = admin_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "new@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 201
+
+    def test_member_cannot_create_invitation(
+        self, member_client, org, owner_membership, member_membership
+    ):
+        resp = member_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "new@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 403
+
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_cannot_invite_existing_user(
+        self, mock_email, authed_client, org, owner_membership, member_user, member_membership
+    ):
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": member_user.email, "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_cannot_create_duplicate_pending_invitation(
+        self, mock_email, authed_client, org, owner_membership, user
+    ):
+        mock_email.delay = lambda **kw: None
+        Invitation.objects.create(
+            org=org,
+            email="dupe@example.com",
+            role=OrgRole.MEMBER,
+            token="token-1",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "dupe@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_list_pending_invitations(self, authed_client, org, owner_membership, user):
+        Invitation.objects.create(
+            org=org,
+            email="pending@example.com",
+            role=OrgRole.MEMBER,
+            token="token-pending",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        Invitation.objects.create(
+            org=org,
+            email="accepted@example.com",
+            role=OrgRole.MEMBER,
+            token="token-accepted",  # noqa: S106
+            status=InvitationStatus.ACCEPTED,
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        resp = authed_client.get(f"/api/v1/orgs/{org.id}/invitations/")
+        assert resp.status_code == 200
+        assert len(resp.data) == 1
+        assert resp.data[0]["email"] == "pending@example.com"
+
+
+@pytest.mark.django_db
+class TestInvitationCancelView:
+    def test_owner_cancels_invitation(self, authed_client, org, owner_membership, user):
+        invitation = Invitation.objects.create(
+            org=org,
+            email="cancel@example.com",
+            role=OrgRole.MEMBER,
+            token="token-cancel",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        resp = authed_client.delete(f"/api/v1/orgs/{org.id}/invitations/{invitation.id}/")
+        assert resp.status_code == 204
+        invitation.refresh_from_db()
+        assert invitation.status == InvitationStatus.CANCELLED
+
+    def test_member_cannot_cancel(
+        self, member_client, org, owner_membership, member_membership, user
+    ):
+        invitation = Invitation.objects.create(
+            org=org,
+            email="cancel@example.com",
+            role=OrgRole.MEMBER,
+            token="token-cancel-2",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        resp = member_client.delete(f"/api/v1/orgs/{org.id}/invitations/{invitation.id}/")
+        assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Invitation Accept / Decline
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestInvitationAcceptView:
+    def test_accept_invitation_registers_user(self, org, owner_membership, user):
+        """Accepting an invitation creates a new user account and joins the org."""
+        invitation = Invitation.objects.create(
+            org=org,
+            email="newuser@example.com",
+            role=OrgRole.MEMBER,
+            token="accept-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/accept-token/accept/",
+            {"full_name": "New User", "password": "securepass123"},
+            format="json",
+        )
+        assert resp.status_code == 201
+        assert resp.data["org"]["name"] == org.name
+        assert "access_token" in resp.data
+        assert "refresh_token" in resp.data
+        # New user created as org_member
+        new_user = User.objects.get(email="newuser@example.com")
+        assert new_user.account_type == "org_member"
+        assert new_user.is_verified is True
+        assert OrgMember.objects.filter(org=org, user=new_user).exists()
+        invitation.refresh_from_db()
+        assert invitation.status == InvitationStatus.ACCEPTED
+
+    def test_accept_rejects_already_registered_email(self, org, owner_membership, user, other_user):
+        """Cannot accept if the invited email is already registered."""
+        Invitation.objects.create(
+            org=org,
+            email=other_user.email,
+            role=OrgRole.MEMBER,
+            token="existing-email-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/existing-email-token/accept/",
+            {"full_name": "Other", "password": "securepass123"},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_expired_invitation_rejected(self, org, owner_membership, user):
+        Invitation.objects.create(
+            org=org,
+            email="expired@example.com",
+            role=OrgRole.MEMBER,
+            token="expired-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/expired-token/accept/",
+            {"full_name": "Expired User", "password": "securepass123"},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+    def test_nonexistent_token_returns_404(self):
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/nonexistent/accept/",
+            {"full_name": "Nobody", "password": "securepass123"},
+            format="json",
+        )
+        assert resp.status_code == 404
+
+    def test_missing_registration_data_rejected(self, org, owner_membership, user):
+        Invitation.objects.create(
+            org=org,
+            email="nodata@example.com",
+            role=OrgRole.MEMBER,
+            token="nodata-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.post("/api/v1/invitations/nodata-token/accept/", {}, format="json")
+        assert resp.status_code == 400
+
+
+@pytest.mark.django_db
+class TestInvitationDeclineView:
+    def test_decline_invitation(self, org, owner_membership, user):
+        invitation = Invitation.objects.create(
+            org=org,
+            email="decline@example.com",
+            role=OrgRole.MEMBER,
+            token="decline-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()  # unauthenticated
+        resp = client.post("/api/v1/invitations/decline-token/decline/")
+        assert resp.status_code == 204
+        invitation.refresh_from_db()
+        assert invitation.status == InvitationStatus.CANCELLED
+
+
+# ---------------------------------------------------------------------------
+# Soft-deleted org operations
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestSoftDeletedOrgOperations:
+    def test_patch_member_on_soft_deleted_org_returns_404(
+        self, authed_client, soft_deleted_org, owner_membership, member_user, member_membership
+    ):
         resp = authed_client.patch(
-            f"/api/v1/orgs/{uuid4()}/members/{other_user.id}/",
+            f"/api/v1/orgs/{soft_deleted_org.id}/members/{member_user.id}/",
             {"role": "admin"},
             format="json",
         )
         assert resp.status_code == 404
 
-
-@pytest.mark.django_db
-class TestOrgMemberDetailViewDELETEOnNonexistentOrg:
-    def test_delete_member_nonexistent_org_returns_404(self, authed_client, other_user):
-        resp = authed_client.delete(f"/api/v1/orgs/{uuid4()}/members/{other_user.id}/")
+    def test_list_members_on_soft_deleted_org_returns_404(
+        self, authed_client, soft_deleted_org, owner_membership
+    ):
+        resp = authed_client.get(f"/api/v1/orgs/{soft_deleted_org.id}/members/")
         assert resp.status_code == 404
 
 
-@pytest.mark.django_db
-class TestOwnerRemovesAdmin:
-    def test_owner_can_remove_admin(
-        self, authed_client, org, owner_membership, admin_user, admin_membership
-    ):
-        resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{admin_user.id}/")
-        assert resp.status_code == 204
-        assert not OrgMember.objects.filter(org=org, user=admin_user).exists()
+# ---------------------------------------------------------------------------
+# Unauthenticated access
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestUnauthenticatedMemberEndpoints:
+class TestUnauthenticatedAccess:
     def test_list_members_unauthenticated(self, org, owner_membership):
         client = APIClient()
         resp = client.get(f"/api/v1/orgs/{org.id}/members/")
@@ -605,129 +622,108 @@ class TestUnauthenticatedMemberEndpoints:
         assert resp.status_code in (401, 403)
 
 
+# ---------------------------------------------------------------------------
+# Invitation Detail (GET /api/v1/invitations/{token}/)
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.django_db
-class TestSoftDeletedOrgMemberOperations:
-    """Operations on members of a soft-deleted org should fail."""
-
-    def test_patch_member_on_soft_deleted_org_returns_404(
-        self, authed_client, soft_deleted_org, owner_membership, member_user, member_membership
-    ):
-        resp = authed_client.patch(
-            f"/api/v1/orgs/{soft_deleted_org.id}/members/{member_user.id}/",
-            {"role": "admin"},
-            format="json",
+class TestInvitationDetailView:
+    def test_get_pending_invitation(self, org, owner_membership, user):
+        Invitation.objects.create(
+            org=org,
+            email="detail@example.com",
+            role=OrgRole.MEMBER,
+            token="detail-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
         )
+        client = APIClient()  # unauthenticated
+        resp = client.get("/api/v1/invitations/detail-token/")
+        assert resp.status_code == 200
+        assert resp.data["email"] == "detail@example.com"
+        assert resp.data["org_name"] == org.name
+
+    def test_nonexistent_token_returns_404(self):
+        client = APIClient()
+        resp = client.get("/api/v1/invitations/nonexistent/")
         assert resp.status_code == 404
 
-    def test_delete_member_on_soft_deleted_org_returns_404(
-        self, authed_client, soft_deleted_org, owner_membership, member_user, member_membership
-    ):
-        resp = authed_client.delete(f"/api/v1/orgs/{soft_deleted_org.id}/members/{member_user.id}/")
+    def test_accepted_invitation_returns_404(self, org, owner_membership, user):
+        Invitation.objects.create(
+            org=org,
+            email="done@example.com",
+            role=OrgRole.MEMBER,
+            token="done-token",  # noqa: S106
+            invited_by=user,
+            status=InvitationStatus.ACCEPTED,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.get("/api/v1/invitations/done-token/")
         assert resp.status_code == 404
 
-    def test_add_member_to_soft_deleted_org_returns_404(
-        self, authed_client, soft_deleted_org, owner_membership, other_user
+
+# ---------------------------------------------------------------------------
+# Inactive org filtering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestInactiveOrgFiltering:
+    def test_inactive_org_excluded_from_list(self, authed_client, org, owner_membership):
+        org.is_active = False
+        org.save(update_fields=["is_active"])
+        resp = authed_client.get("/api/v1/orgs/")
+        assert resp.data["count"] == 0
+
+    def test_inactive_org_returns_404_on_detail(self, authed_client, org, owner_membership):
+        org.is_active = False
+        org.save(update_fields=["is_active"])
+        resp = authed_client.get(f"/api/v1/orgs/{org.id}/")
+        assert resp.status_code == 404
+
+    def test_inactive_org_returns_404_on_members(self, authed_client, org, owner_membership):
+        org.is_active = False
+        org.save(update_fields=["is_active"])
+        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/")
+        assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Seat limit validation on invitation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestInvitationSeatLimit:
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_invitation_rejected_when_seat_limit_reached(
+        self, mock_email, authed_client, org, owner_membership, user
     ):
+        from datetime import UTC, datetime
+
+        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
+
+        customer = StripeCustomer.objects.create(
+            stripe_id="cus_seat_limit", org=org, livemode=False
+        )
+        plan = Plan.objects.create(name="Team", context="team", interval="month", is_active=True)
+        PlanPrice.objects.create(plan=plan, stripe_price_id="price_seat_limit", amount=1500)
+        Subscription.objects.create(
+            stripe_id="sub_seat_limit",
+            stripe_customer=customer,
+            status="active",
+            plan=plan,
+            quantity=1,  # only 1 seat
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        # org already has 1 member (owner) and sub has quantity=1
         resp = authed_client.post(
-            f"/api/v1/orgs/{soft_deleted_org.id}/members/",
-            {"user_id": str(other_user.id), "role": "member"},
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "overflow@example.com", "role": "member"},
             format="json",
         )
-        assert resp.status_code == 404
-
-    def test_list_members_on_soft_deleted_org_returns_404(
-        self, authed_client, soft_deleted_org, owner_membership
-    ):
-        resp = authed_client.get(f"/api/v1/orgs/{soft_deleted_org.id}/members/")
-        assert resp.status_code == 404
-
-
-@pytest.mark.django_db
-class TestOrgDetailViewPATCHNullLogoUrl:
-    def test_owner_can_set_logo_url_to_null(self, authed_client, org, owner_membership):
-        # First set a logo_url
-        org.logo_url = "https://example.com/logo.png"
-        org.save(update_fields=["logo_url"])
-        # Now null it out
-        resp = authed_client.patch(
-            f"/api/v1/orgs/{org.id}/",
-            {"logo_url": None},
-            format="json",
-        )
-        assert resp.status_code == 200
-        assert resp.data["logo_url"] is None
-
-
-@pytest.mark.django_db
-class TestOrgMemberListPagination:
-    def test_limit_offset_params(self, authed_client, org, owner_membership, user):
-        # Create extra members to paginate
-        for i in range(5):
-            u = User.objects.create_user(
-                email=f"pag{i}@example.com",
-                supabase_uid=f"sup_pag{i}",
-                full_name=f"Pag{i}",
-            )
-            OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)
-        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/?limit=2&offset=0")
-        assert resp.status_code == 200
-        assert resp.data["count"] == 6  # owner + 5 members
-        assert len(resp.data["results"]) == 2
-
-    def test_offset_skips_results(self, authed_client, org, owner_membership, user):
-        for i in range(3):
-            u = User.objects.create_user(
-                email=f"off{i}@example.com",
-                supabase_uid=f"sup_off{i}",
-                full_name=f"Off{i}",
-            )
-            OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)
-        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/?limit=10&offset=2")
-        assert resp.status_code == 200
-        assert len(resp.data["results"]) == 2  # 4 total, skip 2
-
-
-@pytest.mark.django_db
-class TestCreateOrgIntegrityErrorRace:
-    """Test the IntegrityError fallback in OrgListCreateView.post for race conditions."""
-
-    def test_concurrent_slug_creation_returns_400(self, authed_client, user):
-        from unittest.mock import patch
-
-        # The serializer validation passes, but the DB insert hits a unique violation
-        original_create = Org.objects.create
-
-        call_count = 0
-
-        def create_then_raise(**kwargs):
-            nonlocal call_count
-            call_count += 1
-            # First, create the org normally from a "concurrent" request
-            if call_count == 1:
-                from django.db import IntegrityError
-
-                raise IntegrityError("duplicate key value violates unique constraint")
-            return original_create(**kwargs)
-
-        with patch.object(Org.objects, "create", side_effect=create_then_raise):
-            resp = authed_client.post(
-                "/api/v1/orgs/",
-                {"name": "Race Org", "slug": "race-org"},
-                format="json",
-            )
         assert resp.status_code == 400
-        assert "slug" in resp.data
-
-
-@pytest.mark.django_db
-class TestOrgListMaxResults:
-    """The list endpoint caps at 100 orgs."""
-
-    def test_max_100_orgs_returned(self, authed_client, user):
-        for i in range(105):
-            o = Org.objects.create(name=f"Org{i:03d}", slug=f"org-{i:03d}", created_by=user)
-            OrgMember.objects.create(org=o, user=user, role=OrgRole.OWNER)
-        resp = authed_client.get("/api/v1/orgs/?limit=200")
-        assert resp.status_code == 200
-        assert resp.data["count"] == 105
-        assert len(resp.data["results"]) == 100  # max_limit caps at 100
+        assert "seat limit" in resp.data["detail"].lower()

@@ -7,6 +7,10 @@
 **/staticfiles/*
 !**/staticfiles/.gitkeep
 
+# Media — user uploads, never commit
+media/*
+!media/.gitkeep
+
 # Python
 __pycache__/
 *.py[cod]
@@ -39,3 +43,4 @@ infra/certs/
 # OS
 .DS_Store
 Thumbs.db
+openapi.yaml

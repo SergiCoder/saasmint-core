@@ -77,26 +77,68 @@
       <label>Current period</label>
       <span>{{ subscription.current_period_start|date:"N j" }} – {{ subscription.current_period_end|date:"N j, Y" }}</span>
     </div>
-    {% if subscription.discount_percent %}
-    <div class="field">
-      <label>Discount</label>
-      <span>{{ subscription.discount_percent|floatformat:0 }}% off{% if subscription.discount_end_at %} until {{ subscription.discount_end_at|date:"N j, Y" }}{% endif %}</span>
-    </div>
-    {% endif %}
   </div>
   {% else %}
   <p class="text-muted">No active subscription.</p>
   {% endif %}
 </div>
 
-<!-- Org memberships -->
-{% if org_memberships %}
+<!-- Available plans -->
+{% if plans %}
 <div class="card">
-  <h2>Organisation memberships</h2>
+  <h2>Available plans</h2>
   <table>
     <thead>
       <tr>
-        <th>Organisation</th>
+        <th>Plan</th>
+        <th>Context</th>
+        <th>Interval</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in plans %}
+      <tr>
+        <td><strong>{{ p.name }}</strong></td>
+        <td>{{ p.context }}</td>
+        <td>{{ p.interval }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- One-time products -->
+{% if products %}
+<div class="card">
+  <h2>Credit boosts</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Product</th>
+        <th>Credits</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in products %}
+      <tr>
+        <td><strong>{{ p.name }}</strong></td>
+        <td>{{ p.credits }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- Org memberships -->
+{% if org_memberships %}
+<div class="card">
+  <h2>Organization memberships</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Organization</th>
         <th>Slug</th>
         <th>Role</th>
         <th>Billing contact</th>
@@ -125,7 +167,8 @@
     <li><a href="{% url 'account' %}"><span class="method-badge">GET</span> /api/v1/account/ — Profile</a></li>
     <li><a href="{% url 'billing-subscription' %}"><span class="method-badge">GET</span> /api/v1/billing/subscription — Subscription detail</a></li>
     <li><a href="{% url 'billing-plans' %}"><span class="method-badge">GET</span> /api/v1/billing/plans — Available plans</a></li>
-    <li><a href="{% url 'org-list-create' %}"><span class="method-badge">GET</span> /api/v1/orgs — Organisations</a></li>
+    <li><a href="{% url 'billing-products' %}"><span class="method-badge">GET</span> /api/v1/billing/products — Credit boosts</a></li>
+    <li><a href="{% url 'org-list' %}"><span class="method-badge">GET</span> /api/v1/orgs — Organizations</a></li>
     <li><a href="{% url 'account-export' %}"><span class="method-badge">GET</span> /api/v1/account/export/ — Data export (GDPR)</a></li>
   </ul>
 </div>

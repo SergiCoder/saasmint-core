@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.core.cache import cache
+from django.core.validators import MinLengthValidator
 from django.db import models
+from django.db.models import Index
 
 from apps.users.managers import UserManager
 
@@ -19,11 +22,17 @@ class AccountType(models.TextChoices):
     ORG_MEMBER = "org_member", "Org Member"
 
 
+class RegistrationMethod(models.TextChoices):
+    EMAIL = "email", "Email"
+    GOOGLE = "google", "Google"
+    GITHUB = "github", "GitHub"
+    MICROSOFT = "microsoft", "Microsoft"
+
+
 class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    supabase_uid = models.CharField(max_length=255, unique=True)
     email = models.EmailField(unique=True)
-    full_name = models.CharField(max_length=255, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means name not set (distinguishable from empty string)
+    full_name = models.CharField(max_length=255, validators=[MinLengthValidator(3)])
     avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no avatar set (distinguishable from empty string)
     account_type = models.CharField(
         max_length=20,
@@ -32,31 +41,120 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     preferred_locale = models.CharField(max_length=10, default="en")
     preferred_currency = models.CharField(max_length=3, default="usd")
+    phone_prefix = models.CharField(max_length=5, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means prefix not set (e.g. "+34")
+    phone = models.CharField(max_length=15, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means phone not set
+    timezone = models.CharField(max_length=50, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means timezone not set
+    job_title = models.CharField(max_length=100, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means job title not set
+    pronouns = models.CharField(max_length=50, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means "don't specify"
+    bio = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means bio not set
     is_verified = models.BooleanField(default=False)
+    registration_method = models.CharField(
+        max_length=20,
+        choices=RegistrationMethod.choices,
+        default=RegistrationMethod.EMAIL,
+    )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     USERNAME_FIELD = "email"
-    REQUIRED_FIELDS: ClassVar[list[str]] = ["supabase_uid"]
+    REQUIRED_FIELDS: ClassVar[list[str]] = ["full_name"]
 
     objects: UserManager = UserManager()
 
     class Meta:
         db_table = "users"
-        indexes: ClassVar[list[models.Index]] = [
-            models.Index(
-                fields=["supabase_uid"],
-                condition=models.Q(deleted_at__isnull=True),
-                name="ix_users_supabase_active",
-            ),
-        ]
 
     def save(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401  # *args/**kwargs forwarded to super().save(); heterogeneous by design
         super().save(*args, **kwargs)
-        cache.delete(AUTH_USER_CACHE_KEY.format(self.supabase_uid))
+        cache.delete(AUTH_USER_CACHE_KEY.format(self.id))
 
     def __str__(self) -> str:
         return self.email
+
+
+class RefreshToken(models.Model):
+    """Server-side refresh token supporting revocation and rotation."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="refresh_tokens")
+    token_hash = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "refresh_tokens"
+        indexes: ClassVar[list[Index]] = [
+            models.Index(fields=["user", "-created_at"], name="idx_refresh_user_created"),
+        ]
+
+    def __str__(self) -> str:
+        return f"RefreshToken({self.id}, user={self.user_id})"
+
+    @property
+    def is_valid(self) -> bool:
+        return self.revoked_at is None and self.expires_at > datetime.now(UTC)
+
+
+class _OneTimeToken(models.Model):
+    """Abstract base for hashed one-time tokens (email verification, password reset)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Subclasses must declare ``user`` with an explicit ``related_name``.
+    user_id: uuid.UUID  # populated by the FK declared in each subclass
+    token_hash = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        abstract = True
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__}({self.id}, user={self.user_id})"
+
+
+class EmailVerificationToken(_OneTimeToken):
+    """One-time token sent to verify a user's email address."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="verification_tokens")
+
+    class Meta(_OneTimeToken.Meta):
+        db_table = "email_verification_tokens"
+
+
+class SocialAccount(models.Model):
+    """Links a User to an OAuth provider account."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="social_accounts")
+    provider = models.CharField(max_length=20)
+    provider_user_id = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "social_accounts"
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            models.UniqueConstraint(
+                fields=["provider", "provider_user_id"],
+                name="uq_social_provider_uid",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "provider"],
+                name="uq_social_user_provider",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"SocialAccount({self.provider}, user={self.user_id})"
+
+
+class PasswordResetToken(_OneTimeToken):
+    """One-time token for password reset flow."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="password_reset_tokens")
+
+    class Meta(_OneTimeToken.Meta):
+        db_table = "password_reset_tokens"

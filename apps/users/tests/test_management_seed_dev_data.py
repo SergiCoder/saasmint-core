@@ -1,4 +1,8 @@
-"""Tests for the seed_dev_data management command."""
+"""Tests for the seed_dev_data management command.
+
+After the schema cleanup, seed_dev_data delegates catalog seeding to
+`seed_catalog` and no longer creates users, orgs, or subscriptions.
+"""
 
 from __future__ import annotations
 
@@ -19,18 +23,19 @@ class TestSeedDevDataGuard:
     def test_allowed_when_debug_true(self, settings):
         settings.DEBUG = True
         out = StringIO()
-        # Should complete without raising
         call_command("seed_dev_data", stdout=out)
         assert "seeded successfully" in out.getvalue()
 
+    def test_does_not_create_catalog_when_debug_false(self, settings):
+        from apps.billing.models import Plan
+
+        settings.DEBUG = False
+        call_command("seed_dev_data", stderr=StringIO())
+        assert Plan.objects.count() == 0
+
 
 @pytest.mark.django_db
-class TestSeedDevDataCreatesExpectedObjects:
-    def setup_method(self):
-        from django.conf import settings
-
-        settings.DEBUG = True
-
+class TestSeedDevDataCreatesCatalog:
     def test_creates_plans(self, settings):
         from apps.billing.models import Plan
 
@@ -47,84 +52,29 @@ class TestSeedDevDataCreatesExpectedObjects:
 
         settings.DEBUG = True
         call_command("seed_dev_data", stdout=StringIO())
-        assert PlanPrice.objects.filter(currency="usd").exists()
-        assert PlanPrice.objects.filter(currency="gbp").exists()
-        assert PlanPrice.objects.filter(currency="eur").exists()
+        # 5 monthly (free + basic/pro for personal/team) + 4 yearly (paid only)
+        assert PlanPrice.objects.count() == 9
 
-    def test_creates_personal_users(self, settings):
+    def test_does_not_create_users(self, settings):
         from apps.users.models import User
 
         settings.DEBUG = True
         call_command("seed_dev_data", stdout=StringIO())
-        assert User.objects.filter(email="jack.bauer@ctu.gov").exists()
-        assert User.objects.filter(email="ethan.hunt@imf.gov").exists()
-        # 10 personal users defined in PERSONAL_USERS fixture
-        assert User.objects.count() >= 10
+        assert User.objects.count() == 0
 
-    def test_creates_stripe_customers_for_users(self, settings):
-        from apps.billing.models import StripeCustomer
-
-        settings.DEBUG = True
-        call_command("seed_dev_data", stdout=StringIO())
-        assert StripeCustomer.objects.filter(stripe_id="cus_dev_jack_bauer").exists()
-
-    def test_creates_subscriptions_with_correct_statuses(self, settings):
-        from apps.billing.models import Subscription, SubscriptionStatus
-
-        settings.DEBUG = True
-        call_command("seed_dev_data", stdout=StringIO())
-        # Jack Bauer → active personal subscription
-        sub = Subscription.objects.get(stripe_id="sub_dev_jack_bauer")
-        assert sub.status == SubscriptionStatus.ACTIVE
-
-        # Deckard Shaw → trialing
-        sub_trial = Subscription.objects.get(stripe_id="sub_dev_deckard_shaw")
-        assert sub_trial.status == SubscriptionStatus.TRIALING
-        assert sub_trial.trial_ends_at is not None
-
-        # Bryan Mills → canceled
-        sub_canceled = Subscription.objects.get(stripe_id="sub_dev_bryan_mills")
-        assert sub_canceled.status == SubscriptionStatus.CANCELED
-        assert sub_canceled.canceled_at is not None
-
-    def test_creates_orgs(self, settings):
+    def test_does_not_create_orgs(self, settings):
         from apps.orgs.models import Org
 
         settings.DEBUG = True
         call_command("seed_dev_data", stdout=StringIO())
-        assert Org.objects.filter(slug="ctu").exists()
-        assert Org.objects.filter(slug="imf").exists()
-        assert Org.objects.filter(slug="hobbs-shaw").exists()
-        assert Org.objects.filter(slug="continental").exists()
+        assert Org.objects.count() == 0
 
-    def test_creates_org_memberships(self, settings):
-        from apps.orgs.models import OrgMember, OrgRole
-
-        settings.DEBUG = True
-        call_command("seed_dev_data", stdout=StringIO())
-        # Jack Bauer is owner of CTU
-        from apps.orgs.models import Org
-        from apps.users.models import User
-
-        ctu = Org.objects.get(slug="ctu")
-        jack = User.objects.get(email="jack.bauer@ctu.gov")
-        membership = OrgMember.objects.get(org=ctu, user=jack)
-        assert membership.role == OrgRole.OWNER
-
-    def test_creates_org_stripe_customers(self, settings):
-        from apps.billing.models import StripeCustomer
-
-        settings.DEBUG = True
-        call_command("seed_dev_data", stdout=StringIO())
-        assert StripeCustomer.objects.filter(stripe_id="cus_dev_org_ctu").exists()
-
-    def test_org_subscription_with_seats(self, settings):
+    def test_does_not_create_subscriptions(self, settings):
         from apps.billing.models import Subscription
 
         settings.DEBUG = True
         call_command("seed_dev_data", stdout=StringIO())
-        sub = Subscription.objects.get(stripe_id="sub_dev_org_ctu")
-        assert sub.quantity == 5
+        assert Subscription.objects.count() == 0
 
 
 @pytest.mark.django_db
@@ -141,38 +91,14 @@ class TestSeedDevDataIdempotency:
 
         assert count_after_first == count_after_second
 
-    def test_running_twice_does_not_duplicate_users(self, settings):
-        from apps.users.models import User
+    def test_running_twice_does_not_duplicate_plan_prices(self, settings):
+        from apps.billing.models import PlanPrice
 
         settings.DEBUG = True
         call_command("seed_dev_data", stdout=StringIO())
-        count_after_first = User.objects.count()
+        count_after_first = PlanPrice.objects.count()
 
         call_command("seed_dev_data", stdout=StringIO())
-        count_after_second = User.objects.count()
-
-        assert count_after_first == count_after_second
-
-    def test_running_twice_does_not_duplicate_orgs(self, settings):
-        from apps.orgs.models import Org
-
-        settings.DEBUG = True
-        call_command("seed_dev_data", stdout=StringIO())
-        count_after_first = Org.objects.count()
-
-        call_command("seed_dev_data", stdout=StringIO())
-        count_after_second = Org.objects.count()
-
-        assert count_after_first == count_after_second
-
-    def test_running_twice_does_not_duplicate_subscriptions(self, settings):
-        from apps.billing.models import Subscription
-
-        settings.DEBUG = True
-        call_command("seed_dev_data", stdout=StringIO())
-        count_after_first = Subscription.objects.count()
-
-        call_command("seed_dev_data", stdout=StringIO())
-        count_after_second = Subscription.objects.count()
+        count_after_second = PlanPrice.objects.count()
 
         assert count_after_first == count_after_second

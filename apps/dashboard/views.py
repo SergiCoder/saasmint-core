@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from django.conf import settings
@@ -9,8 +10,14 @@ from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.urls import reverse
 from django.views.generic import TemplateView
 from hijack.views import AcquireUserView, ReleaseUserView
+from saasmint_core.domain.subscription import PlanContext
+from saasmint_core.domain.user import AccountType
 
-from apps.billing.repositories import DjangoPlanRepository, DjangoSubscriptionRepository
+from apps.billing.repositories import (
+    DjangoPlanRepository,
+    DjangoProductRepository,
+    DjangoSubscriptionRepository,
+)
 from apps.orgs.models import OrgMember
 
 if TYPE_CHECKING:
@@ -44,16 +51,33 @@ class DashboardView(TemplateView):
         user = await request.auser()
         if not user.is_authenticated:
             return HttpResponseRedirect(f"{settings.LOGIN_URL}?next={request.path}")
-        subscription = await DjangoSubscriptionRepository().get_active_for_user(user.id)
+        # Independent fetches — run concurrently to cut round-trip latency.
+        plan_context = (
+            PlanContext.TEAM
+            if user.account_type == AccountType.ORG_MEMBER
+            else PlanContext.PERSONAL
+        )
+        subscription, plans, products, org_memberships = await asyncio.gather(
+            DjangoSubscriptionRepository().get_active_for_user(user.id),
+            DjangoPlanRepository().list_active_by_context(plan_context),
+            DjangoProductRepository().list_active(),
+            _get_org_memberships(user),
+        )
+        # Look up the subscription's plan from the already-fetched list to avoid
+        # an extra DB round-trip.
         plan = (
-            await DjangoPlanRepository().get_by_id(subscription.plan_id)
+            next(
+                (p for p in plans if p.id == subscription.plan_id),
+                None,
+            )
             if subscription is not None
             else None
         )
-        org_memberships = await _get_org_memberships(user)
         ctx = self.get_context_data(
             subscription=subscription,
             plan=plan,
+            plans=plans,
+            products=products,
             org_memberships=org_memberships,
             **kwargs,
         )

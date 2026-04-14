@@ -10,6 +10,7 @@ from django.db import IntegrityError
 from apps.billing.models import (
     ACTIVE_SUBSCRIPTION_STATUSES,
     PlanPrice,
+    PlanTier,
     StripeEvent,
     Subscription,
     SubscriptionStatus,
@@ -28,15 +29,13 @@ class TestPlan:
 @pytest.mark.django_db
 class TestPlanPrice:
     def test_str(self, plan_price):
-        assert "USD" in str(plan_price)
-        assert "999" in str(plan_price)
+        assert "$9.99" in str(plan_price)
 
-    def test_unique_plan_currency(self, plan, plan_price):
+    def test_unique_plan(self, plan, plan_price):
         with pytest.raises(IntegrityError):
             PlanPrice.objects.create(
                 plan=plan,
                 stripe_price_id="price_dup",
-                currency="usd",
                 amount=1999,
             )
 
@@ -62,9 +61,7 @@ class TestStripeCustomer:
         from apps.orgs.models import Org
         from apps.users.models import User
 
-        user = User.objects.create_user(
-            email="constraint_user@example.com", supabase_uid="sup_constraint"
-        )
+        user = User.objects.create_user(email="constraint_user@example.com")
         org = Org.objects.create(name="Constraint Org", slug="constraint-org", created_by=user)
         with pytest.raises(IntegrityError):
             StripeCustomer.objects.create(
@@ -103,6 +100,143 @@ class TestStripeEvent:
         )
         assert "evt_test_123" in str(event)
         assert "checkout.session.completed" in str(event)
+
+
+@pytest.mark.django_db
+class TestPlanFreePlans:
+    def test_returns_active_personal_free_plans(self, free_plan):
+        from apps.billing.models import Plan
+
+        qs = Plan.free_plans()
+        assert qs.count() == 1
+        assert qs.first().id == free_plan.id
+
+    def test_excludes_inactive_plans(self, db):
+        from apps.billing.models import Plan
+
+        inactive = Plan.objects.create(
+            name="Personal Free",
+            context="personal",
+            tier=PlanTier.FREE,
+            interval="month",
+            is_active=False,
+        )
+        PlanPrice.objects.create(plan=inactive, stripe_price_id="price_inactive_free", amount=0)
+        assert Plan.free_plans().count() == 0
+
+    def test_excludes_team_context(self, db):
+        from apps.billing.models import Plan
+
+        team_free = Plan.objects.create(
+            name="Team Free",
+            context="team",
+            tier=PlanTier.FREE,
+            interval="month",
+            is_active=True,
+        )
+        PlanPrice.objects.create(plan=team_free, stripe_price_id="price_team_free", amount=0)
+        assert Plan.free_plans().count() == 0
+
+    def test_excludes_non_free_tier(self, plan, plan_price):
+        from apps.billing.models import Plan
+
+        assert Plan.free_plans().count() == 0
+
+
+@pytest.mark.django_db
+class TestPlanUniqueConstraint:
+    def test_duplicate_active_context_tier_interval_rejected(self, db):
+        from apps.billing.models import Plan
+
+        Plan.objects.create(
+            name="Personal Basic Monthly",
+            context="personal",
+            tier=PlanTier.BASIC,
+            interval="month",
+            is_active=True,
+        )
+        with pytest.raises(IntegrityError):
+            Plan.objects.create(
+                name="Personal Basic Monthly v2",
+                context="personal",
+                tier=PlanTier.BASIC,
+                interval="month",
+                is_active=True,
+            )
+
+    def test_inactive_duplicates_allowed(self, db):
+        from apps.billing.models import Plan
+
+        Plan.objects.create(
+            name="Legacy 1",
+            context="personal",
+            tier=PlanTier.PRO,
+            interval="year",
+            is_active=False,
+        )
+        Plan.objects.create(
+            name="Legacy 2",
+            context="personal",
+            tier=PlanTier.PRO,
+            interval="year",
+            is_active=False,
+        )
+        # No error — inactive plans are not constrained
+
+
+@pytest.mark.django_db
+class TestProduct:
+    def test_str(self, db):
+        from apps.billing.models import Product
+
+        product = Product.objects.create(
+            name="100 Credits", type="one_time", credits=100, is_active=True
+        )
+        assert "100 Credits" in str(product)
+        assert "100 credits" in str(product)
+
+
+@pytest.mark.django_db
+class TestProductPrice:
+    def test_str(self, db):
+        from apps.billing.models import Product, ProductPrice
+
+        product = Product.objects.create(
+            name="500 Credits", type="one_time", credits=500, is_active=True
+        )
+        price = ProductPrice.objects.create(
+            product=product, stripe_price_id="price_pp_str", amount=4999
+        )
+        assert "$49.99" in str(price)
+
+
+@pytest.mark.django_db
+class TestExchangeRate:
+    def test_str(self, db):
+        from apps.billing.models import ExchangeRate
+
+        er = ExchangeRate.objects.create(
+            currency="eur",
+            rate="0.91000000",
+            fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        )
+        assert "EUR" in str(er)
+        assert "0.91" in str(er)
+
+    def test_unique_currency(self, db):
+        from apps.billing.models import ExchangeRate
+
+        ExchangeRate.objects.create(
+            currency="gbp",
+            rate="0.79",
+            fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        )
+        with pytest.raises(IntegrityError):
+            ExchangeRate.objects.create(
+                currency="gbp",
+                rate="0.80",
+                fetched_at=datetime(2026, 4, 2, tzinfo=UTC),
+            )
 
 
 class TestActiveSubscriptionStatuses:

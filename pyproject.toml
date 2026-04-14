@@ -21,8 +21,10 @@ dependencies = [
     "pyjwt[crypto]>=2.12.1",
     "uvicorn[standard]>=0.42.0",
     "pydantic[email]>=2.12.5",
-    "supabase>=2.28.3",
     "drf-spectacular>=0.28",
+    "resend>=2.0",
+    "httpx>=0.28",
+    "Pillow>=11.0",
 ]
 
 [project.optional-dependencies]

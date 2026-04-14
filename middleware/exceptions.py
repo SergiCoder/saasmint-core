@@ -12,7 +12,6 @@ from saasmint_core.exceptions import (
     AccountTypeConflictError,
     DomainError,
     InsufficientPermissionError,
-    InvalidPromoCodeError,
     OrgMemberNotFoundError,
     OrgNotFoundError,
     SubscriptionAlreadyActiveError,
@@ -29,7 +28,6 @@ _STATUS_MAP: dict[type[DomainError], int] = {
     SubscriptionNotFoundError: 404,
     SubscriptionAlreadyActiveError: 409,
     AccountTypeConflictError: 409,
-    InvalidPromoCodeError: 422,
     InsufficientPermissionError: 403,
 }
 

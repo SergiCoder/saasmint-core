@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 from django.core.cache import cache
 
-from apps.users.models import AccountType, User
+from apps.users.models import AccountType, RegistrationMethod, SocialAccount, User
 
 
 @pytest.mark.django_db
@@ -15,48 +13,53 @@ class TestUserManager:
     def test_create_user_sets_fields(self):
         user = User.objects.create_user(
             email="manager@example.com",
-            supabase_uid="sup_mgr",
+            password="testpass123",  # noqa: S106
             full_name="Manager User",
         )
         assert user.email == "manager@example.com"
-        assert user.supabase_uid == "sup_mgr"
         assert user.full_name == "Manager User"
         assert user.is_active is True
         assert user.is_staff is False
+        assert user.has_usable_password() is True
+
+    def test_create_user_no_password(self):
+        user = User.objects.create_user(
+            email="nopass@example.com",
+            full_name="No Password",
+        )
         assert user.has_usable_password() is False
 
     def test_create_user_normalizes_email(self):
         user = User.objects.create_user(
             email="Test@EXAMPLE.COM",
-            supabase_uid="sup_norm",
+            full_name="Norm User",
         )
         assert user.email == "Test@example.com"
 
+    def test_create_user_empty_email_raises(self):
+        with pytest.raises(ValueError, match="Email is required"):
+            User.objects.create_user(email="", full_name="No Email")
+
     def test_create_superuser_sets_flags(self):
-        user = User.objects.create_superuser(email="admin@example.com")
+        user = User.objects.create_superuser(email="admin@example.com", password="adminpass")  # noqa: S106
         assert user.is_staff is True
         assert user.is_superuser is True
         assert user.is_active is True
-        assert user.supabase_uid == "superuser"
-
-    def test_create_superuser_with_custom_uid(self):
-        user = User.objects.create_superuser(email="admin2@example.com", supabase_uid="sup_admin")
-        assert user.supabase_uid == "sup_admin"
 
 
 @pytest.mark.django_db
 class TestUserModel:
     def test_str_returns_email(self):
-        user = User.objects.create_user(email="str@example.com", supabase_uid="sup_str")
+        user = User.objects.create_user(email="str@example.com", full_name="Str User")
         assert str(user) == "str@example.com"
 
     def test_default_account_type(self):
-        user = User.objects.create_user(email="default@example.com", supabase_uid="sup_default")
+        user = User.objects.create_user(email="default@example.com", full_name="Default User")
         assert user.account_type == AccountType.PERSONAL
 
     def test_save_clears_cache_when_deactivated(self):
-        user = User.objects.create_user(email="deact@example.com", supabase_uid="sup_deact")
-        cache_key = f"auth_user:{user.supabase_uid}"
+        user = User.objects.create_user(email="deact@example.com", full_name="Deact User")
+        cache_key = f"auth_user:{user.id}"
         cache.set(cache_key, user, timeout=60)
         assert cache.get(cache_key) is not None
 
@@ -64,19 +67,9 @@ class TestUserModel:
         user.save()
         assert cache.get(cache_key) is None
 
-    def test_save_clears_cache_when_soft_deleted(self):
-        user = User.objects.create_user(email="softdel@example.com", supabase_uid="sup_softdel")
-        cache_key = f"auth_user:{user.supabase_uid}"
-        cache.set(cache_key, user, timeout=60)
-        assert cache.get(cache_key) is not None
-
-        user.deleted_at = datetime.now(UTC)
-        user.save()
-        assert cache.get(cache_key) is None
-
     def test_save_always_clears_cache(self):
-        user = User.objects.create_user(email="active@example.com", supabase_uid="sup_active")
-        cache_key = f"auth_user:{user.supabase_uid}"
+        user = User.objects.create_user(email="active@example.com", full_name="Active User")
+        cache_key = f"auth_user:{user.id}"
         cache.set(cache_key, user, timeout=60)
 
         user.full_name = "Updated"
@@ -85,7 +78,118 @@ class TestUserModel:
         assert cache.get(cache_key) is None
 
     def test_uuid_primary_key(self):
-        user = User.objects.create_user(email="uuid@example.com", supabase_uid="sup_uuid")
+        user = User.objects.create_user(email="uuid@example.com", full_name="UUID User")
         import uuid
 
         assert isinstance(user.pk, uuid.UUID)
+
+    def test_new_fields_default_to_none(self):
+        user = User.objects.create_user(email="defaults@example.com", full_name="Defaults User")
+        assert user.phone_prefix is None
+        assert user.phone is None
+        assert user.timezone is None
+        assert user.job_title is None
+        assert user.pronouns is None
+        assert user.bio is None
+
+    def test_new_fields_can_be_set(self):
+        user = User.objects.create_user(
+            email="fields@example.com",
+            full_name="Field User",
+            phone_prefix="+34",
+            phone="612345678",
+            timezone="Europe/Madrid",
+            job_title="Engineer",
+            pronouns="they/them",
+            bio="A brief bio",
+        )
+        assert user.phone_prefix == "+34"
+        assert user.phone == "612345678"
+        assert user.timezone == "Europe/Madrid"
+        assert user.job_title == "Engineer"
+        assert user.pronouns == "they/them"
+        assert user.bio == "A brief bio"
+
+
+@pytest.mark.django_db
+class TestRegistrationMethod:
+    def test_default_is_email(self):
+        user = User.objects.create_user(email="reg@example.com", full_name="Reg User")
+        assert user.registration_method == RegistrationMethod.EMAIL
+
+    def test_can_set_to_google(self):
+        user = User.objects.create_user(
+            email="google@example.com",
+            full_name="Google User",
+            registration_method=RegistrationMethod.GOOGLE,
+        )
+        assert user.registration_method == "google"
+
+    def test_can_set_to_github(self):
+        user = User.objects.create_user(
+            email="github@example.com",
+            full_name="GitHub User",
+            registration_method=RegistrationMethod.GITHUB,
+        )
+        assert user.registration_method == "github"
+
+    def test_can_set_to_microsoft(self):
+        user = User.objects.create_user(
+            email="ms@example.com",
+            full_name="MS User",
+            registration_method=RegistrationMethod.MICROSOFT,
+        )
+        assert user.registration_method == "microsoft"
+
+
+@pytest.mark.django_db
+class TestSocialAccount:
+    def test_create_social_account(self):
+        user = User.objects.create_user(email="social@example.com", full_name="Social User")
+        social = SocialAccount.objects.create(
+            user=user,
+            provider="google",
+            provider_user_id="123456",
+        )
+        assert social.provider == "google"
+        assert social.provider_user_id == "123456"
+        assert social.user == user
+
+    def test_str(self):
+        user = User.objects.create_user(email="str-social@example.com", full_name="Str Social")
+        social = SocialAccount.objects.create(
+            user=user,
+            provider="github",
+            provider_user_id="789",
+        )
+        assert "github" in str(social)
+        assert str(user.id) in str(social)
+
+    def test_unique_provider_user_id_per_provider(self):
+        user1 = User.objects.create_user(email="u1@example.com", full_name="User One")
+        user2 = User.objects.create_user(email="u2@example.com", full_name="User Two")
+        SocialAccount.objects.create(user=user1, provider="google", provider_user_id="same-id")
+        from django.db import IntegrityError
+
+        with pytest.raises(IntegrityError):
+            SocialAccount.objects.create(user=user2, provider="google", provider_user_id="same-id")
+
+    def test_unique_user_per_provider(self):
+        user = User.objects.create_user(email="dup@example.com", full_name="Dup User")
+        SocialAccount.objects.create(user=user, provider="github", provider_user_id="111")
+        from django.db import IntegrityError
+
+        with pytest.raises(IntegrityError):
+            SocialAccount.objects.create(user=user, provider="github", provider_user_id="222")
+
+    def test_user_can_have_multiple_providers(self):
+        user = User.objects.create_user(email="multi@example.com", full_name="Multi User")
+        SocialAccount.objects.create(user=user, provider="google", provider_user_id="g1")
+        SocialAccount.objects.create(user=user, provider="github", provider_user_id="gh1")
+        assert user.social_accounts.count() == 2
+
+    def test_cascade_delete(self):
+        user = User.objects.create_user(email="cascade@example.com", full_name="Cascade User")
+        SocialAccount.objects.create(user=user, provider="google", provider_user_id="del1")
+        user.delete()
+        assert SocialAccount.objects.filter(provider_user_id="del1").count() == 0

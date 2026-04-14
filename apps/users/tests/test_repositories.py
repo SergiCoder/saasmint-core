@@ -23,7 +23,6 @@ def repo():
 def orm_user(db):
     return User.objects.create_user(
         email="repo@example.com",
-        supabase_uid="sup_repo",
         full_name="Repo User",
     )
 
@@ -39,32 +38,14 @@ def test_get_by_id_not_found(repo):
     assert result is None
 
 
-def test_get_by_id_excludes_soft_deleted(repo, orm_user):
-    orm_user.deleted_at = datetime.now(UTC)
-    orm_user.save()
-    result = async_to_sync(repo.get_by_id)(orm_user.id)
-    assert result is None
-
-
 def test_get_by_email(repo, orm_user):
     domain_user = async_to_sync(repo.get_by_email)("repo@example.com")
-    assert domain_user is not None
-    assert domain_user.supabase_uid == "sup_repo"
-
-
-def test_get_by_email_not_found(repo):
-    result = async_to_sync(repo.get_by_email)("nobody@example.com")
-    assert result is None
-
-
-def test_get_by_supabase_uid(repo, orm_user):
-    domain_user = async_to_sync(repo.get_by_supabase_uid)("sup_repo")
     assert domain_user is not None
     assert domain_user.email == "repo@example.com"
 
 
-def test_get_by_supabase_uid_not_found(repo):
-    result = async_to_sync(repo.get_by_supabase_uid)("nonexistent")
+def test_get_by_email_not_found(repo):
+    result = async_to_sync(repo.get_by_email)("nobody@example.com")
     assert result is None
 
 
@@ -75,7 +56,6 @@ def test_save_creates_new(repo):
     user_id = uuid4()
     domain_user = DomainUser(
         id=user_id,
-        supabase_uid="sup_save_new",
         email="save_new@example.com",
         full_name="Save New",
         account_type=AccountType.PERSONAL,
@@ -99,27 +79,21 @@ def test_save_updates_existing(repo, orm_user):
     assert refreshed.full_name == "Updated Via Repo"
 
 
-def test_delete_soft_deletes(repo, orm_user):
-    async_to_sync(repo.delete)(orm_user.id)
-    result = async_to_sync(repo.get_by_id)(orm_user.id)
-    assert result is None
-    # ORM record should still exist with deleted_at set
-    obj = User.objects.get(id=orm_user.id)
-    assert obj.deleted_at is not None
+def test_hard_delete_removes_row(repo, orm_user):
+    async_to_sync(repo.hard_delete)(orm_user.id)
+    assert not User.objects.filter(id=orm_user.id).exists()
 
 
-def test_get_by_email_excludes_soft_deleted(repo, orm_user):
-    orm_user.deleted_at = datetime.now(UTC)
-    orm_user.save()
-    result = async_to_sync(repo.get_by_email)(orm_user.email)
-    assert result is None
+def test_hard_delete_nonexistent_user_is_noop(repo):
+    async_to_sync(repo.hard_delete)(uuid4())
 
 
-def test_get_by_supabase_uid_excludes_soft_deleted(repo, orm_user):
-    orm_user.deleted_at = datetime.now(UTC)
-    orm_user.save()
-    result = async_to_sync(repo.get_by_supabase_uid)(orm_user.supabase_uid)
-    assert result is None
+def test_to_domain_maps_pronouns(repo, orm_user):
+    orm_user.pronouns = "they/them"
+    orm_user.save(update_fields=["pronouns"])
+    domain_user = async_to_sync(repo.get_by_id)(orm_user.id)
+    assert domain_user is not None
+    assert domain_user.pronouns == "they/them"
 
 
 class TestListByOrg:
@@ -138,7 +112,6 @@ class TestListByOrg:
         for i in range(3):
             u = User.objects.create_user(
                 email=f"member{i}@example.com",
-                supabase_uid=f"sup_member{i}",
                 full_name=f"Member {i}",
             )
             OrgMember.objects.create(org=org, user=u, role=OrgRole.MEMBER)
@@ -161,11 +134,3 @@ class TestListByOrg:
 
         result_offset = async_to_sync(repo.list_by_org)(org.id, limit=2, offset=2)
         assert len(result_offset) == 2
-
-    def test_excludes_soft_deleted_users(self, repo, org, members):
-        members[1].deleted_at = datetime.now(UTC)
-        members[1].save()
-        result = async_to_sync(repo.list_by_org)(org.id)
-        assert len(result) == 3
-        returned_emails = {u.email for u in result}
-        assert members[1].email not in returned_emails

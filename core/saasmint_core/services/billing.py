@@ -12,7 +12,6 @@ from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.exceptions import SubscriptionNotFoundError
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
-from saasmint_core.services.coupons import validate_promo_code
 
 
 async def get_or_create_customer(
@@ -67,7 +66,6 @@ async def create_checkout_session(
     price_id: str,
     client_reference_id: str,
     quantity: int = 1,
-    promo_code: str | None = None,
     locale: str = "en",
     success_url: str,
     cancel_url: str,
@@ -78,8 +76,6 @@ async def create_checkout_session(
     subscription_data: dict[str, object] = {}
     if trial_period_days is not None:
         subscription_data["trial_period_days"] = trial_period_days
-    if metadata is not None:
-        subscription_data["metadata"] = metadata
 
     params: dict[str, object] = {
         "customer": stripe_customer_id,
@@ -91,12 +87,12 @@ async def create_checkout_session(
         "cancel_url": cancel_url,
     }
 
-    if promo_code is not None:
-        promo = await validate_promo_code(promo_code)
-        params["discounts"] = [{"promotion_code": promo.id}]
-        params["allow_promotion_codes"] = False
-    else:
-        params["allow_promotion_codes"] = True
+    params["allow_promotion_codes"] = True
+    params["adaptive_pricing"] = {"enabled": True}
+
+    # Session-level metadata carries org fields for checkout.session.completed
+    if metadata is not None:
+        params["metadata"] = metadata
 
     if subscription_data:
         params["subscription_data"] = subscription_data
@@ -136,12 +132,37 @@ async def cancel_subscription(
     customer.subscription.updated / deleted webhook.
     """
     active = await subscription_repo.get_active_for_customer(stripe_customer_id)
-    if active is None:
+    if active is None or active.stripe_id is None:
         raise SubscriptionNotFoundError("No active subscription found to cancel.")
 
     if at_period_end:
+        # 2026-03-25.dahlia replaces `cancel_at_period_end=True` with
+        # `cancel_at="min_period_end"`. For single-item subs (the only shape
+        # we support) this is the direct equivalent.
         await asyncio.to_thread(
-            stripe.Subscription.modify, active.stripe_id, cancel_at_period_end=True
+            stripe.Subscription.modify, active.stripe_id, cancel_at="min_period_end"
         )
     else:
         await asyncio.to_thread(stripe.Subscription.cancel, active.stripe_id)
+
+
+async def resume_subscription(
+    *,
+    stripe_customer_id: UUID,
+    subscription_repo: SubscriptionRepository,
+) -> None:
+    """
+    Clear a scheduled cancellation on the active subscription, keeping it open.
+
+    Resumes a sub that was previously canceled with at_period_end=True (i.e.
+    flagged with `cancel_at`). The sub must still be active — once it has
+    fully ended, the customer must start a new checkout. DB state is synced
+    via the customer.subscription.updated webhook.
+    """
+    active = await subscription_repo.get_active_for_customer(stripe_customer_id)
+    if active is None or active.stripe_id is None:
+        raise SubscriptionNotFoundError("No active subscription found to resume.")
+
+    # 2026-03-25.dahlia: clear a scheduled cancellation set via
+    # cancel_at="min_period_end" by passing cancel_at="".
+    await asyncio.to_thread(stripe.Subscription.modify, active.stripe_id, cancel_at="")

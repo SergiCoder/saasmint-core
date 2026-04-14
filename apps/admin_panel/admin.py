@@ -1,7 +1,12 @@
-"""Extended Django admin — re-registers User with subscription status column and sets site_url to /dashboard/."""  # noqa: E501
+"""Extended Django admin.
+
+Re-registers User with subscription status column and sets site_url to /dashboard/.
+"""
+
+from typing import ClassVar
 
 from django.contrib import admin
-from django.db.models import OuterRef, QuerySet, Subquery
+from django.db.models import OuterRef, Q, QuerySet, Subquery
 from django.http import HttpRequest
 from django.utils.html import format_html
 from django.utils.safestring import SafeString
@@ -17,7 +22,7 @@ admin.site.unregister(User)
 
 
 @admin.register(User)
-class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ModelAdmin is generic but UserAdmin inherits from BaseUserAdmin which doesn't declare its type parameter
+class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
     list_display = (
         "email",
         "full_name",
@@ -27,11 +32,18 @@ class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs Mo
         "is_active",
         "created_at",
     )
+    list_filter: ClassVar[tuple[object, ...]] = (
+        "account_type",
+        "registration_method",
+        "is_active",
+        "is_staff",
+        "is_verified",
+    )
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[User]:
-        qs = super().get_queryset(request)  # type: ignore[misc]  # django-stubs types get_queryset as returning QuerySet[Any]; we narrow to QuerySet[User]
+        qs = super().get_queryset(request)  # type: ignore[misc]  # django-stubs returns QuerySet[Any]; narrowing to QuerySet[User]
         customer_sub = Subscription.objects.filter(
-            stripe_customer__user=OuterRef("pk"),
+            Q(user=OuterRef("pk")) | Q(stripe_customer__user=OuterRef("pk")),
             status__in=ACTIVE_SUBSCRIPTION_STATUSES,
         ).order_by("-created_at")
         return qs.annotate(_subscription_status=Subquery(customer_sub.values("status")[:1]))

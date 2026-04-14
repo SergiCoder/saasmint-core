@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 import stripe
 
-from saasmint_core.domain.subscription import SubscriptionStatus
+from saasmint_core.domain.subscription import Plan, PlanTier, SubscriptionStatus
 from saasmint_core.exceptions import WebhookDataError, WebhookVerificationError
 from saasmint_core.services.webhooks import WebhookRepos, handle_stripe_event
 from tests.conftest import (
@@ -45,7 +45,6 @@ def _sub_event(
     stripe_sub_id: str = "sub_webhook",
     stripe_customer_id: str = "cus_webhook",
     price_id: str = "price_webhook",
-    discount: object = None,
     trial_end: int | None = None,
     canceled_at: int | None = None,
     quantity: int = 1,
@@ -70,7 +69,6 @@ def _sub_event(
                 },
                 "current_period_start": NOW_TS,
                 "current_period_end": NOW_TS + 86400,
-                "discount": discount,
                 "trial_end": trial_end,
                 "canceled_at": canceled_at,
             }
@@ -355,131 +353,6 @@ async def test_sync_subscription_updates_existing() -> None:
 
 
 @pytest.mark.anyio
-async def test_sync_subscription_with_full_discount_and_trial() -> None:
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_discount")
-    await customer_repo.save(customer)
-    plan = make_plan()
-    plan_repo._plans[plan.id] = plan
-    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_discount")
-    plan_repo._prices[price.id] = price
-
-    discount = {
-        "promotion_code": "promo_abc",
-        "coupon": {"percent_off": 20},
-        "end": NOW_TS + 86400,
-    }
-
-    repos = _make_repos(
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_customer_id="cus_discount",
-        price_id="price_discount",
-        discount=discount,
-        trial_end=NOW_TS + 604800,
-        canceled_at=None,
-    )
-
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    sub = next(iter(subscription_repo._store.values()))
-    assert sub.promotion_code_id == "promo_abc"
-    assert sub.discount_percent == 20.0
-    assert sub.discount_end_at is not None
-    assert sub.trial_ends_at is not None
-
-
-@pytest.mark.anyio
-async def test_sync_subscription_with_discount_no_promo_no_percent() -> None:
-    """Discount block present but no promotion_code and no percent_off."""
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_disc2")
-    await customer_repo.save(customer)
-    plan = make_plan()
-    plan_repo._plans[plan.id] = plan
-    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_disc2")
-    plan_repo._prices[price.id] = price
-
-    discount = {
-        "promotion_code": None,
-        "coupon": {"percent_off": None},
-        "end": None,
-    }
-
-    repos = _make_repos(
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_customer_id="cus_disc2",
-        price_id="price_disc2",
-        discount=discount,
-    )
-
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    sub = next(iter(subscription_repo._store.values()))
-    assert sub.promotion_code_id is None
-    assert sub.discount_percent is None
-    assert sub.discount_end_at is None
-
-
-@pytest.mark.anyio
-async def test_sync_subscription_with_discount_coupon_none() -> None:
-    """Discount present but coupon key is None — exercises the `or {}` fallback."""
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_disc3")
-    await customer_repo.save(customer)
-    plan = make_plan()
-    plan_repo._plans[plan.id] = plan
-    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_disc3")
-    plan_repo._prices[price.id] = price
-
-    discount = {
-        "promotion_code": "promo_xyz",
-        "coupon": None,
-        "end": NOW_TS + 86400,
-    }
-
-    repos = _make_repos(
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_customer_id="cus_disc3",
-        price_id="price_disc3",
-        discount=discount,
-    )
-
-    with patch("stripe.Webhook.construct_event", return_value=event):
-        await handle_stripe_event(b"payload", "sig", "secret", repos)
-
-    sub = next(iter(subscription_repo._store.values()))
-    assert sub.promotion_code_id == "promo_xyz"
-    assert sub.discount_percent is None
-    assert sub.discount_end_at is not None
-
-
-@pytest.mark.anyio
 async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
     """Missing quantity in subscription item defaults to 1."""
     customer_repo = InMemoryStripeCustomerRepository()
@@ -615,3 +488,407 @@ async def test_subscription_deleted_marks_canceled() -> None:
     assert updated.stripe_id == "sub_to_delete"
     assert updated.plan_id == sub.plan_id
     assert updated.stripe_customer_id == sub.stripe_customer_id
+
+
+# ── upgrade-from-free + auto-fallback-to-free ────────────────────────────────
+
+
+def _seed_free_plan(plan_repo: InMemoryPlanRepository) -> Plan:
+    """Insert an active personal free plan + $0 price into *plan_repo*."""
+    free_plan = make_plan(name="Personal Free", tier=PlanTier.FREE)
+    plan_repo._plans[free_plan.id] = free_plan
+    free_price = make_plan_price(plan_id=free_plan.id, stripe_price_id="price_free", amount=0)
+    plan_repo._prices[free_price.id] = free_price
+    return free_plan
+
+
+@pytest.mark.anyio
+async def test_upgrade_from_free_removes_orphan_free_subscription() -> None:
+    """When a free user upgrades, the free placeholder Subscription is deleted."""
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user_id = uuid4()
+
+    # Pre-existing free subscription (no Stripe backing)
+    free_plan = _seed_free_plan(plan_repo)
+    free_sub = make_subscription(
+        stripe_id=None,
+        stripe_customer_id=None,
+        user_id=user_id,
+        plan_id=free_plan.id,
+    )
+    await subscription_repo.save(free_sub)
+
+    # Customer now exists (created during checkout flow)
+    customer = make_stripe_customer(user_id=user_id, stripe_id="cus_upgrade")
+    await customer_repo.save(customer)
+
+    # New paid plan + price
+    paid_plan = make_plan(name="Personal Pro")
+    plan_repo._plans[paid_plan.id] = paid_plan
+    paid_price = make_plan_price(plan_id=paid_plan.id, stripe_price_id="price_paid", amount=1900)
+    plan_repo._prices[paid_price.id] = paid_price
+
+    repos = _make_repos(
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _sub_event(
+        "customer.subscription.created",
+        stripe_sub_id="sub_paid_new",
+        stripe_customer_id="cus_upgrade",
+        price_id="price_paid",
+    )
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    subs = list(subscription_repo._store.values())
+    assert len(subs) == 1
+    paid = subs[0]
+    assert paid.stripe_id == "sub_paid_new"
+    assert paid.user_id == user_id  # mirrored from customer
+    assert paid.stripe_customer_id == customer.id
+    assert paid.plan_id == paid_plan.id
+    # The free placeholder is gone
+    assert free_sub.id not in subscription_repo._store
+
+
+@pytest.mark.anyio
+async def test_org_upgrade_does_not_touch_user_free_subs() -> None:
+    """Org subscriptions have user_id=None and must not delete unrelated free rows."""
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    other_user_id = uuid4()
+    free_plan = _seed_free_plan(plan_repo)
+    other_free_sub = make_subscription(
+        stripe_id=None,
+        stripe_customer_id=None,
+        user_id=other_user_id,
+        plan_id=free_plan.id,
+    )
+    await subscription_repo.save(other_free_sub)
+
+    org_customer = make_stripe_customer(org_id=uuid4(), stripe_id="cus_org")
+    await customer_repo.save(org_customer)
+
+    team_plan = make_plan(name="Team Pro")
+    plan_repo._plans[team_plan.id] = team_plan
+    team_price = make_plan_price(plan_id=team_plan.id, stripe_price_id="price_team", amount=2900)
+    plan_repo._prices[team_price.id] = team_price
+
+    repos = _make_repos(
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _sub_event(
+        "customer.subscription.created",
+        stripe_sub_id="sub_team_new",
+        stripe_customer_id="cus_org",
+        price_id="price_team",
+    )
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    # Other user's free sub is untouched
+    assert other_free_sub.id in subscription_repo._store
+    new_team = next(s for s in subscription_repo._store.values() if s.stripe_id == "sub_team_new")
+    assert new_team.user_id is None  # org sub
+
+
+@pytest.mark.anyio
+async def test_retry_after_crash_still_prunes_free_subscription() -> None:
+    """Regression: if a prior run saved the paid sub but crashed before pruning
+    the free row, a retried created/updated event must still prune it.
+
+    Previously the cleanup was guarded by `existing is None`, so a retry would
+    see the paid sub already saved and skip the cleanup forever, leaving the
+    user with two active subscriptions.
+    """
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user_id = uuid4()
+
+    # Seed: the free placeholder survived from a previous crashed run
+    free_plan = _seed_free_plan(plan_repo)
+    free_sub = make_subscription(
+        stripe_id=None,
+        stripe_customer_id=None,
+        user_id=user_id,
+        plan_id=free_plan.id,
+    )
+    await subscription_repo.save(free_sub)
+
+    customer = make_stripe_customer(user_id=user_id, stripe_id="cus_retry")
+    await customer_repo.save(customer)
+
+    paid_plan = make_plan(name="Personal Pro")
+    plan_repo._plans[paid_plan.id] = paid_plan
+    paid_price = make_plan_price(
+        plan_id=paid_plan.id, stripe_price_id="price_paid_retry", amount=1900
+    )
+    plan_repo._prices[paid_price.id] = paid_price
+
+    # Seed: the paid sub from the previous (crashed) run is already persisted
+    already_saved_paid = make_subscription(
+        stripe_id="sub_retry",
+        stripe_customer_id=customer.id,
+        user_id=user_id,
+        plan_id=paid_plan.id,
+    )
+    await subscription_repo.save(already_saved_paid)
+
+    repos = _make_repos(
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _sub_event(
+        "customer.subscription.created",
+        stripe_sub_id="sub_retry",
+        stripe_customer_id="cus_retry",
+        price_id="price_paid_retry",
+    )
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    subs = list(subscription_repo._store.values())
+    assert len(subs) == 1
+    assert subs[0].stripe_id == "sub_retry"
+    assert free_sub.id not in subscription_repo._store
+
+
+@pytest.mark.anyio
+async def test_paid_cancellation_creates_fresh_free_subscription() -> None:
+    """When a personal paid sub is canceled, the user is moved back to free."""
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user_id = uuid4()
+    free_plan = _seed_free_plan(plan_repo)
+
+    paid_sub = make_subscription(
+        stripe_id="sub_paid_cancel",
+        user_id=user_id,
+    )
+    await subscription_repo.save(paid_sub)
+
+    repos = _make_repos(plan_repo=plan_repo, subscription_repo=subscription_repo)
+    event = {
+        "id": "evt_cancel_fallback",
+        "type": "customer.subscription.deleted",
+        "livemode": False,
+        "data": {"object": {"id": "sub_paid_cancel"}},
+    }
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    # Old paid sub is canceled
+    canceled = subscription_repo._store[paid_sub.id]
+    assert canceled.status == SubscriptionStatus.CANCELED
+    assert canceled.canceled_at is not None
+
+    # A new free sub now exists for the same user
+    free_subs = [
+        s for s in subscription_repo._store.values() if s.stripe_id is None and s.user_id == user_id
+    ]
+    assert len(free_subs) == 1
+    new_free = free_subs[0]
+    assert new_free.status == SubscriptionStatus.ACTIVE
+    assert new_free.plan_id == free_plan.id
+    assert new_free.stripe_customer_id is None
+
+
+@pytest.mark.anyio
+async def test_org_cancellation_does_not_create_free_subscription() -> None:
+    """Org subs (user_id=None) are skipped — there's no team-level free plan."""
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+    _seed_free_plan(plan_repo)
+
+    org_paid_sub = make_subscription(stripe_id="sub_org_cancel", user_id=None)
+    await subscription_repo.save(org_paid_sub)
+
+    repos = _make_repos(plan_repo=plan_repo, subscription_repo=subscription_repo)
+    event = {
+        "id": "evt_org_cancel",
+        "type": "customer.subscription.deleted",
+        "livemode": False,
+        "data": {"object": {"id": "sub_org_cancel"}},
+    }
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    assert subscription_repo._store[org_paid_sub.id].status == SubscriptionStatus.CANCELED
+    # No new free subscription created
+    assert len(subscription_repo._store) == 1
+
+
+@pytest.mark.anyio
+async def test_cancellation_logs_when_no_free_plan_configured() -> None:
+    """Without a configured free plan, cancellation just marks canceled and warns."""
+    plan_repo = InMemoryPlanRepository()  # no free plan seeded
+    subscription_repo = InMemorySubscriptionRepository()
+
+    paid_sub = make_subscription(stripe_id="sub_no_free", user_id=uuid4())
+    await subscription_repo.save(paid_sub)
+
+    repos = _make_repos(plan_repo=plan_repo, subscription_repo=subscription_repo)
+    event = {
+        "id": "evt_no_free",
+        "type": "customer.subscription.deleted",
+        "livemode": False,
+        "data": {"object": {"id": "sub_no_free"}},
+    }
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    assert subscription_repo._store[paid_sub.id].status == SubscriptionStatus.CANCELED
+    assert len(subscription_repo._store) == 1  # no fallback created
+
+
+# ── Basil API: period fields on items ────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_sync_subscription_reads_period_from_items_first() -> None:
+    """Stripe API 2024-06+ moved current_period_start/end to subscription items."""
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_item_period")
+    await customer_repo.save(customer)
+    plan = make_plan()
+    plan_repo._plans[plan.id] = plan
+    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_item_period")
+    plan_repo._prices[price.id] = price
+
+    item_start_ts = NOW_TS + 1000
+    item_end_ts = NOW_TS + 90000
+
+    repos = _make_repos(
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = {
+        "id": "evt_item_period",
+        "type": "customer.subscription.created",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "sub_item_period",
+                "customer": "cus_item_period",
+                "status": "active",
+                "items": {
+                    "data": [
+                        {
+                            "id": "si_item",
+                            "price": {"id": "price_item_period"},
+                            "quantity": 1,
+                            "current_period_start": item_start_ts,
+                            "current_period_end": item_end_ts,
+                        }
+                    ]
+                },
+                # Top-level period fields differ — item values should win.
+                "current_period_start": NOW_TS,
+                "current_period_end": NOW_TS + 86400,
+                "trial_end": None,
+                "canceled_at": None,
+            }
+        },
+    }
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    sub = next(iter(subscription_repo._store.values()))
+    assert int(sub.current_period_start.timestamp()) == item_start_ts
+    assert int(sub.current_period_end.timestamp()) == item_end_ts
+
+
+@pytest.mark.anyio
+async def test_sync_subscription_missing_period_raises_webhook_data_error() -> None:
+    """Missing current_period_start/end raises WebhookDataError."""
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    event_repo = InMemoryStripeEventRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_no_period")
+    await customer_repo.save(customer)
+    plan = make_plan()
+    plan_repo._plans[plan.id] = plan
+    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_no_period")
+    plan_repo._prices[price.id] = price
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+    )
+    event = {
+        "id": "evt_no_period",
+        "type": "customer.subscription.created",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "sub_no_period",
+                "customer": "cus_no_period",
+                "status": "active",
+                "items": {
+                    "data": [
+                        {
+                            "id": "si_no_period",
+                            "price": {"id": "price_no_period"},
+                            "quantity": 1,
+                            # No current_period_start/end on item or top-level
+                        }
+                    ]
+                },
+                "trial_end": None,
+                "canceled_at": None,
+            }
+        },
+    }
+
+    with patch("stripe.Webhook.construct_event", return_value=event):
+        with pytest.raises(WebhookDataError, match="missing current_period"):
+            await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+
+@pytest.mark.anyio
+async def test_handle_stripe_event_converts_stripe_object_via_to_dict() -> None:
+    """When construct_event returns a StripeObject-like object, to_dict() is called."""
+    repos = _make_repos()
+
+    class FakeStripeObject:
+        def to_dict(self) -> dict[str, object]:
+            return {
+                "id": "evt_stripe_obj",
+                "type": "invoice.payment_succeeded",
+                "livemode": False,
+                "data": {"object": {"id": "in_fake"}},
+            }
+
+    with patch("stripe.Webhook.construct_event", return_value=FakeStripeObject()):
+        await handle_stripe_event(b"payload", "sig", "secret", repos)
+
+    # Event was saved — verify it was processed successfully
+    saved = repos.events._store["evt_stripe_obj"]  # type: ignore[attr-defined]
+    assert saved.processed_at is not None
+    assert saved.error is None

@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
 import stripe
 
 from saasmint_core.exceptions import UserNotFoundError
-from saasmint_core.services.gdpr import delete_user_data, export_user_data
+from saasmint_core.services.gdpr import (
+    delete_account,
+    export_user_data,
+)
 from tests.conftest import (
     InMemoryStripeCustomerRepository,
     InMemorySubscriptionRepository,
@@ -19,17 +22,17 @@ from tests.conftest import (
     make_user,
 )
 
-# ── delete_user_data ──────────────────────────────────────────────────────────
+# ── delete_account ──────────────────────────────────────────────────────────
 
 
 @pytest.mark.anyio
-async def test_delete_user_data_user_not_found_raises() -> None:
+async def test_delete_account_user_not_found_raises() -> None:
     user_repo = InMemoryUserRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     subscription_repo = InMemorySubscriptionRepository()
 
     with pytest.raises(UserNotFoundError):
-        await delete_user_data(
+        await delete_account(
             user_id=uuid4(),
             user_repo=user_repo,
             customer_repo=customer_repo,
@@ -38,7 +41,7 @@ async def test_delete_user_data_user_not_found_raises() -> None:
 
 
 @pytest.mark.anyio
-async def test_delete_user_data_no_customer_deletes_user() -> None:
+async def test_delete_account_no_customer() -> None:
     user_repo = InMemoryUserRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -46,7 +49,7 @@ async def test_delete_user_data_no_customer_deletes_user() -> None:
     user = make_user()
     await user_repo.save(user)
 
-    await delete_user_data(
+    await delete_account(
         user_id=user.id,
         user_repo=user_repo,
         customer_repo=customer_repo,
@@ -57,91 +60,62 @@ async def test_delete_user_data_no_customer_deletes_user() -> None:
 
 
 @pytest.mark.anyio
-async def test_delete_user_data_with_customer_no_subscription() -> None:
+async def test_delete_account_customer_no_active_sub() -> None:
     user_repo = InMemoryUserRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     subscription_repo = InMemorySubscriptionRepository()
 
     user = make_user()
     await user_repo.save(user)
-    customer = make_stripe_customer(user_id=user.id, stripe_id="cus_del")
+    customer = make_stripe_customer(user_id=user.id, stripe_id="cus_no_sub")
     await customer_repo.save(customer)
 
-    with patch("stripe.Customer.delete") as mock_del:
-        await delete_user_data(
+    with patch("stripe.Customer.delete") as mock_cust_del:
+        await delete_account(
             user_id=user.id,
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
         )
 
-    mock_del.assert_called_once_with("cus_del")
+    mock_cust_del.assert_called_once_with("cus_no_sub")
     assert await customer_repo.get_by_id(customer.id) is None
     assert await user_repo.get_by_id(user.id) is None
 
 
 @pytest.mark.anyio
-async def test_delete_user_data_with_active_subscription() -> None:
+async def test_delete_account_with_customer_and_subscription() -> None:
     user_repo = InMemoryUserRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     subscription_repo = InMemorySubscriptionRepository()
 
     user = make_user()
     await user_repo.save(user)
-    customer = make_stripe_customer(user_id=user.id, stripe_id="cus_sub")
+    customer = make_stripe_customer(user_id=user.id, stripe_id="cus_exec")
     await customer_repo.save(customer)
-    sub = make_subscription(stripe_customer_id=customer.id, stripe_id="sub_active")
+    sub = make_subscription(stripe_customer_id=customer.id, user_id=user.id, stripe_id="sub_exec")
     await subscription_repo.save(sub)
 
     with (
         patch("stripe.Subscription.cancel") as mock_cancel,
-        patch("stripe.Customer.delete"),
+        patch("stripe.Customer.delete") as mock_cust_del,
     ):
-        await delete_user_data(
+        await delete_account(
             user_id=user.id,
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
         )
 
-    mock_cancel.assert_called_once_with("sub_active")
+    mock_cancel.assert_called_once_with("sub_exec")
+    mock_cust_del.assert_called_once_with("cus_exec")
+    assert await customer_repo.get_by_id(customer.id) is None
+    assert await user_repo.get_by_id(user.id) is None
 
 
 @pytest.mark.anyio
-async def test_delete_user_data_subscription_already_canceled_in_stripe() -> None:
-    """stripe.InvalidRequestError on cancel is swallowed (already canceled)."""
-    user_repo = InMemoryUserRepository()
-    customer_repo = InMemoryStripeCustomerRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    user = make_user()
-    await user_repo.save(user)
-    customer = make_stripe_customer(user_id=user.id, stripe_id="cus_sub2")
-    await customer_repo.save(customer)
-    sub = make_subscription(stripe_customer_id=customer.id, stripe_id="sub_gone")
-    await subscription_repo.save(sub)
-
-    with (
-        patch(
-            "stripe.Subscription.cancel",
-            side_effect=stripe.InvalidRequestError(
-                "already canceled", param="id", code="resource_missing"
-            ),  # type: ignore[no-untyped-call]  # Stripe stub missing return type annotation on InvalidRequestError constructor
-        ),
-        patch("stripe.Customer.delete"),
-    ):
-        # Should not raise
-        await delete_user_data(
-            user_id=user.id,
-            user_repo=user_repo,
-            customer_repo=customer_repo,
-            subscription_repo=subscription_repo,
-        )
-
-
-@pytest.mark.anyio
-async def test_delete_user_data_customer_already_deleted_in_stripe() -> None:
-    """stripe.InvalidRequestError on customer delete is swallowed."""
+async def test_delete_account_stripe_already_gone() -> None:
+    """resource_missing errors are swallowed for both subscription and customer."""
     user_repo = InMemoryUserRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     subscription_repo = InMemorySubscriptionRepository()
@@ -150,23 +124,82 @@ async def test_delete_user_data_customer_already_deleted_in_stripe() -> None:
     await user_repo.save(user)
     customer = make_stripe_customer(user_id=user.id, stripe_id="cus_gone")
     await customer_repo.save(customer)
+    sub = make_subscription(stripe_customer_id=customer.id, user_id=user.id, stripe_id="sub_gone")
+    await subscription_repo.save(sub)
 
-    with patch(
-        "stripe.Customer.delete",
-        side_effect=stripe.InvalidRequestError(
-            "no such customer", param="id", code="resource_missing"
-        ),  # type: ignore[no-untyped-call]
+    with (
+        patch(
+            "stripe.Subscription.cancel",
+            side_effect=stripe.InvalidRequestError(
+                "already canceled", param="id", code="resource_missing"
+            ),  # type: ignore[no-untyped-call]
+        ),
+        patch(
+            "stripe.Customer.delete",
+            side_effect=stripe.InvalidRequestError(
+                "no such customer", param="id", code="resource_missing"
+            ),  # type: ignore[no-untyped-call]
+        ),
     ):
-        # Should not raise
-        await delete_user_data(
+        await delete_account(
             user_id=user.id,
             user_repo=user_repo,
             customer_repo=customer_repo,
             subscription_repo=subscription_repo,
         )
 
+    assert await user_repo.get_by_id(user.id) is None
 
-# ── export_user_data ──────────────────────────────────────────────────────────
+
+@pytest.mark.anyio
+async def test_delete_account_with_free_subscription_skips_stripe_cancel() -> None:
+    """Free subs have no Stripe id; delete_account must not call Stripe.cancel."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user()
+    await user_repo.save(user)
+    free_sub = make_subscription(user_id=user.id, stripe_id=None, stripe_customer_id=None)
+    await subscription_repo.save(free_sub)
+
+    with patch("stripe.Subscription.cancel") as mock_cancel:
+        await delete_account(
+            user_id=user.id,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
+        )
+
+    mock_cancel.assert_not_called()
+    assert await user_repo.get_by_id(user.id) is None
+
+
+@pytest.mark.anyio
+async def test_delete_account_calls_pre_delete_hook() -> None:
+    """pre_delete_hook is invoked with user_id before the user row is deleted."""
+    user_repo = InMemoryUserRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    user = make_user()
+    await user_repo.save(user)
+
+    hook = AsyncMock()
+
+    await delete_account(
+        user_id=user.id,
+        user_repo=user_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+        pre_delete_hook=hook,
+    )
+
+    hook.assert_awaited_once_with(user.id)
+    assert await user_repo.get_by_id(user.id) is None
+
+
+# ── export_user_data ─────────────────────────────────────────────────────────
 
 
 @pytest.mark.anyio
@@ -241,7 +274,7 @@ async def test_export_user_data_with_subscription() -> None:
     await user_repo.save(user)
     customer = make_stripe_customer(user_id=user.id)
     await customer_repo.save(customer)
-    sub = make_subscription(stripe_customer_id=customer.id)
+    sub = make_subscription(stripe_customer_id=customer.id, user_id=user.id)
     await subscription_repo.save(sub)
 
     result = await export_user_data(

@@ -1,0 +1,1867 @@
+openapi: 3.0.3
+info:
+  title: SaasMint Core API
+  version: 1.0.0
+  description: Django backend API for SaasMint — billing, accounts, and organizations.
+paths:
+  /api/v1/account/:
+    get:
+      operationId: account_retrieve
+      description: GET /api/v1/account — return the current user's profile.
+      tags:
+      - account
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+    patch:
+      operationId: account_partial_update
+      description: PATCH /api/v1/account — update profile fields.
+      tags:
+      - account
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateUserRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateUserRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateUserRequest'
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+          description: ''
+    delete:
+      operationId: account_destroy
+      description: |-
+        DELETE /api/v1/account — GDPR right to erasure.
+
+        Immediately hard-deletes the user and all associated data.
+      tags:
+      - account
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/account/avatar/:
+    post:
+      operationId: account_avatar_create
+      description: Upload avatar (multipart), return { avatar_url }.
+      tags:
+      - account
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/_AvatarUploadRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+    delete:
+      operationId: account_avatar_destroy
+      description: Delete avatar.
+      tags:
+      - account
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/account/export/:
+    get:
+      operationId: account_export_retrieve
+      description: GET /api/v1/account/export — GDPR right of access.
+      tags:
+      - account
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/auth/change-password/:
+    post:
+      operationId: auth_change_password_create
+      description: POST /api/v1/auth/change-password — change password while authenticated.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          description: ''
+  /api/v1/auth/forgot-password/:
+    post:
+      operationId: auth_forgot_password_create
+      description: POST /api/v1/auth/forgot-password — send reset email (always 200).
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/v1/auth/login/:
+    post:
+      operationId: auth_login_create
+      description: POST /api/v1/auth/login — authenticate with email + password.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          description: ''
+  /api/v1/auth/logout/:
+    post:
+      operationId: auth_logout_create
+      description: POST /api/v1/auth/logout — revoke refresh token.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/auth/refresh/:
+    post:
+      operationId: auth_refresh_create
+      description: POST /api/v1/auth/refresh — rotate refresh token and get new tokens.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          description: ''
+  /api/v1/auth/register/:
+    post:
+      operationId: auth_register_create
+      description: POST /api/v1/auth/register — create a new account.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          description: ''
+  /api/v1/auth/register/org-owner/:
+    post:
+      operationId: auth_register_org_owner_create
+      description: |-
+        POST /api/v1/auth/register/org-owner — register as an org owner.
+
+        Creates a user with account_type=ORG_MEMBER. No free plan is assigned;
+        the user must complete team checkout to create an org and subscription.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          description: ''
+  /api/v1/auth/reset-password/:
+    post:
+      operationId: auth_reset_password_create
+      description: POST /api/v1/auth/reset-password — validate token and set new password.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          description: ''
+  /api/v1/auth/verify-email/:
+    post:
+      operationId: auth_verify_email_create
+      description: POST /api/v1/auth/verify-email — activate a user account.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+          description: ''
+  /api/v1/billing/checkout-sessions/:
+    post:
+      operationId: billing_checkout_sessions_create
+      description: POST /api/v1/billing/checkout-sessions — create a Stripe Checkout
+        Session.
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequestRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutResponse'
+          description: ''
+  /api/v1/billing/plans/:
+    get:
+      operationId: billing_plans_list
+      description: List all active plans with prices. Not paginated — the catalog
+        is bounded to a small number of plans.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
+      tags:
+      - billing
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Plan'
+          description: ''
+  /api/v1/billing/portal-sessions/:
+    post:
+      operationId: billing_portal_sessions_create
+      description: POST /api/v1/billing/portal-sessions — create a Stripe Customer
+        Portal session.
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PortalRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PortalRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PortalRequestRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortalResponse'
+          description: ''
+  /api/v1/billing/products/:
+    get:
+      operationId: billing_products_list
+      description: List all active one-time products with prices. Not paginated —
+        the catalog is bounded to a small number of products.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
+      tags:
+      - billing
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Product'
+          description: ''
+  /api/v1/billing/subscription/:
+    get:
+      operationId: billing_subscription_retrieve
+      description: GET/PATCH/DELETE /api/v1/billing/subscription — manage the current
+        subscription.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
+      tags:
+      - billing
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+    patch:
+      operationId: billing_subscription_partial_update
+      description: GET/PATCH/DELETE /api/v1/billing/subscription — manage the current
+        subscription.
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateSubscriptionRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateSubscriptionRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateSubscriptionRequest'
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+    delete:
+      operationId: billing_subscription_destroy
+      description: GET/PATCH/DELETE /api/v1/billing/subscription — manage the current
+        subscription.
+      tags:
+      - billing
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/currencies/:
+    get:
+      operationId: currencies_retrieve
+      description: GET /api/v1/currencies/ — list supported currencies.
+      tags:
+      - references
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+          description: ''
+  /api/v1/invitations/{token}/:
+    get:
+      operationId: invitations_retrieve
+      description: |-
+        GET /api/v1/invitations/{token}/ — fetch invitation details by token.
+
+        Unauthenticated endpoint. Returns invitation info including the
+        organization name so the accept/decline page can display it.
+      parameters:
+      - in: path
+        name: token
+        schema:
+          type: string
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invitation'
+          description: ''
+  /api/v1/invitations/{token}/accept/:
+    post:
+      operationId: invitations_accept_create
+      description: |-
+        POST /api/v1/invitations/{token}/accept/ — register and join an org.
+
+        Unauthenticated endpoint. The invitee provides registration data
+        (full_name, password) and is created as an org_member user.
+      parameters:
+      - in: path
+        name: token
+        schema:
+          type: string
+        required: true
+      tags:
+      - orgs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/InvitationAcceptRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationAcceptResponse'
+          description: ''
+  /api/v1/invitations/{token}/decline/:
+    post:
+      operationId: invitations_decline_create
+      description: POST /api/v1/invitations/{token}/decline/ — decline an invitation.
+      parameters:
+      - in: path
+        name: token
+        schema:
+          type: string
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '204':
+          description: No response body
+  /api/v1/locales/:
+    get:
+      operationId: locales_retrieve
+      description: GET /api/v1/locales/ — list supported locales.
+      tags:
+      - references
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+          description: ''
+  /api/v1/orgs/:
+    get:
+      operationId: orgs_list
+      description: GET /api/v1/orgs/ — list user's orgs.
+      parameters:
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Page size (max 100)
+      - in: query
+        name: offset
+        schema:
+          type: integer
+        description: Number of items to skip
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Org'
+          description: ''
+  /api/v1/orgs/{org_id}/:
+    get:
+      operationId: orgs_retrieve
+      description: GET/PATCH /api/v1/orgs/{org_id}/.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Org'
+          description: ''
+    patch:
+      operationId: orgs_partial_update
+      description: GET/PATCH /api/v1/orgs/{org_id}/.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateOrgRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateOrgRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateOrgRequest'
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Org'
+          description: ''
+  /api/v1/orgs/{org_id}/invitations/:
+    get:
+      operationId: orgs_invitations_list
+      description: GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Invitation'
+          description: ''
+    post:
+      operationId: orgs_invitations_create
+      description: GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvitationRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CreateInvitationRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateInvitationRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Invitation'
+          description: ''
+  /api/v1/orgs/{org_id}/invitations/{invitation_id}/:
+    delete:
+      operationId: orgs_invitations_destroy
+      description: DELETE /api/v1/orgs/{org_id}/invitations/{invitation_id}/ — cancel
+        invitation.
+      parameters:
+      - in: path
+        name: invitation_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/orgs/{org_id}/members/:
+    get:
+      operationId: orgs_members_list
+      description: GET /api/v1/orgs/{org_id}/members/ — list members.
+      parameters:
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Page size (max 200)
+      - in: query
+        name: offset
+        schema:
+          type: integer
+        description: Number of items to skip
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OrgMember'
+          description: ''
+  /api/v1/orgs/{org_id}/members/{member_user_id}/:
+    patch:
+      operationId: orgs_members_partial_update
+      description: PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/.
+      parameters:
+      - in: path
+        name: member_user_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateMemberRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateMemberRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateMemberRequest'
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgMember'
+          description: ''
+    delete:
+      operationId: orgs_members_destroy
+      description: Remove a member — decrements Stripe seats and hard-deletes their
+        account.
+      parameters:
+      - in: path
+        name: member_user_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/orgs/{org_id}/transfer-ownership/:
+    post:
+      operationId: orgs_transfer_ownership_create
+      description: POST /api/v1/orgs/{org_id}/transfer-ownership/ — transfer owner
+        role.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferOwnershipRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/TransferOwnershipRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/TransferOwnershipRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrgMember'
+          description: ''
+  /api/v1/phone-prefixes/:
+    get:
+      operationId: phone_prefixes_retrieve
+      description: GET /api/v1/phone-prefixes/ — list supported phone prefixes.
+      tags:
+      - references
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties:
+                    type: string
+          description: ''
+  /api/v1/timezones/:
+    get:
+      operationId: timezones_retrieve
+      description: GET /api/v1/timezones/ — list IANA timezones.
+      tags:
+      - references
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+          description: ''
+components:
+  schemas:
+    AccountTypeEnum:
+      enum:
+      - personal
+      - org_member
+      type: string
+      description: |-
+        * `personal` - Personal
+        * `org_member` - Org Member
+    ChangePasswordRequest:
+      type: object
+      properties:
+        current_password:
+          type: string
+          writeOnly: true
+          minLength: 1
+        new_password:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 128
+      required:
+      - current_password
+      - new_password
+    CheckoutRequestRequest:
+      type: object
+      properties:
+        plan_price_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          maximum: 10000
+          minimum: 1
+          default: 1
+        success_url:
+          type: string
+          format: uri
+          minLength: 1
+        cancel_url:
+          type: string
+          format: uri
+          minLength: 1
+        trial_period_days:
+          type: integer
+          maximum: 90
+          minimum: 1
+          nullable: true
+        org_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+      required:
+      - cancel_url
+      - plan_price_id
+      - success_url
+    CheckoutResponse:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+      required:
+      - url
+    ContextEnum:
+      enum:
+      - personal
+      - team
+      type: string
+      description: |-
+        * `personal` - Personal
+        * `team` - Team
+    CreateInvitationRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        role:
+          allOf:
+          - $ref: '#/components/schemas/Role13fEnum'
+          default: member
+      required:
+      - email
+    ForgotPasswordRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+      required:
+      - email
+    IntervalEnum:
+      enum:
+      - month
+      - year
+      type: string
+      description: |-
+        * `month` - Monthly
+        * `year` - Yearly
+    Invitation:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        org:
+          type: string
+          format: uuid
+          readOnly: true
+        org_name:
+          type: string
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        role:
+          allOf:
+          - $ref: '#/components/schemas/Role13fEnum'
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/InvitationStatusEnum'
+          readOnly: true
+          default: pending
+        invited_by:
+          allOf:
+          - $ref: '#/components/schemas/_InvitedBy'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - email
+      - expires_at
+      - id
+      - invited_by
+      - org
+      - org_name
+      - role
+      - status
+    InvitationAcceptRequest:
+      type: object
+      properties:
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 255
+        password:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 128
+      required:
+      - full_name
+      - password
+    InvitationAcceptResponse:
+      type: object
+      properties:
+        org:
+          $ref: '#/components/schemas/Org'
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+      required:
+      - access_token
+      - org
+      - refresh_token
+      - token_type
+    InvitationStatusEnum:
+      enum:
+      - pending
+      - accepted
+      - expired
+      - cancelled
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `accepted` - Accepted
+        * `expired` - Expired
+        * `cancelled` - Cancelled
+    LoginRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        password:
+          type: string
+          writeOnly: true
+          minLength: 1
+      required:
+      - email
+      - password
+    LogoutRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+      required:
+      - refresh_token
+    Org:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+        slug:
+          type: string
+          readOnly: true
+          pattern: ^[-a-zA-Z0-9_]+$
+        logo_url:
+          type: string
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - logo_url
+      - name
+      - slug
+    OrgMember:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        org:
+          type: string
+          format: uuid
+          readOnly: true
+        user:
+          allOf:
+          - $ref: '#/components/schemas/_MemberUser'
+          readOnly: true
+        role:
+          allOf:
+          - $ref: '#/components/schemas/Role978Enum'
+          readOnly: true
+        is_billing:
+          type: boolean
+          readOnly: true
+        joined_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - id
+      - is_billing
+      - joined_at
+      - org
+      - role
+      - user
+    PatchedUpdateMemberRequest:
+      type: object
+      properties:
+        role:
+          $ref: '#/components/schemas/Role978Enum'
+        is_billing:
+          type: boolean
+    PatchedUpdateOrgRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        logo_url:
+          type: string
+          format: uri
+          nullable: true
+          minLength: 1
+    PatchedUpdateSubscriptionRequest:
+      type: object
+      properties:
+        plan_price_id:
+          type: string
+          format: uuid
+        prorate:
+          type: boolean
+          default: true
+        quantity:
+          type: integer
+          maximum: 10000
+          minimum: 1
+        cancel_at_period_end:
+          type: boolean
+    PatchedUpdateUserRequest:
+      type: object
+      properties:
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 255
+        avatar_url:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 500
+        preferred_locale:
+          type: string
+          minLength: 1
+          maxLength: 10
+        preferred_currency:
+          type: string
+          minLength: 1
+          maxLength: 3
+        phone:
+          allOf:
+          - $ref: '#/components/schemas/_PhoneWriteRequest'
+          nullable: true
+        timezone:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 50
+        job_title:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 100
+        pronouns:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 50
+        bio:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 500
+    Plan:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+        description:
+          type: string
+          readOnly: true
+        context:
+          allOf:
+          - $ref: '#/components/schemas/ContextEnum'
+          readOnly: true
+        tier:
+          allOf:
+          - $ref: '#/components/schemas/TierEnum'
+          readOnly: true
+          default: 2
+        interval:
+          allOf:
+          - $ref: '#/components/schemas/IntervalEnum'
+          readOnly: true
+        is_active:
+          type: boolean
+          readOnly: true
+          default: true
+        price:
+          allOf:
+          - $ref: '#/components/schemas/PlanPrice'
+          readOnly: true
+      required:
+      - context
+      - description
+      - id
+      - interval
+      - is_active
+      - name
+      - price
+      - tier
+    PlanPrice:
+      type: object
+      description: Shared logic for serializers that add display_amount / currency
+        fields.
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        amount:
+          type: integer
+          readOnly: true
+          description: Amount in USD cents
+        display_amount:
+          type: number
+          format: double
+          readOnly: true
+        currency:
+          type: string
+          readOnly: true
+        approximate:
+          type: boolean
+          readOnly: true
+      required:
+      - amount
+      - approximate
+      - currency
+      - display_amount
+      - id
+    PortalRequestRequest:
+      type: object
+      properties:
+        return_url:
+          type: string
+          format: uri
+          minLength: 1
+      required:
+      - return_url
+    PortalResponse:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+      required:
+      - url
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+        type:
+          allOf:
+          - $ref: '#/components/schemas/TypeEnum'
+          readOnly: true
+        credits:
+          type: integer
+          readOnly: true
+          description: Number of credits granted on purchase
+        is_active:
+          type: boolean
+          readOnly: true
+        price:
+          allOf:
+          - $ref: '#/components/schemas/ProductPrice'
+          readOnly: true
+      required:
+      - credits
+      - id
+      - is_active
+      - name
+      - price
+      - type
+    ProductPrice:
+      type: object
+      description: Shared logic for serializers that add display_amount / currency
+        fields.
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        amount:
+          type: integer
+          readOnly: true
+          description: Amount in USD cents
+        display_amount:
+          type: number
+          format: double
+          readOnly: true
+        currency:
+          type: string
+          readOnly: true
+        approximate:
+          type: boolean
+          readOnly: true
+      required:
+      - amount
+      - approximate
+      - currency
+      - display_amount
+      - id
+    RefreshRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+      required:
+      - refresh_token
+    RegisterRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        password:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 128
+        full_name:
+          type: string
+          minLength: 3
+          maxLength: 255
+      required:
+      - email
+      - full_name
+      - password
+    RegistrationMethodEnum:
+      enum:
+      - email
+      - google
+      - github
+      - microsoft
+      type: string
+      description: |-
+        * `email` - Email
+        * `google` - Google
+        * `github` - GitHub
+        * `microsoft` - Microsoft
+    ResetPasswordRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 128
+      required:
+      - password
+      - token
+    Role13fEnum:
+      enum:
+      - admin
+      - member
+      type: string
+      description: |-
+        * `admin` - Admin
+        * `member` - Member
+    Role978Enum:
+      enum:
+      - owner
+      - admin
+      - member
+      type: string
+      description: |-
+        * `owner` - Owner
+        * `admin` - Admin
+        * `member` - Member
+    Subscription:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/SubscriptionStatusEnum'
+          readOnly: true
+        plan:
+          allOf:
+          - $ref: '#/components/schemas/Plan'
+          readOnly: true
+        quantity:
+          type: integer
+          readOnly: true
+        trial_ends_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        current_period_start:
+          type: string
+          format: date-time
+          readOnly: true
+        current_period_end:
+          type: string
+          format: date-time
+          readOnly: true
+        canceled_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - canceled_at
+      - created_at
+      - current_period_end
+      - current_period_start
+      - id
+      - plan
+      - quantity
+      - status
+      - trial_ends_at
+    SubscriptionStatusEnum:
+      enum:
+      - active
+      - trialing
+      - past_due
+      - canceled
+      - incomplete
+      - incomplete_expired
+      - paused
+      - unpaid
+      type: string
+      description: |-
+        * `active` - Active
+        * `trialing` - Trialing
+        * `past_due` - Past Due
+        * `canceled` - Canceled
+        * `incomplete` - Incomplete
+        * `incomplete_expired` - Incomplete Expired
+        * `paused` - Paused
+        * `unpaid` - Unpaid
+    TierEnum:
+      enum:
+      - 1
+      - 2
+      - 3
+      type: integer
+      description: |-
+        * `1` - Free
+        * `2` - Basic
+        * `3` - Pro
+    TokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+          default: Bearer
+      required:
+      - access_token
+      - refresh_token
+    TransferOwnershipRequest:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+      required:
+      - user_id
+    TypeEnum:
+      enum:
+      - one_time
+      type: string
+      description: '* `one_time` - One-time'
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        full_name:
+          type: string
+          readOnly: true
+        avatar_url:
+          type: string
+          readOnly: true
+          nullable: true
+        account_type:
+          allOf:
+          - $ref: '#/components/schemas/AccountTypeEnum'
+          readOnly: true
+        preferred_locale:
+          type: string
+          readOnly: true
+        preferred_currency:
+          type: string
+          readOnly: true
+        phone:
+          allOf:
+          - $ref: '#/components/schemas/_PhoneRead'
+          readOnly: true
+          nullable: true
+        timezone:
+          type: string
+          readOnly: true
+          nullable: true
+        job_title:
+          type: string
+          readOnly: true
+          nullable: true
+        pronouns:
+          type: string
+          readOnly: true
+          nullable: true
+        bio:
+          type: string
+          readOnly: true
+          nullable: true
+        is_verified:
+          type: boolean
+          readOnly: true
+        registration_method:
+          allOf:
+          - $ref: '#/components/schemas/RegistrationMethodEnum'
+          readOnly: true
+        linked_providers:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - account_type
+      - avatar_url
+      - bio
+      - created_at
+      - email
+      - full_name
+      - id
+      - is_verified
+      - job_title
+      - linked_providers
+      - phone
+      - preferred_currency
+      - preferred_locale
+      - pronouns
+      - registration_method
+      - timezone
+      - updated_at
+    VerifyEmailRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 1
+      required:
+      - token
+    _AvatarUploadRequest:
+      type: object
+      properties:
+        avatar:
+          type: string
+          format: binary
+      required:
+      - avatar
+    _InvitedBy:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        full_name:
+          type: string
+          readOnly: true
+      required:
+      - email
+      - full_name
+      - id
+    _MemberUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        email:
+          type: string
+          format: email
+          readOnly: true
+        full_name:
+          type: string
+          readOnly: true
+        avatar_url:
+          type: string
+          readOnly: true
+          nullable: true
+      required:
+      - avatar_url
+      - email
+      - full_name
+      - id
+    _PhoneRead:
+      type: object
+      properties:
+        prefix:
+          type: string
+        number:
+          type: string
+      required:
+      - number
+      - prefix
+    _PhoneWriteRequest:
+      type: object
+      properties:
+        prefix:
+          type: string
+          minLength: 1
+          maxLength: 5
+        number:
+          type: string
+          minLength: 4
+          maxLength: 15
+      required:
+      - number
+      - prefix
+  securitySchemes:
+    JWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 'Django-issued JWT. Pass as `Authorization: Bearer <token>`.'
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid

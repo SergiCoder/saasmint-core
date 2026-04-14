@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
 from uuid import UUID
 
 import stripe
@@ -13,6 +15,19 @@ from saasmint_core.exceptions import UserNotFoundError
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
 from saasmint_core.repositories.user import UserRepository
+
+# Called before the user row is hard-deleted, to clean up
+# resources that hold a PROTECT FK to the user (e.g. orgs).
+PreDeleteHook = Callable[[UUID], Awaitable[None]]
+
+
+async def _stripe_request(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+    """Run a Stripe SDK call in a thread, ignoring 'resource_missing' errors."""
+    try:
+        await asyncio.to_thread(fn, *args, **kwargs)
+    except stripe.InvalidRequestError as exc:
+        if exc.code != "resource_missing":
+            raise
 
 
 async def _load_user_and_customer(
@@ -30,42 +45,39 @@ async def _load_user_and_customer(
     return user, customer
 
 
-async def delete_user_data(
+async def delete_account(
     *,
     user_id: UUID,
     user_repo: UserRepository,
     customer_repo: StripeCustomerRepository,
     subscription_repo: SubscriptionRepository,
+    pre_delete_hook: PreDeleteHook | None = None,
 ) -> None:
     """
-    GDPR right to erasure — permanently remove all user data and Stripe resources.
+    GDPR right-to-erasure — permanently remove all user data.
 
     Sequence:
-    1. Cancel any active Stripe subscription immediately (no grace period).
+    1. Cancel any active Stripe subscription immediately.
     2. Delete the Stripe Customer object (removes stored payment methods).
     3. Delete our StripeCustomer record.
-    4. Soft-delete the user (sets deleted_at).
+    4. Run pre_delete_hook (e.g. delete orgs with PROTECT FK).
+    5. Hard-delete the user row (cascades to OrgMember, etc.).
     """
-    _, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
+    _user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
+
+    # Cancel any paid Stripe subscription
+    active_sub = await subscription_repo.get_active_for_user(user_id)
+    if active_sub and not active_sub.is_free:
+        await _stripe_request(stripe.Subscription.cancel, active_sub.stripe_id)
 
     if customer:
-        active_sub = await subscription_repo.get_active_for_customer(customer.id)
-        if active_sub:
-            try:
-                await asyncio.to_thread(stripe.Subscription.cancel, active_sub.stripe_id)
-            except stripe.InvalidRequestError as exc:
-                if exc.code != "resource_missing":
-                    raise
-
-        try:
-            await asyncio.to_thread(stripe.Customer.delete, customer.stripe_id)
-        except stripe.InvalidRequestError as exc:
-            if exc.code != "resource_missing":
-                raise
-
+        await _stripe_request(stripe.Customer.delete, customer.stripe_id)
         await customer_repo.delete(customer.id)
 
-    await user_repo.delete(user_id)
+    if pre_delete_hook:
+        await pre_delete_hook(user_id)
+
+    await user_repo.hard_delete(user_id)
 
 
 async def export_user_data(

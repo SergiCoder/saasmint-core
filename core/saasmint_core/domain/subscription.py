@@ -1,8 +1,11 @@
-from datetime import datetime
-from enum import StrEnum
+from datetime import UTC, datetime
+from enum import IntEnum, StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
+
+# Sentinel current_period_end used for free subscriptions, which never renew.
+FREE_SUBSCRIPTION_PERIOD_END = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
 
 
 class SubscriptionStatus(StrEnum):
@@ -35,12 +38,20 @@ class PlanContext(StrEnum):
     TEAM = "team"
 
 
+class PlanTier(IntEnum):
+    FREE = 1
+    BASIC = 2
+    PRO = 3
+
+
 class Plan(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: UUID
     name: str
+    description: str = ""
     context: PlanContext
+    tier: PlanTier = PlanTier.BASIC
     interval: PlanInterval
     is_active: bool = True
 
@@ -51,24 +62,26 @@ class PlanPrice(BaseModel):
     id: UUID
     plan_id: UUID
     stripe_price_id: str
-    currency: str
-    amount: int  # minor units (cents)
+    amount: int  # USD cents
 
 
 class Subscription(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: UUID
-    stripe_id: str
-    stripe_customer_id: UUID
+    stripe_id: str | None = None
+    stripe_customer_id: UUID | None = None
+    user_id: UUID | None = None
     status: SubscriptionStatus
     plan_id: UUID
     quantity: int = 1
-    promotion_code_id: str | None = None
-    discount_percent: float | None = None
-    discount_end_at: datetime | None = None
     trial_ends_at: datetime | None = None
     current_period_start: datetime
     current_period_end: datetime
     canceled_at: datetime | None = None
     created_at: datetime
+
+    @property
+    def is_free(self) -> bool:
+        """True when this subscription has no Stripe backing (free plan)."""
+        return self.stripe_id is None
