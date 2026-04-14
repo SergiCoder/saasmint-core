@@ -10,6 +10,7 @@ from django.db import IntegrityError
 from apps.billing.models import (
     ACTIVE_SUBSCRIPTION_STATUSES,
     PlanPrice,
+    PlanTier,
     StripeEvent,
     Subscription,
     SubscriptionStatus,
@@ -116,7 +117,7 @@ class TestPlanFreePlans:
         inactive = Plan.objects.create(
             name="Personal Free",
             context="personal",
-            tier=1,
+            tier=PlanTier.FREE,
             interval="month",
             is_active=False,
         )
@@ -129,7 +130,7 @@ class TestPlanFreePlans:
         team_free = Plan.objects.create(
             name="Team Free",
             context="team",
-            tier=1,
+            tier=PlanTier.FREE,
             interval="month",
             is_active=True,
         )
@@ -150,7 +151,7 @@ class TestPlanUniqueConstraint:
         Plan.objects.create(
             name="Personal Basic Monthly",
             context="personal",
-            tier=2,
+            tier=PlanTier.BASIC,
             interval="month",
             is_active=True,
         )
@@ -158,7 +159,7 @@ class TestPlanUniqueConstraint:
             Plan.objects.create(
                 name="Personal Basic Monthly v2",
                 context="personal",
-                tier=2,
+                tier=PlanTier.BASIC,
                 interval="month",
                 is_active=True,
             )
@@ -169,14 +170,14 @@ class TestPlanUniqueConstraint:
         Plan.objects.create(
             name="Legacy 1",
             context="personal",
-            tier=3,
+            tier=PlanTier.PRO,
             interval="year",
             is_active=False,
         )
         Plan.objects.create(
             name="Legacy 2",
             context="personal",
-            tier=3,
+            tier=PlanTier.PRO,
             interval="year",
             is_active=False,
         )

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from django.core.cache import cache
 
-from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
+from apps.billing.models import Plan, PlanPrice, PlanTier, StripeCustomer, Subscription
 from apps.users.models import AccountType, User
 
 
@@ -104,7 +104,7 @@ def free_plan(db):
     plan = Plan.objects.create(
         name="Personal Free",
         context="personal",
-        tier=1,
+        tier=PlanTier.FREE,
         interval="month",
         is_active=True,
     )

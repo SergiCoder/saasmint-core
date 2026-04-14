@@ -10,6 +10,7 @@ from asgiref.sync import async_to_sync
 
 from apps.billing.models import (
     Plan,
+    PlanTier,
     Product,
     ProductPrice,
     StripeCustomer,
@@ -342,7 +343,7 @@ class TestDjangoPlanRepository:
 
     def test_get_free_plan_ignores_team_context(self, repo, db):
         team_free = Plan.objects.create(
-            name="Team Free", context="team", tier=1, interval="month", is_active=True
+            name="Team Free", context="team", tier=PlanTier.FREE, interval="month", is_active=True
         )
         from apps.billing.models import PlanPrice as PlanPriceModel
 
@@ -353,7 +354,7 @@ class TestDjangoPlanRepository:
         inactive = Plan.objects.create(
             name="Personal Free",
             context="personal",
-            tier=1,
+            tier=PlanTier.FREE,
             interval="month",
             is_active=False,
         )
