@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.db import IntegrityError, transaction
+from django.http import HttpResponseRedirect
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -273,7 +274,12 @@ class ForgotPasswordView(APIView):
         except User.DoesNotExist:
             pass
 
-        return Response({"detail": "If the email exists, a reset link has been sent."})
+        return Response(
+            {
+                "detail": "If the email exists, a reset link has been sent.",
+                "code": "reset_email_queued",
+            }
+        )
 
 
 class ResetPasswordView(APIView):
@@ -345,7 +351,7 @@ class OAuthAuthorizeView(APIView):
     throttle_scope = "auth"
 
     @extend_schema(exclude=True)
-    def get(self, request: Request, provider: str) -> Response:
+    def get(self, request: Request, provider: str) -> Response | HttpResponseRedirect:
         from apps.users.oauth import PROVIDERS, get_authorization_url
 
         if provider not in PROVIDERS:
@@ -360,7 +366,7 @@ class OAuthAuthorizeView(APIView):
         redirect_uri = request.build_absolute_uri(f"/api/v1/auth/oauth/{provider}/callback/")
         url = get_authorization_url(provider, redirect_uri, state)
 
-        return Response(status=status.HTTP_302_FOUND, headers={"Location": url})
+        return HttpResponseRedirect(url)
 
 
 class OAuthCallbackView(APIView):
@@ -371,7 +377,7 @@ class OAuthCallbackView(APIView):
     throttle_scope = "auth"
 
     @extend_schema(exclude=True)
-    def get(self, request: Request, provider: str) -> Response:
+    def get(self, request: Request, provider: str) -> Response | HttpResponseRedirect:
         from apps.users.oauth import PROVIDERS, exchange_code
 
         if provider not in PROVIDERS:
@@ -388,54 +394,33 @@ class OAuthCallbackView(APIView):
 
         if error:
             safe_error = urlencode({"error": error})
-            return Response(
-                status=status.HTTP_302_FOUND,
-                headers={"Location": f"{frontend_url}/auth/error?{safe_error}"},
-            )
+            return HttpResponseRedirect(f"{frontend_url}/auth/error?{safe_error}")
 
         expected_state = request.session.pop("oauth_state", None)
         if not state or state != expected_state:
-            return Response(
-                status=status.HTTP_302_FOUND,
-                headers={"Location": f"{frontend_url}/auth/error?error=invalid_state"},
-            )
+            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=invalid_state")
 
         if not code:
-            return Response(
-                status=status.HTTP_302_FOUND,
-                headers={"Location": f"{frontend_url}/auth/error?error=missing_code"},
-            )
+            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=missing_code")
 
         try:
             redirect_uri = request.build_absolute_uri(f"/api/v1/auth/oauth/{provider}/callback/")
             user_info = exchange_code(provider, code, redirect_uri)
         except Exception:
             logger.exception("OAuth code exchange failed for %s", provider)
-            return Response(
-                status=status.HTTP_302_FOUND,
-                headers={"Location": f"{frontend_url}/auth/error?error=exchange_failed"},
-            )
+            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=exchange_failed")
 
         from apps.users.services import resolve_oauth_user
 
         try:
             user = resolve_oauth_user(provider, user_info)
         except ValueError:
-            return Response(
-                status=status.HTTP_302_FOUND,
-                headers={"Location": f"{frontend_url}/auth/error?error=account_deactivated"},
-            )
+            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=account_deactivated")
 
         if not user.is_active:
-            return Response(
-                status=status.HTTP_302_FOUND,
-                headers={"Location": f"{frontend_url}/auth/error?error=account_deactivated"},
-            )
+            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=account_deactivated")
 
         refresh = create_refresh_token(user)
         access = create_access_token(user)
         params = urlencode({"access_token": access, "refresh_token": refresh})
-        return Response(
-            status=status.HTTP_302_FOUND,
-            headers={"Location": f"{frontend_url}/auth/callback?{params}"},
-        )
+        return HttpResponseRedirect(f"{frontend_url}/auth/callback?{params}")

@@ -40,6 +40,7 @@ class InvitationStatus(StrEnum):
     ACCEPTED = "accepted"
     EXPIRED = "expired"
     CANCELLED = "cancelled"
+    DECLINED = "declined"
 
 
 class Invitation(BaseModel):

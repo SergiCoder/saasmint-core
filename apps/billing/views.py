@@ -11,7 +11,6 @@ from django.core.cache import cache
 from django.db.models import Q
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
-from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
@@ -70,8 +69,11 @@ def _resolve_display_currency(request: Request) -> str:
     Priority for anonymous: ``?currency=`` query param → ``"usd"``.
     Priority for authenticated: ``?currency=`` → ``user.preferred_currency`` → ``"usd"``.
     """
-    qp = request.query_params.get("currency", "").lower()
-    if qp in SUPPORTED_CURRENCIES:
+    qp_raw = request.query_params.get("currency")
+    if qp_raw is not None and qp_raw != "":
+        qp = qp_raw.lower()
+        if qp not in SUPPORTED_CURRENCIES:
+            raise ValidationError({"currency": [f"Unsupported currency: {qp_raw!r}."]})
         return qp
 
     user = getattr(request, "user", None)
@@ -166,10 +168,13 @@ class PlanListView(APIView):
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
-        responses=PlanSerializer(many=True),
+        responses=inline_serializer(
+            "PlanListResponse",
+            {"results": PlanSerializer(many=True)},
+        ),
         description=(
-            "List all active plans with prices. Not paginated"
-            " — the catalog is bounded to a small number of plans."
+            "List all active plans with prices. Returned as a non-paginated"
+            " ``{results: [...]}`` envelope — the catalog is bounded to a small number of plans."
         ),
         tags=["billing"],
         auth=[],
@@ -187,7 +192,7 @@ class PlanListView(APIView):
             qs = qs.filter(context=context_filter)
 
         data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
-        return Response(data)
+        return Response({"results": data})
 
 
 class ProductListView(APIView):
@@ -195,17 +200,20 @@ class ProductListView(APIView):
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
-        responses=ProductSerializer(many=True),
+        responses=inline_serializer(
+            "ProductListResponse",
+            {"results": ProductSerializer(many=True)},
+        ),
         description=(
-            "List all active one-time products with prices. Not paginated"
-            " — the catalog is bounded to a small number of products."
+            "List all active one-time products with prices. Returned as a non-paginated"
+            " ``{results: [...]}`` envelope — the catalog is bounded to a small number of products."
         ),
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
         products = ProductModel.objects.filter(is_active=True).select_related("price")
         data = ProductSerializer(products, many=True, context=_currency_context(request)).data
-        return Response(data)
+        return Response({"results": data})
 
 
 class CheckoutSessionView(APIView):
@@ -216,7 +224,7 @@ class CheckoutSessionView(APIView):
 
     @extend_schema(
         request=CheckoutRequestSerializer,
-        responses={201: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()})},
+        responses={200: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()})},
         tags=["billing"],
     )
     def post(self, request: Request) -> Response:
@@ -279,7 +287,7 @@ class CheckoutSessionView(APIView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
+        return Response({"url": url})
 
 
 class PortalSessionView(APIView):
@@ -290,7 +298,7 @@ class PortalSessionView(APIView):
 
     @extend_schema(
         request=PortalRequestSerializer,
-        responses={201: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()})},
+        responses={200: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()})},
         tags=["billing"],
     )
     def post(self, request: Request) -> Response:
@@ -313,11 +321,27 @@ class PortalSessionView(APIView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
+        return Response({"url": url})
+
+
+def _get_active_subscription_for_user(user: object) -> SubscriptionModel:
+    """Fetch the latest active subscription for a user (paid or free)."""
+    customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
+    q = Q(user=user)
+    if customer_id is not None:
+        q |= Q(stripe_customer_id=customer_id)
+    try:
+        return (
+            SubscriptionModel.objects.select_related("plan__price")
+            .filter(q, status__in=ACTIVE_SUBSCRIPTION_STATUSES)
+            .latest("created_at")
+        )
+    except SubscriptionModel.DoesNotExist as exc:
+        raise NotFound("No active subscription found.") from exc
 
 
 class SubscriptionView(APIView):
-    """GET/PATCH/DELETE /api/v1/billing/subscription — manage the current subscription."""
+    """GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current subscription."""
 
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "billing"
@@ -329,23 +353,15 @@ class SubscriptionView(APIView):
     )
     def get(self, request: Request) -> Response:
         user = get_user(request)
-        customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
-
-        q = Q(user=user)
-        if customer_id is not None:
-            q |= Q(stripe_customer_id=customer_id)
-
-        try:
-            sub = (
-                SubscriptionModel.objects.select_related("plan__price")
-                .filter(q, status__in=ACTIVE_SUBSCRIPTION_STATUSES)
-                .latest("created_at")
-            )
-        except SubscriptionModel.DoesNotExist as exc:
-            raise NotFound("No active subscription found.") from exc
+        sub = _get_active_subscription_for_user(user)
         return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
-    @extend_schema(request=UpdateSubscriptionSerializer, responses={204: None}, tags=["billing"])
+    @extend_schema(
+        parameters=[_CURRENCY_PARAM],
+        request=UpdateSubscriptionSerializer,
+        responses={200: SubscriptionSerializer},
+        tags=["billing"],
+    )
     def patch(self, request: Request) -> Response:
         user = get_user(request)
         ser = UpdateSubscriptionSerializer(data=request.data)
@@ -394,9 +410,15 @@ class SubscriptionView(APIView):
                 )
 
         async_to_sync(_do)()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        sub = _get_active_subscription_for_user(user)
+        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
-    @extend_schema(request=None, responses={204: None}, tags=["billing"])
+    @extend_schema(
+        parameters=[_CURRENCY_PARAM],
+        request=None,
+        responses={200: SubscriptionSerializer},
+        tags=["billing"],
+    )
     def delete(self, request: Request) -> Response:
         user = get_user(request)
 
@@ -409,4 +431,5 @@ class SubscriptionView(APIView):
             )
 
         async_to_sync(_do)()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        sub = _get_active_subscription_for_user(user)
+        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)

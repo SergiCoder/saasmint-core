@@ -283,7 +283,7 @@ class TestOrgMemberDetailViewDELETE:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Transfer Ownership (POST /api/v1/orgs/{orgId}/transfer-ownership/)
+# Transfer Ownership (PUT /api/v1/orgs/{orgId}/owner/)
 # ---------------------------------------------------------------------------
 
 
@@ -292,8 +292,8 @@ class TestOrgTransferOwnershipView:
     def test_owner_transfers_to_admin(
         self, authed_client, org, owner_membership, admin_user, admin_membership, user
     ):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/transfer-ownership/",
+        resp = authed_client.put(
+            f"/api/v1/orgs/{org.id}/owner/",
             {"user_id": str(admin_user.id)},
             format="json",
         )
@@ -308,8 +308,8 @@ class TestOrgTransferOwnershipView:
     def test_cannot_transfer_to_member(
         self, authed_client, org, owner_membership, member_user, member_membership
     ):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/transfer-ownership/",
+        resp = authed_client.put(
+            f"/api/v1/orgs/{org.id}/owner/",
             {"user_id": str(member_user.id)},
             format="json",
         )
@@ -318,16 +318,16 @@ class TestOrgTransferOwnershipView:
     def test_admin_cannot_transfer(
         self, admin_client, org, owner_membership, admin_membership, member_user, member_membership
     ):
-        resp = admin_client.post(
-            f"/api/v1/orgs/{org.id}/transfer-ownership/",
+        resp = admin_client.put(
+            f"/api/v1/orgs/{org.id}/owner/",
             {"user_id": str(member_user.id)},
             format="json",
         )
         assert resp.status_code == 403
 
     def test_missing_user_id(self, authed_client, org, owner_membership):
-        resp = authed_client.post(
-            f"/api/v1/orgs/{org.id}/transfer-ownership/",
+        resp = authed_client.put(
+            f"/api/v1/orgs/{org.id}/owner/",
             {},
             format="json",
         )
@@ -425,8 +425,8 @@ class TestInvitationListCreateView:
         )
         resp = authed_client.get(f"/api/v1/orgs/{org.id}/invitations/")
         assert resp.status_code == 200
-        assert len(resp.data) == 1
-        assert resp.data[0]["email"] == "pending@example.com"
+        assert resp.data["count"] == 1
+        assert resp.data["results"][0]["email"] == "pending@example.com"
 
 
 @pytest.mark.django_db
@@ -511,7 +511,7 @@ class TestInvitationAcceptView:
             {"full_name": "Other", "password": "securepass123"},
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
 
     def test_expired_invitation_rejected(self, org, owner_membership, user):
         Invitation.objects.create(
@@ -528,7 +528,7 @@ class TestInvitationAcceptView:
             {"full_name": "Expired User", "password": "securepass123"},
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 410
 
     def test_nonexistent_token_returns_404(self):
         client = APIClient()
@@ -568,7 +568,7 @@ class TestInvitationDeclineView:
         resp = client.post("/api/v1/invitations/decline-token/decline/")
         assert resp.status_code == 204
         invitation.refresh_from_db()
-        assert invitation.status == InvitationStatus.CANCELLED
+        assert invitation.status == InvitationStatus.DECLINED
 
 
 # ---------------------------------------------------------------------------

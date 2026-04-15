@@ -166,8 +166,7 @@ class Command(BaseCommand):
 
         # Load all active plans once to avoid a get() per PLAN_PRICES row.
         plans_by_identity: dict[tuple[str, int, str], Plan] = {
-            (p.context, p.tier, p.interval): p
-            for p in Plan.objects.filter(is_active=True)
+            (p.context, p.tier, p.interval): p for p in Plan.objects.filter(is_active=True)
         }
         for context, tier, interval, amount in PLAN_PRICES:
             plan = plans_by_identity[context, tier, interval]

@@ -9,7 +9,7 @@ from apps.orgs.views import (
     OrgListView,
     OrgMemberDetailView,
     OrgMemberListView,
-    OrgTransferOwnershipView,
+    OrgOwnerView,
 )
 
 urlpatterns = [
@@ -22,9 +22,9 @@ urlpatterns = [
         name="org-member-detail",
     ),
     path(
-        "<uuid:org_id>/transfer-ownership/",
-        OrgTransferOwnershipView.as_view(),
-        name="org-transfer-ownership",
+        "<uuid:org_id>/owner/",
+        OrgOwnerView.as_view(),
+        name="org-owner",
     ),
     path(
         "<uuid:org_id>/invitations/",

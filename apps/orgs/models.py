@@ -18,6 +18,7 @@ class InvitationStatus(models.TextChoices):
     ACCEPTED = "accepted", "Accepted"
     EXPIRED = "expired", "Expired"
     CANCELLED = "cancelled", "Cancelled"
+    DECLINED = "declined", "Declined"
 
 
 class Org(models.Model):

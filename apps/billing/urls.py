@@ -15,5 +15,5 @@ urlpatterns = [
     path("products/", ProductListView.as_view(), name="billing-products"),
     path("checkout-sessions/", CheckoutSessionView.as_view(), name="billing-checkout"),
     path("portal-sessions/", PortalSessionView.as_view(), name="billing-portal"),
-    path("subscription/", SubscriptionView.as_view(), name="billing-subscription"),
+    path("subscriptions/me/", SubscriptionView.as_view(), name="billing-subscription"),
 ]

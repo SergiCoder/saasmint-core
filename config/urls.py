@@ -22,6 +22,7 @@ def health_check(request: HttpRequest) -> JsonResponse:
 urlpatterns = [
     path("api/v1/health/", health_check, name="health-check"),
     path("admin/", admin.site.urls),
+    # Non-API admin-only views — excluded from OpenAPI schema via SCHEMA_PATH_PREFIX=/api/v[0-9].
     path("hijack/acquire/", HijackAcquireView.as_view(), name="hijack-acquire"),
     path("hijack/release/", HijackReleaseView.as_view(), name="hijack-release"),
     path("hijack/", include("hijack.urls")),

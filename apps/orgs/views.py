@@ -10,10 +10,12 @@ from uuid import UUID
 
 from django.db import transaction
 from django.shortcuts import get_object_or_404
+from django.urls import reverse
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
+from rest_framework.exceptions import APIException
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import AllowAny
@@ -44,7 +46,31 @@ logger = logging.getLogger(__name__)
 _ADMIN_OR_ABOVE = (OrgRole.OWNER, OrgRole.ADMIN)
 _OWNER_ONLY = (OrgRole.OWNER,)
 
+
+class _Gone(APIException):
+    status_code = status.HTTP_410_GONE
+    default_detail = "Resource is no longer available."
+    default_code = "gone"
+
+
+class _Conflict(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "Conflict."
+    default_code = "conflict"
+
+
 INVITATION_EXPIRY_DAYS = 7
+
+_DEFAULT_PAGE_SIZE = 50
+_MAX_PAGE_SIZE = 100
+
+
+def _default_paginator() -> LimitOffsetPagination:
+    """Return a paginator with the app's standard defaults."""
+    paginator = LimitOffsetPagination()
+    paginator.default_limit = _DEFAULT_PAGE_SIZE
+    paginator.max_limit = _MAX_PAGE_SIZE
+    return paginator
 
 
 def _get_org_and_member(
@@ -95,9 +121,7 @@ class OrgListView(APIView):
             deleted_at__isnull=True,
             is_active=True,
         ).order_by("name")
-        paginator = LimitOffsetPagination()
-        paginator.default_limit = 50
-        paginator.max_limit = 100
+        paginator = _default_paginator()
         page = paginator.paginate_queryset(orgs, request)
         return paginator.get_paginated_response(OrgSerializer(page, many=True).data)
 
@@ -144,7 +168,7 @@ class OrgMemberListView(APIView):
     @extend_schema(
         responses=OrgMemberSerializer(many=True),
         parameters=[
-            OpenApiParameter("limit", int, description="Page size (max 200)"),
+            OpenApiParameter("limit", int, description="Page size (max 100)"),
             OpenApiParameter("offset", int, description="Number of items to skip"),
         ],
         tags=["orgs"],
@@ -153,9 +177,7 @@ class OrgMemberListView(APIView):
         user = get_user(request)
         org, _ = _get_org_and_member(user.id, org_id)
         queryset = OrgMember.objects.filter(org=org).select_related("user").order_by("joined_at")
-        paginator = LimitOffsetPagination()
-        paginator.default_limit = 50
-        paginator.max_limit = 200
+        paginator = _default_paginator()
         page = paginator.paginate_queryset(queryset, request)
         return paginator.get_paginated_response(OrgMemberSerializer(page, many=True).data)
 
@@ -239,8 +261,8 @@ class OrgMemberDetailView(APIView):
 # ---------------------------------------------------------------------------
 
 
-class OrgTransferOwnershipView(APIView):
-    """POST /api/v1/orgs/{org_id}/transfer-ownership/ — transfer owner role."""
+class OrgOwnerView(APIView):
+    """PUT /api/v1/orgs/{org_id}/owner/ — transfer ownership to another admin."""
 
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "orgs"
@@ -250,7 +272,7 @@ class OrgTransferOwnershipView(APIView):
         responses={200: OrgMemberSerializer},
         tags=["orgs"],
     )
-    def post(self, request: Request, org_id: UUID) -> Response:
+    def put(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
 
@@ -293,6 +315,10 @@ class InvitationListCreateView(APIView):
 
     @extend_schema(
         responses=InvitationSerializer(many=True),
+        parameters=[
+            OpenApiParameter("limit", int, description="Page size (max 100)"),
+            OpenApiParameter("offset", int, description="Number of items to skip"),
+        ],
         tags=["orgs"],
     )
     def get(self, request: Request, org_id: UUID) -> Response:
@@ -303,7 +329,9 @@ class InvitationListCreateView(APIView):
             .select_related("org", "invited_by")
             .order_by("-created_at")
         )
-        return Response(InvitationSerializer(invitations, many=True).data)
+        paginator = _default_paginator()
+        page = paginator.paginate_queryset(invitations, request)
+        return paginator.get_paginated_response(InvitationSerializer(page, many=True).data)
 
     @extend_schema(
         request=CreateInvitationSerializer,
@@ -358,9 +386,13 @@ class InvitationListCreateView(APIView):
             inviter_name=user.full_name,
         )
 
+        location = request.build_absolute_uri(
+            reverse("orgs-invitations:invitation-detail", kwargs={"token": token})
+        )
         return Response(
             InvitationSerializer(invitation).data,
             status=status.HTTP_201_CREATED,
+            headers={"Location": location},
         )
 
 
@@ -473,17 +505,21 @@ class InvitationAcceptView(APIView):
         if invitation.expires_at < timezone.now():
             invitation.status = InvitationStatus.EXPIRED
             invitation.save(update_fields=["status"])
-            raise DRFValidationError({"detail": "This invitation has expired."})
+            raise _Gone({"detail": "This invitation has expired.", "code": "invitation_expired"})
 
         org = invitation.org
         if org.deleted_at is not None or not org.is_active:
-            raise DRFValidationError({"detail": "This organization no longer exists."})
+            from rest_framework.exceptions import NotFound
+
+            raise NotFound(
+                {"detail": "This organization no longer exists.", "code": "org_not_found"}
+            )
 
         # Email must not already be registered
         if User.objects.filter(
             email=invitation.email,
         ).exists():
-            raise DRFValidationError({"detail": "This email is already registered."})
+            raise _Conflict({"detail": "This email is already registered.", "code": "email_exists"})
 
         ser = InvitationAcceptSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -528,6 +564,6 @@ class InvitationDeclineView(APIView):
     @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def post(self, request: Request, token: str) -> Response:
         invitation = get_object_or_404(Invitation, token=token, status=InvitationStatus.PENDING)
-        invitation.status = InvitationStatus.CANCELLED
+        invitation.status = InvitationStatus.DECLINED
         invitation.save(update_fields=["status"])
         return Response(status=status.HTTP_204_NO_CONTENT)

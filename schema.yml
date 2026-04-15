@@ -76,12 +76,11 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '201':
+        '200':
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: {}
+                $ref: '#/components/schemas/AvatarResponse'
           description: ''
     delete:
       operationId: account_avatar_destroy
@@ -108,8 +107,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: {}
+                $ref: '#/components/schemas/AccountExportResponse'
           description: ''
   /api/v1/auth/change-password/:
     post:
@@ -394,7 +392,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '201':
+        '200':
           content:
             application/json:
               schema:
@@ -402,9 +400,10 @@ paths:
           description: ''
   /api/v1/billing/plans/:
     get:
-      operationId: billing_plans_list
-      description: List all active plans with prices. Not paginated — the catalog
-        is bounded to a small number of plans.
+      operationId: billing_plans_retrieve
+      description: 'List all active plans with prices. Returned as a non-paginated
+        ``{results: [...]}`` envelope — the catalog is bounded to a small number of
+        plans.'
       parameters:
       - in: query
         name: currency
@@ -418,9 +417,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Plan'
+                $ref: '#/components/schemas/PlanListResponse'
           description: ''
   /api/v1/billing/portal-sessions/:
     post:
@@ -445,7 +442,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '201':
+        '200':
           content:
             application/json:
               schema:
@@ -453,9 +450,10 @@ paths:
           description: ''
   /api/v1/billing/products/:
     get:
-      operationId: billing_products_list
-      description: List all active one-time products with prices. Not paginated —
-        the catalog is bounded to a small number of products.
+      operationId: billing_products_retrieve
+      description: 'List all active one-time products with prices. Returned as a non-paginated
+        ``{results: [...]}`` envelope — the catalog is bounded to a small number of
+        products.'
       parameters:
       - in: query
         name: currency
@@ -472,14 +470,12 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Product'
+                $ref: '#/components/schemas/ProductListResponse'
           description: ''
-  /api/v1/billing/subscription/:
+  /api/v1/billing/subscriptions/me/:
     get:
-      operationId: billing_subscription_retrieve
-      description: GET/PATCH/DELETE /api/v1/billing/subscription — manage the current
+      operationId: billing_subscriptions_me_retrieve
+      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
         subscription.
       parameters:
       - in: query
@@ -500,9 +496,15 @@ paths:
                 $ref: '#/components/schemas/Subscription'
           description: ''
     patch:
-      operationId: billing_subscription_partial_update
-      description: GET/PATCH/DELETE /api/v1/billing/subscription — manage the current
+      operationId: billing_subscriptions_me_partial_update
+      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
         subscription.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
       requestBody:
@@ -520,20 +522,34 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '204':
-          description: No response body
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
     delete:
-      operationId: billing_subscription_destroy
-      description: GET/PATCH/DELETE /api/v1/billing/subscription — manage the current
+      operationId: billing_subscriptions_me_destroy
+      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
         subscription.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
       security:
       - JWT: []
       - cookieAuth: []
       responses:
-        '204':
-          description: No response body
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
   /api/v1/currencies/:
     get:
       operationId: currencies_retrieve
@@ -747,6 +763,16 @@ paths:
       operationId: orgs_invitations_list
       description: GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations.
       parameters:
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Page size (max 100)
+      - in: query
+        name: offset
+        schema:
+          type: integer
+        description: Number of items to skip
       - in: path
         name: org_id
         schema:
@@ -836,7 +862,7 @@ paths:
         name: limit
         schema:
           type: integer
-        description: Page size (max 200)
+        description: Page size (max 100)
       - in: query
         name: offset
         schema:
@@ -927,11 +953,11 @@ paths:
       responses:
         '204':
           description: No response body
-  /api/v1/orgs/{org_id}/transfer-ownership/:
-    post:
-      operationId: orgs_transfer_ownership_create
-      description: POST /api/v1/orgs/{org_id}/transfer-ownership/ — transfer owner
-        role.
+  /api/v1/orgs/{org_id}/owner/:
+    put:
+      operationId: orgs_owner_update
+      description: PUT /api/v1/orgs/{org_id}/owner/ — transfer ownership to another
+        admin.
       parameters:
       - in: path
         name: org_id
@@ -1005,6 +1031,23 @@ paths:
           description: ''
 components:
   schemas:
+    AccountExportResponse:
+      type: object
+      properties:
+        user:
+          type: object
+          additionalProperties: {}
+        stripe_customer:
+          type: object
+          additionalProperties: {}
+        subscriptions:
+          type: array
+          items:
+            type: object
+            additionalProperties: {}
+      required:
+      - subscriptions
+      - user
     AccountTypeEnum:
       enum:
       - personal
@@ -1013,6 +1056,14 @@ components:
       description: |-
         * `personal` - Personal
         * `org_member` - Org Member
+    AvatarResponse:
+      type: object
+      properties:
+        avatar_url:
+          type: string
+          format: uri
+      required:
+      - avatar_url
     ChangePasswordRequest:
       type: object
       properties:
@@ -1192,12 +1243,14 @@ components:
       - accepted
       - expired
       - cancelled
+      - declined
       type: string
       description: |-
         * `pending` - Pending
         * `accepted` - Accepted
         * `expired` - Expired
         * `cancelled` - Cancelled
+        * `declined` - Declined
     LoginRequest:
       type: object
       properties:
@@ -1402,6 +1455,15 @@ components:
       - name
       - price
       - tier
+    PlanListResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Plan'
+      required:
+      - results
     PlanPrice:
       type: object
       description: Shared logic for serializers that add display_amount / currency
@@ -1480,6 +1542,15 @@ components:
       - name
       - price
       - type
+    ProductListResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+      required:
+      - results
     ProductPrice:
       type: object
       description: Shared logic for serializers that add display_amount / currency

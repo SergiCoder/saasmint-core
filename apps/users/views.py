@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.core.files.storage import default_storage
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers, status
 from rest_framework.parsers import MultiPartParser
 from rest_framework.request import Request
@@ -119,7 +119,19 @@ class AccountExportView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "account_export"
 
-    @extend_schema(responses={200: dict}, tags=["account"])
+    @extend_schema(
+        responses={
+            200: inline_serializer(
+                "AccountExportResponse",
+                {
+                    "user": serializers.DictField(),
+                    "stripe_customer": serializers.DictField(required=False),
+                    "subscriptions": serializers.ListField(child=serializers.DictField()),
+                },
+            )
+        },
+        tags=["account"],
+    )
     def get(self, request: Request) -> Response:
         customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)
@@ -133,7 +145,7 @@ class AccountExportView(APIView):
 
 
 _MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB
-_ALLOWED_AVATAR_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+_ALLOWED_AVATAR_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif"}
 
 
 def _delete_local_avatar(avatar_url: str | None) -> None:
@@ -145,7 +157,13 @@ def _delete_local_avatar(avatar_url: str | None) -> None:
 
 
 class _AvatarUploadSerializer(serializers.Serializer["_AvatarUploadSerializer"]):
-    avatar = serializers.ImageField()
+    avatar = serializers.ImageField(max_length=255)
+
+    def validate_avatar(self, value: object) -> object:
+        size = getattr(value, "size", None)
+        if size is not None and size > _MAX_AVATAR_SIZE:
+            raise serializers.ValidationError("File too large (max 5 MB).")
+        return value
 
 
 class AvatarView(APIView):
@@ -157,35 +175,29 @@ class AvatarView(APIView):
 
     @extend_schema(
         request=_AvatarUploadSerializer,
-        responses={201: dict},
+        responses={
+            200: inline_serializer("AvatarResponse", {"avatar_url": serializers.URLField()})
+        },
         tags=["account"],
     )
     def post(self, request: Request) -> Response:
         """Upload avatar (multipart), return { avatar_url }."""
         user = get_user(request)
 
-        file = request.FILES.get("avatar")
-        if file is None:
-            return Response(
-                {"detail": "No file provided.", "code": "missing_file"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        ser = _AvatarUploadSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        file = ser.validated_data["avatar"]
 
-        if file.content_type not in _ALLOWED_AVATAR_TYPES:
-            return Response(
-                {"detail": "Unsupported image type.", "code": "invalid_type"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if file.size is not None and file.size > _MAX_AVATAR_SIZE:
-            return Response(
-                {"detail": "File too large (max 5 MB).", "code": "file_too_large"},
-                status=status.HTTP_400_BAD_REQUEST,
+        ext = (file.name.rsplit(".", 1)[-1] if "." in file.name else "jpg").lower()
+        if ext == "jpeg":
+            ext = "jpg"
+        if ext not in _ALLOWED_AVATAR_EXTENSIONS:
+            raise serializers.ValidationError(
+                {"avatar": ["Unsupported image type."]},
             )
 
         _delete_local_avatar(user.avatar_url)
 
-        ext = file.name.rsplit(".", 1)[-1] if "." in file.name else "jpg"
         path = f"avatars/{user.id}/{uuid.uuid4().hex}.{ext}"
         saved_path = default_storage.save(path, file)
         avatar_url = request.build_absolute_uri(f"{settings.MEDIA_URL}{saved_path}")
@@ -195,8 +207,7 @@ class AvatarView(APIView):
 
         return Response(
             {"avatar_url": avatar_url},
-            status=status.HTTP_201_CREATED,
-            headers={"Location": avatar_url},
+            status=status.HTTP_200_OK,
         )
 
     @extend_schema(responses={204: None}, tags=["account"])
