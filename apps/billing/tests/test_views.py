@@ -780,8 +780,9 @@ class TestCurrencyConversion:
         resp = client.get("/api/v1/billing/plans/?currency=eur")
         price = resp.data["results"][0]["price"]
         assert price["currency"] == "eur"
-        # 999 cents * 0.91 = 909.09 → round → 909 minor units → 9.09 → friendly → 9.49
-        assert price["display_amount"] == 9.49
+        # 999 cents * 0.91 = 909.09 → round → 909 minor units → 9.09 → friendly → 8.99
+        # (nearest of {8.99, 9.49, 9.99}; 8.99 is 0.10 away)
+        assert price["display_amount"] == 8.99
         assert price["approximate"] is True
         # Original USD cents still present
         assert price["amount"] == 999
@@ -857,8 +858,9 @@ class TestCurrencyConversion:
         resp = authed_client.get("/api/v1/billing/products/?currency=eur")
         price = resp.data["results"][0]["price"]
         assert price["currency"] == "eur"
-        # 500 * 0.91 = 455 → /100 → 4.55 → friendly → 4.99 (rounds up)
-        assert price["display_amount"] == 4.99
+        # 500 * 0.91 = 455 → /100 → 4.55 → friendly → 4.49
+        # (nearest of {3.99, 4.49, 4.99}; 4.49 is 0.06 away)
+        assert price["display_amount"] == 4.49
         assert price["approximate"] is True
 
     def test_user_default_currency_returns_usd(self, authed_client, user, plan, plan_price):

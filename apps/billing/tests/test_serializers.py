@@ -279,8 +279,9 @@ class TestPlanPriceSerializerCurrency:
         ctx = {"currency": "eur", "rate": 0.91}
         data = PlanPriceSerializer(plan_price, context=ctx).data
         assert data["currency"] == "eur"
-        # 999 * 0.91 = 909.09 → round → 909 → /100 → 9.09 → friendly → 9.49
-        assert data["display_amount"] == 9.49
+        # 999 * 0.91 = 909.09 → round → 909 → /100 → 9.09 → friendly → 8.99
+        # (nearest of {8.99, 9.49, 9.99}; 8.99 is 0.10 away)
+        assert data["display_amount"] == 8.99
         assert data["approximate"] is True
         assert data["amount"] == 999  # original unchanged
 
