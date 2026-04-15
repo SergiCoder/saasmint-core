@@ -63,7 +63,13 @@ paths:
   /api/v1/account/avatar/:
     post:
       operationId: account_avatar_create
-      description: Upload avatar (multipart), return { avatar_url }.
+      description: |-
+        Upload avatar (multipart), return { avatar_url }.
+
+        The uploaded image is decoded with Pillow, re-encoded as a 128x128 WebP,
+        and stored. The original bytes and client-supplied filename/content_type
+        are never written to storage — this blocks stored-XSS from polyglot or
+        mis-typed uploads (e.g. ``foo.svg``/``foo.html`` claiming to be images).
       tags:
       - account
       requestBody:

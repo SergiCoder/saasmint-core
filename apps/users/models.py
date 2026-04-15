@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import ClassVar
 
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
 from django.core.cache import cache
 from django.core.validators import MinLengthValidator
 from django.db import models
 from django.db.models import Index
+from django.db.models.signals import post_delete, post_save
+from django.dispatch import receiver
 
 from apps.users.managers import UserManager
 
@@ -66,12 +68,20 @@ class User(AbstractBaseUser, PermissionsMixin):
     class Meta:
         db_table = "users"
 
-    def save(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401  # *args/**kwargs forwarded to super().save(); heterogeneous by design
-        super().save(*args, **kwargs)
-        cache.delete(AUTH_USER_CACHE_KEY.format(self.id))
-
     def __str__(self) -> str:
         return self.email
+
+
+@receiver(post_save, sender="users.User")
+@receiver(post_delete, sender="users.User")
+def _invalidate_auth_user_cache(sender: object, instance: User, **kwargs: object) -> None:
+    """Clear the cached auth-user snapshot on any User change.
+
+    Using signals instead of a save() override so that bulk ORM updates and
+    admin `update_fields` operations also invalidate the cache — the save
+    override was silently bypassed by `QuerySet.update()`.
+    """
+    cache.delete(AUTH_USER_CACHE_KEY.format(instance.id))
 
 
 class RefreshToken(models.Model):

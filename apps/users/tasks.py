@@ -48,3 +48,19 @@ def cleanup_orphaned_org_accounts() -> None:
     if count:
         orphans.delete()
         logger.info("Cleaned up %d orphaned org-member accounts", count)
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def cleanup_expired_refresh_tokens() -> None:
+    """Delete refresh token rows whose expires_at has passed.
+
+    Expired tokens are already rejected at verification time, but the rows
+    accumulate indefinitely without a cleanup task.
+    """
+    from datetime import UTC, datetime
+
+    from apps.users.models import RefreshToken
+
+    deleted, _ = RefreshToken.objects.filter(expires_at__lt=datetime.now(UTC)).delete()
+    if deleted:
+        logger.info("Pruned %d expired refresh tokens", deleted)
