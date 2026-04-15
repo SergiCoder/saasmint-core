@@ -65,11 +65,10 @@ async def handle_stripe_event(
 
     # Convert StripeObject → plain nested dict at the boundary. Newer
     # stripe-python versions don't inherit StripeObject from dict, so it
-    # has no `.get()` and `dict(event)` raises KeyError. `.to_dict()`
-    # recurses into nested StripeObjects. Tests stub construct_event to
-    # return a plain dict directly, so accept that case as-is.
+    # has no `.get()` and `dict(event)` raises KeyError. Tests stub
+    # construct_event to return a plain dict directly.
     event: dict[str, Any] = (
-        stripe_event.to_dict() if hasattr(stripe_event, "to_dict") else stripe_event
+        stripe_event if isinstance(stripe_event, dict) else stripe_event.to_dict()
     )
     stripe_id: str = event["id"]
 
@@ -92,7 +91,6 @@ async def handle_stripe_event(
         await repos.events.mark_processed(stripe_id)
     except Exception as exc:
         await repos.events.mark_failed(stripe_id, str(exc))
-        logger.exception("Failed to process Stripe event %s: %s", stripe_id, exc)
         raise
 
 

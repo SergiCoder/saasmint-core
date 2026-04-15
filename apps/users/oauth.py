@@ -2,14 +2,42 @@
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
-from typing import Any
+from enum import StrEnum
+from typing import TypedDict
 from urllib.parse import urlencode
 
 import httpx
 from django.conf import settings
 
-PROVIDERS = ("google", "github", "microsoft")
+_OAUTH_TIMEOUT = httpx.Timeout(10.0)
+
+
+class Provider(StrEnum):
+    GOOGLE = "google"
+    GITHUB = "github"
+    MICROSOFT = "microsoft"
+
+
+PROVIDERS: tuple[str, ...] = tuple(p.value for p in Provider)
+
+
+class OAuthError(Exception):
+    """Raised when OAuth flow fails for domain reasons (not HTTP)."""
+
+
+class _ProviderConfig(TypedDict):
+    client_id: str
+    client_secret: str
+    authorize_url: str
+    token_url: str
+    userinfo_url: str
+    scopes: str
+
+
+class _TokenResponse(TypedDict, total=False):
+    access_token: str
 
 
 class OAuthEmailNotVerifiedError(Exception):
@@ -25,39 +53,41 @@ class OAuthUserInfo:
     email_verified: bool = False
 
 
-def _get_config(provider: str) -> dict[str, Any]:
-    configs: dict[str, dict[str, Any]] = {
-        "google": {
-            "client_id": settings.OAUTH_GOOGLE_CLIENT_ID,
-            "client_secret": settings.OAUTH_GOOGLE_CLIENT_SECRET,
-            "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
-            "token_url": "https://oauth2.googleapis.com/token",
-            "userinfo_url": "https://www.googleapis.com/oauth2/v2/userinfo",
-            "scopes": "openid email profile",
-        },
-        "github": {
-            "client_id": settings.OAUTH_GITHUB_CLIENT_ID,
-            "client_secret": settings.OAUTH_GITHUB_CLIENT_SECRET,
-            "authorize_url": "https://github.com/login/oauth/authorize",
-            "token_url": "https://github.com/login/oauth/access_token",
-            "userinfo_url": "https://api.github.com/user",
-            "scopes": "read:user user:email",
-        },
-        "microsoft": {
-            "client_id": settings.OAUTH_MICROSOFT_CLIENT_ID,
-            "client_secret": settings.OAUTH_MICROSOFT_CLIENT_SECRET,
-            "authorize_url": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
-            "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-            "userinfo_url": "https://graph.microsoft.com/v1.0/me",
-            "scopes": "openid email profile User.Read",
-        },
-    }
-    return configs[provider]
+@functools.cache
+def _get_config(provider: Provider) -> _ProviderConfig:
+    match provider:
+        case Provider.GOOGLE:
+            return _ProviderConfig(
+                client_id=settings.OAUTH_GOOGLE_CLIENT_ID,
+                client_secret=settings.OAUTH_GOOGLE_CLIENT_SECRET,
+                authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+                token_url="https://oauth2.googleapis.com/token",  # noqa: S106  # URL, not a credential
+                userinfo_url="https://www.googleapis.com/oauth2/v2/userinfo",
+                scopes="openid email profile",
+            )
+        case Provider.GITHUB:
+            return _ProviderConfig(
+                client_id=settings.OAUTH_GITHUB_CLIENT_ID,
+                client_secret=settings.OAUTH_GITHUB_CLIENT_SECRET,
+                authorize_url="https://github.com/login/oauth/authorize",
+                token_url="https://github.com/login/oauth/access_token",  # noqa: S106  # URL, not a credential
+                userinfo_url="https://api.github.com/user",
+                scopes="read:user user:email",
+            )
+        case Provider.MICROSOFT:
+            return _ProviderConfig(
+                client_id=settings.OAUTH_MICROSOFT_CLIENT_ID,
+                client_secret=settings.OAUTH_MICROSOFT_CLIENT_SECRET,
+                authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+                token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",  # noqa: S106  # URL, not a credential
+                userinfo_url="https://graph.microsoft.com/v1.0/me",
+                scopes="openid email profile User.Read",
+            )
 
 
 def get_authorization_url(provider: str, redirect_uri: str, state: str) -> str:
     """Build the OAuth authorization URL for a 302 redirect."""
-    cfg = _get_config(provider)
+    cfg = _get_config(Provider(provider))
     params = {
         "client_id": cfg["client_id"],
         "redirect_uri": redirect_uri,
@@ -70,9 +100,9 @@ def get_authorization_url(provider: str, redirect_uri: str, state: str) -> str:
 
 def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
     """Exchange an authorization code for user info."""
-    cfg = _get_config(provider)
+    prov = Provider(provider)
+    cfg = _get_config(prov)
 
-    # Exchange code for access token
     token_resp = httpx.post(
         cfg["token_url"],
         data={
@@ -83,47 +113,57 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
             "grant_type": "authorization_code",
         },
         headers={"Accept": "application/json"},
+        timeout=_OAUTH_TIMEOUT,
     )
     token_resp.raise_for_status()
-    token_data = token_resp.json()
-    access_token = token_data["access_token"]
+    token_data: _TokenResponse = token_resp.json()
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise OAuthError("OAuth token response missing access_token")
 
-    # Fetch user info
     userinfo_resp = httpx.get(
         cfg["userinfo_url"],
         headers={"Authorization": f"Bearer {access_token}"},
+        timeout=_OAUTH_TIMEOUT,
     )
     userinfo_resp.raise_for_status()
     info = userinfo_resp.json()
 
-    if provider == "google":
-        return OAuthUserInfo(
-            email=info["email"],
-            full_name=info.get("name", info["email"].split("@")[0]),
-            provider_user_id=str(info["id"]),
-            avatar_url=info.get("picture"),
-            email_verified=bool(info.get("verified_email") or info.get("email_verified")),
-        )
-    elif provider == "github":
-        # Always use /user/emails as the authoritative source — the public email
-        # on /user is not guaranteed verified.
-        email = _fetch_github_primary_email(access_token)
-        return OAuthUserInfo(
-            email=email,
-            full_name=info.get("name") or info.get("login", email.split("@")[0]),
-            provider_user_id=str(info["id"]),
-            avatar_url=info.get("avatar_url"),
-            email_verified=True,
-        )
-    else:  # microsoft
-        # Microsoft Graph does not expose a reliable email_verified flag for
-        # consumer accounts, so treat these emails as unverified.
-        return OAuthUserInfo(
-            email=info.get("mail") or info.get("userPrincipalName", ""),
-            full_name=info.get("displayName", ""),
-            provider_user_id=str(info["id"]),
-            email_verified=False,
-        )
+    match prov:
+        case Provider.GOOGLE:
+            email = info.get("email")
+            if not email:
+                raise OAuthError("Google OAuth response missing email")
+            return OAuthUserInfo(
+                email=email,
+                full_name=info.get("name") or email.split("@")[0],
+                provider_user_id=str(info["id"]),
+                avatar_url=info.get("picture"),
+                email_verified=bool(info.get("verified_email") or info.get("email_verified")),
+            )
+        case Provider.GITHUB:
+            # Always use /user/emails as the authoritative source — the public
+            # email on /user is not guaranteed verified.
+            email = _fetch_github_primary_email(access_token)
+            return OAuthUserInfo(
+                email=email,
+                full_name=info.get("name") or info.get("login") or email.split("@")[0],
+                provider_user_id=str(info["id"]),
+                avatar_url=info.get("avatar_url"),
+                email_verified=True,
+            )
+        case Provider.MICROSOFT:
+            # Microsoft Graph does not expose a reliable email_verified flag for
+            # consumer accounts, so treat these emails as unverified.
+            email = info.get("mail") or info.get("userPrincipalName")
+            if not email:
+                raise OAuthError("Microsoft OAuth response missing email")
+            return OAuthUserInfo(
+                email=email,
+                full_name=info.get("displayName", ""),
+                provider_user_id=str(info["id"]),
+                email_verified=False,
+            )
 
 
 def _fetch_github_primary_email(access_token: str) -> str:
@@ -131,9 +171,10 @@ def _fetch_github_primary_email(access_token: str) -> str:
     resp = httpx.get(
         "https://api.github.com/user/emails",
         headers={"Authorization": f"Bearer {access_token}"},
+        timeout=_OAUTH_TIMEOUT,
     )
     resp.raise_for_status()
     for entry in resp.json():
         if entry.get("primary") and entry.get("verified"):
             return str(entry["email"])
-    raise ValueError("No verified primary email found on GitHub account")
+    raise OAuthError("No verified primary email found on GitHub account")

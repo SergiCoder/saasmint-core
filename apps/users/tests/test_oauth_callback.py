@@ -52,7 +52,7 @@ def _mock_exchange(
 @pytest.mark.django_db
 class TestOAuthCallbackNewUser:
     def test_creates_user_and_social_account(self, client, _oauth_state):
-        with patch("apps.users.oauth.exchange_code", return_value=_mock_exchange()):
+        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -70,7 +70,7 @@ class TestOAuthCallbackNewUser:
 
     def test_assigns_free_plan(self, client, _oauth_state):
         with (
-            patch("apps.users.oauth.exchange_code", return_value=_mock_exchange()),
+            patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()),
             patch("apps.users.services.assign_free_plan") as mock_plan,
         ):
             client.get(
@@ -89,7 +89,7 @@ class TestOAuthCallbackExistingEmailUser:
             full_name="Existing User",
         )
         info = _mock_exchange(email="existing@example.com", provider_user_id="g-99")
-        with patch("apps.users.oauth.exchange_code", return_value=info):
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -116,7 +116,7 @@ class TestOAuthCallbackReturningSocialUser:
         SocialAccount.objects.create(user=user, provider="github", provider_user_id="gh-42")
 
         info = _mock_exchange(email="returning@example.com", provider_user_id="gh-42")
-        with patch("apps.users.oauth.exchange_code", return_value=info):
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/github/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -131,7 +131,7 @@ class TestOAuthCallbackReturningSocialUser:
 @pytest.mark.django_db
 class TestOAuthCallbackTokensInFragment:
     def test_tokens_are_placed_in_url_fragment(self, client, _oauth_state):
-        with patch("apps.users.oauth.exchange_code", return_value=_mock_exchange()):
+        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -147,7 +147,7 @@ class TestOAuthCallbackTokensInFragment:
 class TestOAuthCallbackUnverifiedEmail:
     def test_unverified_email_blocks_new_user(self, client, _oauth_state):
         info = _mock_exchange(email="unverified@example.com", email_verified=False)
-        with patch("apps.users.oauth.exchange_code", return_value=info):
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/microsoft/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -167,7 +167,7 @@ class TestOAuthCallbackUnverifiedEmail:
             provider_user_id="ms-attacker",
             email_verified=False,
         )
-        with patch("apps.users.oauth.exchange_code", return_value=info):
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/microsoft/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -191,7 +191,7 @@ class TestOAuthCallbackDeactivatedUser:
         SocialAccount.objects.create(user=user, provider="google", provider_user_id="g-deact")
 
         info = _mock_exchange(email="deact@example.com", provider_user_id="g-deact")
-        with patch("apps.users.oauth.exchange_code", return_value=info):
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},

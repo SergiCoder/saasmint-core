@@ -7,13 +7,14 @@ import secrets
 from typing import ClassVar
 from urllib.parse import urlencode
 
+import httpx
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.db import IntegrityError, transaction
 from django.http import HttpResponseRedirect
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -43,6 +44,14 @@ from apps.users.authentication import (
     verify_password_reset_token,
 )
 from apps.users.models import AccountType, User
+from apps.users.oauth import (
+    PROVIDERS,
+    OAuthEmailNotVerifiedError,
+    OAuthError,
+    exchange_code,
+    get_authorization_url,
+)
+from apps.users.services import resolve_oauth_user
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
@@ -62,7 +71,7 @@ def _token_response(user: User, refresh_token: str, http_status: int = 200) -> R
 class RegisterView(APIView):
     """POST /api/v1/auth/register — create a new account."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
@@ -114,7 +123,7 @@ class RegisterOrgOwnerView(APIView):
     the user must complete team checkout to create an org and subscription.
     """
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
@@ -162,7 +171,7 @@ class RegisterOrgOwnerView(APIView):
 class VerifyEmailView(APIView):
     """POST /api/v1/auth/verify-email — activate a user account."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
@@ -183,7 +192,7 @@ class VerifyEmailView(APIView):
 class LoginView(APIView):
     """POST /api/v1/auth/login — authenticate with email + password."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
@@ -222,7 +231,7 @@ class LoginView(APIView):
 class RefreshView(APIView):
     """POST /api/v1/auth/refresh — rotate refresh token and get new tokens."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
@@ -252,7 +261,7 @@ class LogoutView(APIView):
 class ForgotPasswordView(APIView):
     """POST /api/v1/auth/forgot-password — send reset email (always 200)."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
@@ -285,7 +294,7 @@ class ForgotPasswordView(APIView):
 class ResetPasswordView(APIView):
     """POST /api/v1/auth/reset-password — validate token and set new password."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
@@ -310,7 +319,7 @@ class ResetPasswordView(APIView):
 class ChangePasswordView(APIView):
     """POST /api/v1/auth/change-password — change password while authenticated."""
 
-    permission_classes: ClassVar[list[type[IsAuthenticated]]] = [IsAuthenticated]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [IsAuthenticated]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
@@ -346,14 +355,12 @@ class ChangePasswordView(APIView):
 class OAuthAuthorizeView(APIView):
     """GET /api/v1/auth/oauth/{provider}/ — redirect to OAuth provider."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
     @extend_schema(exclude=True)
     def get(self, request: Request, provider: str) -> Response | HttpResponseRedirect:
-        from apps.users.oauth import PROVIDERS, get_authorization_url
-
         if provider not in PROVIDERS:
             return Response(
                 {"detail": f"Unsupported provider: {provider}", "code": "invalid_provider"},
@@ -372,14 +379,12 @@ class OAuthAuthorizeView(APIView):
 class OAuthCallbackView(APIView):
     """GET /api/v1/auth/oauth/{provider}/callback/ — exchange code for tokens."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "auth"
 
     @extend_schema(exclude=True)
     def get(self, request: Request, provider: str) -> Response | HttpResponseRedirect:
-        from apps.users.oauth import PROVIDERS, exchange_code
-
         if provider not in PROVIDERS:
             return Response(
                 {"detail": f"Unsupported provider: {provider}"},
@@ -406,12 +411,9 @@ class OAuthCallbackView(APIView):
         try:
             redirect_uri = request.build_absolute_uri(f"/api/v1/auth/oauth/{provider}/callback/")
             user_info = exchange_code(provider, code, redirect_uri)
-        except Exception:
+        except (httpx.HTTPError, OAuthError, ValueError, KeyError):
             logger.exception("OAuth code exchange failed for %s", provider)
             return HttpResponseRedirect(f"{frontend_url}/auth/error?error=exchange_failed")
-
-        from apps.users.oauth import OAuthEmailNotVerifiedError
-        from apps.users.services import resolve_oauth_user
 
         try:
             user = resolve_oauth_user(provider, user_info)

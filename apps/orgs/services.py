@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import TYPE_CHECKING
 from uuid import UUID
 
+if TYPE_CHECKING:
+    from apps.billing.models import Subscription as SubscriptionModel
+
 import stripe
-from asgiref.sync import async_to_sync
+from asgiref.sync import async_to_sync, sync_to_async
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 
@@ -63,8 +66,6 @@ async def on_team_checkout_completed(
     Creates the Org, adds the user as owner + billing contact, and
     links the Stripe customer to the org.
     """
-    from asgiref.sync import sync_to_async
-
     user = await User.objects.aget(id=user_id)
 
     try:
@@ -197,7 +198,7 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
         delete_org(org)
 
 
-def _get_active_stripe_subs(org_id: UUID) -> list[Any]:
+def _get_active_stripe_subs(org_id: UUID) -> list[SubscriptionModel]:
     """Return active Stripe-backed subscriptions for an org.
 
     Shared by seat decrement and subscription cancellation to avoid
@@ -242,7 +243,7 @@ def decrement_subscription_seats(org_id: UUID) -> None:
             stripe_subscription_id=sub.stripe_id,
             quantity=new_quantity,
         )
-    except Exception:
+    except (stripe.StripeError, ValueError):
         logger.exception(
             "Failed to update seat count to %d for sub %s",
             new_quantity,

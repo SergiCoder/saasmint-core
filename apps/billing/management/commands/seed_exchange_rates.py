@@ -7,10 +7,10 @@ Rates API is unavailable (test-mode keys).
 
 from __future__ import annotations
 
-import json
-import urllib.request
 from datetime import UTC, datetime
+from decimal import Decimal
 
+import httpx
 from django.core.management.base import BaseCommand
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 
@@ -25,8 +25,9 @@ class Command(BaseCommand):
     def handle(self, *args: object, **options: object) -> None:
         self.stdout.write("Fetching rates from open.er-api.com …")
 
-        with urllib.request.urlopen(API_URL, timeout=10) as resp:  # noqa: S310  # trusted URL
-            data = json.loads(resp.read())
+        resp = httpx.get(API_URL, timeout=httpx.Timeout(10.0))
+        resp.raise_for_status()
+        data = resp.json()
 
         if data.get("result") != "success":
             self.stderr.write(self.style.ERROR(f"API error: {data}"))
@@ -43,7 +44,7 @@ class Command(BaseCommand):
             if rate is None:
                 self.stderr.write(self.style.WARNING(f"  No rate for {currency.upper()}, skipping"))
                 continue
-            rows.append(ExchangeRate(currency=currency, rate=rate, fetched_at=now))
+            rows.append(ExchangeRate(currency=currency, rate=Decimal(str(rate)), fetched_at=now))
 
         if rows:
             ExchangeRate.objects.bulk_create(

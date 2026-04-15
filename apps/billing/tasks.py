@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import stripe
 from asgiref.sync import async_to_sync
@@ -31,7 +32,7 @@ def sync_exchange_rates() -> None:
         return
 
     now = datetime.now(UTC)
-    rates: dict[str, float] = dict(rates_obj.rates)  # type: ignore[arg-type]  # Stripe stubs type mismatch
+    rates: dict[str, float] = dict(rates_obj.rates)  # type: ignore[arg-type]  # Stripe stubs type mismatch; values used for display-only conversion
 
     rows: list[ExchangeRate] = []
     for currency in SUPPORTED_CURRENCIES:
@@ -41,7 +42,7 @@ def sync_exchange_rates() -> None:
         if rate is None:
             logger.warning("No rate returned by Stripe for currency: %s", currency)
             continue
-        rows.append(ExchangeRate(currency=currency, rate=rate, fetched_at=now))
+        rows.append(ExchangeRate(currency=currency, rate=Decimal(str(rate)), fetched_at=now))
 
     if rows:
         ExchangeRate.objects.bulk_create(
