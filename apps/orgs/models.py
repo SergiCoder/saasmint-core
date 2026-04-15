@@ -33,6 +33,10 @@ class Org(models.Model):
         blank=True,
         related_name="created_orgs",
     )
+    # `deleted_at` is the canonical soft-delete marker (IS NULL = live).
+    # `is_active` is an orthogonal flag used to pause/disable an org (e.g. after
+    # the team subscription is cancelled) without deleting it, so both columns
+    # are intentional and should be filtered together: deleted_at__isnull=True, is_active=True.
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
@@ -96,9 +100,6 @@ class Invitation(models.Model):
 
     class Meta:
         db_table = "invitations"
-        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
-            models.Index(fields=["token"], name="idx_invitations_token"),
-        ]
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(
                 fields=["org", "email"],

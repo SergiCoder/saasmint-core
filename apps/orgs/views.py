@@ -245,13 +245,12 @@ class OrgMemberDetailView(APIView):
         from apps.orgs.services import decrement_subscription_seats
 
         target_user = target.user
-        target.delete()
-
-        # Decrement seats on the Stripe subscription
-        decrement_subscription_seats(org_id)
-
-        # Hard-delete the removed user's account (CASCADE handles related models)
-        target_user.delete()
+        with transaction.atomic():
+            target.delete()
+            target_user.delete()
+            # Stripe call must run only after DB commit; otherwise a rollback
+            # would leave Stripe seat count out of sync with actual members.
+            transaction.on_commit(lambda: decrement_subscription_seats(org_id))
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -351,7 +350,7 @@ class InvitationListCreateView(APIView):
 
         # Cannot invite users who already have an account
         if User.objects.filter(
-            email=email,
+            email__iexact=email,
         ).exists():
             raise DRFValidationError(
                 {"email": ["This email is already registered. Only new users can be invited."]}
@@ -369,22 +368,25 @@ class InvitationListCreateView(APIView):
         _validate_seat_limit(org)
 
         token = secrets.token_urlsafe(32)
-        invitation = Invitation.objects.create(
-            org=org,
-            email=email,
-            role=role,
-            token=token,
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
-        )
-
-        # Send invitation email asynchronously
-        send_invitation_email_task.delay(
-            email=email,
-            token=token,
-            org_name=org.name,
-            inviter_name=user.full_name,
-        )
+        with transaction.atomic():
+            invitation = Invitation.objects.create(
+                org=org,
+                email=email,
+                role=role,
+                token=token,
+                invited_by=user,
+                expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
+            )
+            # Defer email dispatch until commit so the worker can't race ahead
+            # of the DB write and handle a missing invitation row.
+            transaction.on_commit(
+                lambda: send_invitation_email_task.delay(
+                    email=email,
+                    token=token,
+                    org_name=org.name,
+                    inviter_name=user.full_name,
+                )
+            )
 
         location = request.build_absolute_uri(
             reverse("orgs-invitations:invitation-detail", kwargs={"token": token})
@@ -397,32 +399,44 @@ class InvitationListCreateView(APIView):
 
 
 def _validate_seat_limit(org: Org) -> None:
-    """Raise ValidationError if the org has reached its subscription seat limit."""
+    """Raise ValidationError if the org has reached its subscription seat limit.
+
+    Lock the Subscription row so concurrent invites can't both pass the check
+    and overrun the seat quota.
+    """
     from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
     from apps.billing.models import Subscription as SubscriptionModel
 
-    try:
-        customer = StripeCustomer.objects.get(org=org)
-    except StripeCustomer.DoesNotExist:
-        return  # No subscription — can't validate seats
+    with transaction.atomic():
+        try:
+            customer = StripeCustomer.objects.get(org=org)
+        except StripeCustomer.DoesNotExist:
+            return  # No subscription — can't validate seats
 
-    try:
-        sub = SubscriptionModel.objects.get(
-            stripe_customer=customer,
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        )
-    except SubscriptionModel.DoesNotExist:
-        return
+        try:
+            sub = (
+                SubscriptionModel.objects.select_for_update()
+                .filter(
+                    stripe_customer=customer,
+                    status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+                )
+                .get()
+            )
+        except SubscriptionModel.DoesNotExist:
+            return
 
-    current_members = OrgMember.objects.filter(org=org).count()
-    pending_invitations = Invitation.objects.filter(
-        org=org, status=InvitationStatus.PENDING
-    ).count()
+        current_members = OrgMember.objects.filter(org=org).count()
+        pending_invitations = Invitation.objects.filter(
+            org=org, status=InvitationStatus.PENDING
+        ).count()
 
-    if current_members + pending_invitations >= sub.quantity:
-        raise DRFValidationError(
-            {"detail": "Org has reached its seat limit. Upgrade your plan to invite more members."}
-        )
+        if current_members + pending_invitations >= sub.quantity:
+            raise DRFValidationError(
+                {
+                    "detail": "Org has reached its seat limit. "
+                    "Upgrade your plan to invite more members."
+                }
+            )
 
 
 class InvitationCancelView(APIView):

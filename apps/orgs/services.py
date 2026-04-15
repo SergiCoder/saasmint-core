@@ -58,12 +58,15 @@ async def on_team_checkout_completed(
     """
     from asgiref.sync import sync_to_async
 
-    from apps.billing.models import StripeCustomer
-
     user = await User.objects.aget(id=user_id)
 
     try:
-        org, _member = await sync_to_async(_create_org_with_owner)(user, org_name)
+        org, _member = await sync_to_async(_create_org_with_owner)(
+            user,
+            org_name,
+            stripe_customer_id=stripe_customer_id,
+            livemode=livemode,
+        )
     except IntegrityError:
         logger.error(
             "Org creation failed during team checkout for user %s (name='%s')",
@@ -71,12 +74,6 @@ async def on_team_checkout_completed(
             org_name,
         )
         raise
-
-    await StripeCustomer.objects.acreate(
-        stripe_id=stripe_customer_id,
-        org=org,
-        livemode=livemode,
-    )
 
     logger.info(
         "Team checkout completed: org '%s' (slug=%s) created for user %s, Stripe customer %s",
@@ -87,11 +84,21 @@ async def on_team_checkout_completed(
     )
 
 
-def _create_org_with_owner(user: User, org_name: str) -> tuple[Org, OrgMember]:
-    """Atomically create an org and its owner membership.
+def _create_org_with_owner(
+    user: User,
+    org_name: str,
+    *,
+    stripe_customer_id: str | None = None,
+    livemode: bool = False,
+) -> tuple[Org, OrgMember]:
+    """Atomically create an org, its owner membership, and (optionally) its Stripe customer.
 
     The user must already have account_type=ORG_MEMBER (set at registration).
+    Passing `stripe_customer_id` links the org to its Stripe customer in the same
+    transaction, preventing orgs without billing linkage on partial failure.
     """
+    from apps.billing.models import StripeCustomer
+
     if user.account_type != AccountType.ORG_MEMBER:
         raise ValueError(f"User {user.id} must have account_type=org_member to create an org")
 
@@ -108,6 +115,12 @@ def _create_org_with_owner(user: User, org_name: str) -> tuple[Org, OrgMember]:
             role=OrgRole.OWNER,
             is_billing=True,
         )
+        if stripe_customer_id is not None:
+            StripeCustomer.objects.create(
+                stripe_id=stripe_customer_id,
+                org=org,
+                livemode=livemode,
+            )
     return org, member
 
 
@@ -136,23 +149,42 @@ async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
 def delete_org(org: Org) -> None:
     """Delete an org: cancel Stripe subs, hard-delete members and the org itself.
 
-    Sequence: cancel Stripe sub → cancel invitations → collect member IDs →
-    delete memberships → hard-delete all member user accounts → hard-delete org.
+    DB work runs in a single atomic block; the Stripe cancellation is scheduled
+    via on_commit so a Stripe failure cannot leave the DB partially deleted and
+    a DB rollback cannot leave a dangling Stripe cancellation.
     """
-    _cancel_team_subscription(org)
-    async_to_sync(cancel_pending_invitations_for_org)(org.id)
+    org_id = org.id
+    with transaction.atomic():
+        # Snapshot Stripe subscription IDs before deletion — StripeCustomer is
+        # CASCADE-deleted with the org, so we must capture them first.
+        stripe_sub_ids = [
+            s.stripe_id for s in _get_active_stripe_subs(org_id) if s.stripe_id is not None
+        ]
 
-    # Collect member user IDs before deleting anything
-    member_user_ids = list(OrgMember.objects.filter(org=org).values_list("user_id", flat=True))
+        async_to_sync(cancel_pending_invitations_for_org)(org_id)
 
-    OrgMember.objects.filter(org=org).delete()
+        member_user_ids = list(OrgMember.objects.filter(org=org).values_list("user_id", flat=True))
+        OrgMember.objects.filter(org=org).delete()
 
-    # Hard-delete all member user accounts (CASCADE handles related models)
-    if member_user_ids:
-        User.objects.filter(id__in=member_user_ids).delete()
+        if member_user_ids:
+            User.objects.filter(id__in=member_user_ids).delete()
 
-    # Hard-delete the org itself
-    org.delete()
+        org.delete()
+
+        transaction.on_commit(lambda: _cancel_stripe_subs(stripe_sub_ids, org_id))
+
+
+def _cancel_stripe_subs(stripe_sub_ids: list[str], org_id: UUID) -> None:
+    """Cancel a batch of Stripe subscriptions (post-commit hook for delete_org)."""
+    for sub_id in stripe_sub_ids:
+        try:
+            stripe.Subscription.cancel(sub_id)
+        except stripe.StripeError:
+            logger.exception(
+                "Failed to cancel Stripe sub %s for org %s",
+                sub_id,
+                org_id,
+            )
 
 
 def delete_orgs_created_by_user(user_id: UUID) -> None:
