@@ -6,7 +6,7 @@ from django.db import IntegrityError, transaction
 
 from apps.billing.services import assign_free_plan
 from apps.users.models import SocialAccount, User
-from apps.users.oauth import OAuthUserInfo
+from apps.users.oauth import OAuthEmailNotVerifiedError, OAuthUserInfo
 
 
 def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
@@ -14,8 +14,9 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
 
     Three-step lookup:
     1. By SocialAccount (returning OAuth user).
-    2. By email (existing user, first OAuth login — auto-link).
-    3. Brand new user.
+    2. By email (existing user, first OAuth login — auto-link), only when the
+       provider has confirmed email ownership.
+    3. Brand new user, only when the provider has confirmed email ownership.
     """
     try:
         social = SocialAccount.objects.select_related("user").get(
@@ -25,6 +26,11 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
         return social.user
     except SocialAccount.DoesNotExist:
         pass
+
+    if not user_info.email_verified:
+        raise OAuthEmailNotVerifiedError(
+            f"Provider {provider} did not confirm email ownership."
+        )
 
     try:
         user = User.objects.get(email=user_info.email)

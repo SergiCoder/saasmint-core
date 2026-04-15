@@ -35,12 +35,17 @@ def _oauth_state(client):
     session.save()
 
 
-def _mock_exchange(email: str = "oauth@example.com", provider_user_id: str = "12345"):
+def _mock_exchange(
+    email: str = "oauth@example.com",
+    provider_user_id: str = "12345",
+    email_verified: bool = True,
+):
     return OAuthUserInfo(
         email=email,
         full_name="OAuth User",
         provider_user_id=provider_user_id,
         avatar_url="https://example.com/avatar.png",
+        email_verified=email_verified,
     )
 
 
@@ -121,6 +126,59 @@ class TestOAuthCallbackReturningSocialUser:
 
         # No duplicate SocialAccount created
         assert SocialAccount.objects.filter(user=user, provider="github").count() == 1
+
+
+@pytest.mark.django_db
+class TestOAuthCallbackTokensInFragment:
+    def test_tokens_are_placed_in_url_fragment(self, client, _oauth_state):
+        with patch("apps.users.oauth.exchange_code", return_value=_mock_exchange()):
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        location = resp["Location"]
+        # Tokens must be in the fragment (after #), not the query string.
+        assert "#access_token=" in location
+        assert "?access_token=" not in location
+
+
+@pytest.mark.django_db
+class TestOAuthCallbackUnverifiedEmail:
+    def test_unverified_email_blocks_new_user(self, client, _oauth_state):
+        info = _mock_exchange(email="unverified@example.com", email_verified=False)
+        with patch("apps.users.oauth.exchange_code", return_value=info):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "email_not_verified" in resp["Location"]
+        assert not User.objects.filter(email="unverified@example.com").exists()
+
+    def test_unverified_email_blocks_linking_to_existing_account(
+        self, client, _oauth_state
+    ):
+        User.objects.create_user(
+            email="victim@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Victim",
+        )
+        info = _mock_exchange(
+            email="victim@example.com",
+            provider_user_id="ms-attacker",
+            email_verified=False,
+        )
+        with patch("apps.users.oauth.exchange_code", return_value=info):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "email_not_verified" in resp["Location"]
+        assert not SocialAccount.objects.filter(
+            provider="microsoft", provider_user_id="ms-attacker"
+        ).exists()
 
 
 @pytest.mark.django_db

@@ -410,10 +410,15 @@ class OAuthCallbackView(APIView):
             logger.exception("OAuth code exchange failed for %s", provider)
             return HttpResponseRedirect(f"{frontend_url}/auth/error?error=exchange_failed")
 
+        from apps.users.oauth import OAuthEmailNotVerifiedError
         from apps.users.services import resolve_oauth_user
 
         try:
             user = resolve_oauth_user(provider, user_info)
+        except OAuthEmailNotVerifiedError:
+            return HttpResponseRedirect(
+                f"{frontend_url}/auth/error?error=email_not_verified"
+            )
         except ValueError:
             return HttpResponseRedirect(f"{frontend_url}/auth/error?error=account_deactivated")
 
@@ -422,5 +427,7 @@ class OAuthCallbackView(APIView):
 
         refresh = create_refresh_token(user)
         access = create_access_token(user)
+        # Tokens go into the URL fragment, not the query string, so they are
+        # not logged in browser history, proxies, or leaked via Referer.
         params = urlencode({"access_token": access, "refresh_token": refresh})
-        return HttpResponseRedirect(f"{frontend_url}/auth/callback?{params}")
+        return HttpResponseRedirect(f"{frontend_url}/auth/callback#{params}")

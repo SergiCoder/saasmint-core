@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from apps.users.models import SocialAccount, User
-from apps.users.oauth import OAuthUserInfo
+from apps.users.oauth import OAuthEmailNotVerifiedError, OAuthUserInfo
 from apps.users.services import resolve_oauth_user
 
 
@@ -16,12 +16,14 @@ def _info(
     full_name: str = "OAuth User",
     provider_user_id: str = "12345",
     avatar_url: str | None = "https://example.com/avatar.png",
+    email_verified: bool = True,
 ) -> OAuthUserInfo:
     return OAuthUserInfo(
         email=email,
         full_name=full_name,
         provider_user_id=provider_user_id,
         avatar_url=avatar_url,
+        email_verified=email_verified,
     )
 
 
@@ -102,3 +104,48 @@ class TestResolveOAuthUserReturningSocial:
         info = _info(email="nodup@example.com", provider_user_id="g-nodup")
         resolve_oauth_user("google", info)
         assert SocialAccount.objects.filter(user=user, provider="google").count() == 1
+
+
+@pytest.mark.django_db
+class TestResolveOAuthUserUnverifiedEmail:
+    def test_unverified_email_refuses_to_create_new_user(self):
+        info = _info(email="unverified@example.com", email_verified=False)
+        with pytest.raises(OAuthEmailNotVerifiedError):
+            resolve_oauth_user("microsoft", info)
+        assert not User.objects.filter(email="unverified@example.com").exists()
+
+    def test_unverified_email_refuses_to_link_existing_user(self):
+        User.objects.create_user(
+            email="victim@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Victim",
+        )
+        info = _info(
+            email="victim@example.com",
+            provider_user_id="ms-attacker",
+            email_verified=False,
+        )
+        with pytest.raises(OAuthEmailNotVerifiedError):
+            resolve_oauth_user("microsoft", info)
+        assert not SocialAccount.objects.filter(
+            provider="microsoft", provider_user_id="ms-attacker"
+        ).exists()
+
+    def test_returning_social_account_bypasses_verified_check(self):
+        """Already-linked SocialAccount can log in even if current response
+        omits email verification — the link was established earlier."""
+        user = User.objects.create_user(
+            email="linked@example.com",
+            full_name="Linked",
+            registration_method="microsoft",
+        )
+        SocialAccount.objects.create(
+            user=user, provider="microsoft", provider_user_id="ms-linked"
+        )
+        info = _info(
+            email="linked@example.com",
+            provider_user_id="ms-linked",
+            email_verified=False,
+        )
+        result = resolve_oauth_user("microsoft", info)
+        assert result.pk == user.pk

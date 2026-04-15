@@ -12,12 +12,17 @@ from django.conf import settings
 PROVIDERS = ("google", "github", "microsoft")
 
 
+class OAuthEmailNotVerifiedError(Exception):
+    """Raised when the OAuth provider did not confirm email ownership."""
+
+
 @dataclass(frozen=True)
 class OAuthUserInfo:
     email: str
     full_name: str
     provider_user_id: str
     avatar_url: str | None = None
+    email_verified: bool = False
 
 
 def _get_config(provider: str) -> dict[str, Any]:
@@ -97,20 +102,27 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
             full_name=info.get("name", info["email"].split("@")[0]),
             provider_user_id=str(info["id"]),
             avatar_url=info.get("picture"),
+            email_verified=bool(info.get("verified_email") or info.get("email_verified")),
         )
     elif provider == "github":
-        email = info.get("email") or _fetch_github_primary_email(access_token)
+        # Always use /user/emails as the authoritative source — the public email
+        # on /user is not guaranteed verified.
+        email = _fetch_github_primary_email(access_token)
         return OAuthUserInfo(
             email=email,
             full_name=info.get("name") or info.get("login", email.split("@")[0]),
             provider_user_id=str(info["id"]),
             avatar_url=info.get("avatar_url"),
+            email_verified=True,
         )
     else:  # microsoft
+        # Microsoft Graph does not expose a reliable email_verified flag for
+        # consumer accounts, so treat these emails as unverified.
         return OAuthUserInfo(
             email=info.get("mail") or info.get("userPrincipalName", ""),
             full_name=info.get("displayName", ""),
             provider_user_id=str(info["id"]),
+            email_verified=False,
         )
 
 
