@@ -66,9 +66,25 @@ def process_stripe_webhook(self: object, payload: str, signature: str) -> None:
         event_data = json.loads(payload)
         event_id = event_data.get("id", "unknown")
         event_type = event_data.get("type", "unknown")
+        event_livemode = event_data.get("livemode")
     except (json.JSONDecodeError, TypeError):
         event_id = "unknown"
         event_type = "unknown"
+        event_livemode = None
+
+    # Reject events whose livemode doesn't match the current Stripe key.
+    # Prevents a replayed test event from being processed against the prod key
+    # (and vice versa). Not retried — the mismatch is permanent.
+    if event_livemode is not None:
+        key_is_live = settings.STRIPE_SECRET_KEY.startswith("sk_live_")
+        if bool(event_livemode) != key_is_live:
+            logger.error(
+                "Webhook livemode mismatch for event %s (livemode=%s, key_is_live=%s) — drop.",
+                event_id,
+                event_livemode,
+                key_is_live,
+            )
+            return
 
     try:
         async_to_sync(handle_stripe_event)(

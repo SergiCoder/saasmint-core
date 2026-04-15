@@ -5,19 +5,22 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('billing', '0009_exchangerate_currency_pk'),
+        ("billing", "0009_exchangerate_currency_pk"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AlterModelOptions(
-            name='exchangerate',
-            options={'ordering': ('currency',)},
+            name="exchangerate",
+            options={"ordering": ("currency",)},
         ),
         migrations.AddIndex(
-            model_name='subscription',
-            index=models.Index(condition=models.Q(('status__in', ('active', 'trialing', 'past_due'))), fields=['stripe_customer', 'user'], name='idx_sub_active_owner'),
+            model_name="subscription",
+            index=models.Index(
+                condition=models.Q(("status__in", ("active", "trialing", "past_due"))),
+                fields=["stripe_customer", "user"],
+                name="idx_sub_active_owner",
+            ),
         ),
     ]

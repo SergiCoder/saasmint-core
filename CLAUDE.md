@@ -65,6 +65,25 @@ After modifying any endpoint (views, serializers, URL routes), regenerate `schem
 
 - Always use type hints in Python.
 
+## Project rules
+
+**Security**
+- Webhooks: verify `livemode`/env, not just signature.
+- Access checks belong in the queryset lookup, not just the serializer.
+- Token-based actions (decline, accept, unsubscribe): verify the caller owns the token's subject.
+- All password inputs go through `validate_password()`.
+
+**Settings & secrets**
+- Never set `ALLOWED_HOSTS=["*"]` when `USE_X_FORWARDED_HOST=True` — enumerate hosts.
+- Use separate env vars for secrets with different rotation lifecycles (e.g. `JWT_SIGNING_KEY` vs `SECRET_KEY`).
+- API paths default to CSP `default-src 'none'`; inline styles/scripts opt-in per path prefix.
+
+**CI/CD**
+- No `${{ github.* }}` interpolated into workflow shell — pass via `env:` and quote `"$VAR"`.
+
+**Django**
+- Don't hand-edit auto-generated migrations beyond formatting — regenerate instead.
+
 ## Accepted type: ignore / noqa suppressions
 
 The following suppressions are intentional and should not be removed. They stem from upstream library limitations or deliberate design choices.

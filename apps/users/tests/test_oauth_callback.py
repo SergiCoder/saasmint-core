@@ -156,9 +156,7 @@ class TestOAuthCallbackUnverifiedEmail:
         assert "email_not_verified" in resp["Location"]
         assert not User.objects.filter(email="unverified@example.com").exists()
 
-    def test_unverified_email_blocks_linking_to_existing_account(
-        self, client, _oauth_state
-    ):
+    def test_unverified_email_blocks_linking_to_existing_account(self, client, _oauth_state):
         User.objects.create_user(
             email="victim@example.com",
             password="testpass123",  # noqa: S106

@@ -35,7 +35,7 @@ _ALGORITHM = "HS256"
 
 
 def _get_signing_key() -> str:
-    return settings.SECRET_KEY
+    return settings.JWT_SIGNING_KEY
 
 
 def _hash_token(raw: str) -> str:

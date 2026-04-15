@@ -13,20 +13,31 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate ref_name
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$REF" =~ ^dev-v[A-Za-z0-9._-]+$ ]]; then
+            echo "Refusing to deploy: unexpected ref_name '$REF'"
+            exit 1
+          fi
       - name: Deploy via SSH
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2  # v1
+        env:
+          REF: ${{ github.ref_name }}
         with:
           host: ${{ secrets.VPS_HOST }}
           port: ${{ secrets.VPS_PORT }}
           username: deploy
           key: ${{ secrets.VPS_SSH_KEY }}
+          envs: REF
           script: |
             set -euo pipefail
             cd /opt/saasmint/saasmint-core
             git fetch --tags
-            git checkout ${{ github.ref_name }}
+            git checkout "$REF"
             docker compose -f infra/docker-compose.vps.yml build
             docker compose -f infra/docker-compose.vps.yml up -d
             sleep 5
             curl -sf http://127.0.0.1:8001/api/v1/health/ || { echo "Health check failed"; docker compose -f infra/docker-compose.vps.yml logs django --tail=50; exit 1; }
-            echo "Deploy successful: ${{ github.ref_name }}"
+            echo "Deploy successful: $REF"

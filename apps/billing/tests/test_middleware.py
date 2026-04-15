@@ -163,12 +163,21 @@ class TestSecurityHeadersMiddleware:
         csp = resp["Content-Security-Policy"]
         assert "'unsafe-inline'" in csp
 
-    def test_csp_default_does_not_include_unsafe_inline_script(self, html_middleware):
+    def test_csp_default_is_locked_down(self, html_middleware):
         rf = RequestFactory()
         resp = html_middleware(rf.get("/dashboard/"))
         csp = resp["Content-Security-Policy"]
-        # Default CSP has unsafe-inline in style-src but NOT in script-src
-        assert "script-src 'self'" in csp
+        # Non-admin, non-docs paths get default-src 'none' — no inline anywhere.
+        assert "default-src 'none'" in csp
+        assert "'unsafe-inline'" not in csp
+        assert "frame-ancestors 'none'" in csp
+
+    def test_csp_admin_allows_inline_styles(self, html_middleware):
+        rf = RequestFactory()
+        resp = html_middleware(rf.get("/admin/login/"))
+        csp = resp["Content-Security-Policy"]
+        # Django admin needs inline styles but not inline scripts.
+        assert "style-src 'self' 'unsafe-inline'" in csp
         assert "script-src 'self' 'unsafe-inline'" not in csp
 
     def test_csp_relaxed_for_swagger_subpath(self, html_middleware):

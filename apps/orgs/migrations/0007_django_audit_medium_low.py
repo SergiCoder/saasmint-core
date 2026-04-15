@@ -4,14 +4,13 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('orgs', '0006_invitation_status_declined'),
+        ("orgs", "0006_invitation_status_declined"),
     ]
 
     operations = [
         migrations.RemoveIndex(
-            model_name='invitation',
-            name='idx_invitations_token',
+            model_name="invitation",
+            name="idx_invitations_token",
         ),
     ]
