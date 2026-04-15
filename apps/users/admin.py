@@ -16,14 +16,20 @@ from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES, sort_prefix_k
 
 from apps.users.models import SocialAccount, User
 
-_LOCALE_CHOICES = [("", "---------")] + [(v, v) for v in sorted(SUPPORTED_LOCALES)]
-_CURRENCY_CHOICES = [("", "---------")] + [(v, v.upper()) for v in sorted(SUPPORTED_CURRENCIES)]
+_EMPTY_CHOICE: list[tuple[str, str]] = [("", "---------")]
 
 
-_PHONE_PREFIX_CHOICES = [("", "---------")] + [
-    (k, f"{v} {k}") for k, v in sorted(SUPPORTED_PHONE_PREFIXES.items(), key=sort_prefix_key)
-]
-_TIMEZONE_CHOICES = [("", "---------")] + [(v, v) for v in sorted(available_timezones())]
+def _with_empty(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Prepend the blank ``---------`` option to a ``choices`` list."""
+    return _EMPTY_CHOICE + pairs
+
+
+_LOCALE_CHOICES = _with_empty([(v, v) for v in sorted(SUPPORTED_LOCALES)])
+_CURRENCY_CHOICES = _with_empty([(v, v.upper()) for v in sorted(SUPPORTED_CURRENCIES)])
+_PHONE_PREFIX_CHOICES = _with_empty(
+    [(k, f"{v} {k}") for k, v in sorted(SUPPORTED_PHONE_PREFIXES.items(), key=sort_prefix_key)]
+)
+_TIMEZONE_CHOICES = _with_empty([(v, v) for v in sorted(available_timezones())])
 
 
 class _PasswordWidget(forms.Widget):

@@ -9,6 +9,15 @@ from apps.users.models import SocialAccount, User
 from apps.users.oauth import OAuthEmailNotVerifiedError, OAuthUserInfo
 
 
+def email_is_registered(email: str) -> bool:
+    """Return True if any user is already registered with this email.
+
+    Case-insensitive to match the manager's normalize-on-save behavior — callers
+    that only filter by ``email=`` miss differently-cased duplicates.
+    """
+    return User.objects.filter(email__iexact=email).exists()
+
+
 def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
     """Find or create a user from OAuth provider info, linking the social account.
 

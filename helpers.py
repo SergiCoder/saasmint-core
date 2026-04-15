@@ -34,3 +34,17 @@ async def aget_or_none[T](
         return to_domain(obj)
     except ObjectDoesNotExist:
         return None
+
+
+async def aget_latest_or_none[T](
+    queryset: models.QuerySet[Any],
+    to_domain: Callable[..., T],
+    *,
+    field_name: str = "created_at",
+) -> T | None:
+    """Return the latest row of *queryset* mapped through *to_domain*, or None."""
+    try:
+        obj = await queryset.alatest(field_name)
+        return to_domain(obj)
+    except ObjectDoesNotExist:
+        return None

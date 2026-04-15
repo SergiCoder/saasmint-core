@@ -3,13 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, ClassVar
-
-if TYPE_CHECKING:
-    from apps.billing.repositories import (
-        DjangoStripeCustomerRepository,
-        DjangoSubscriptionRepository,
-    )
+from typing import ClassVar
 
 from asgiref.sync import async_to_sync
 from django.conf import settings
@@ -19,43 +13,27 @@ from rest_framework import serializers, status
 from rest_framework.parsers import MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
-from rest_framework.views import APIView
 from saasmint_core.services.gdpr import (
     delete_account,
     export_user_data,
 )
 
+from apps.base_views import AccountScopedView
+from apps.billing.repositories import (
+    DjangoStripeCustomerRepository,
+    DjangoSubscriptionRepository,
+)
 from apps.users.repositories import DjangoUserRepository
 from apps.users.serializers import UpdateUserSerializer, UserSerializer
 from helpers import get_user
 
 _user_repo = DjangoUserRepository()
+_customer_repo = DjangoStripeCustomerRepository()
+_subscription_repo = DjangoSubscriptionRepository()
 
 
-def _billing_repos() -> tuple[DjangoStripeCustomerRepository, DjangoSubscriptionRepository]:
-    """Lazy-import and instantiate billing repositories.
-
-    Raises ``NotImplementedError`` if the billing app is not installed.
-    """
-    try:
-        from apps.billing.repositories import (
-            DjangoStripeCustomerRepository,
-            DjangoSubscriptionRepository,
-        )
-    except ImportError:
-        raise NotImplementedError(
-            "Billing app is not installed. GDPR endpoints require apps.billing."
-        ) from None
-
-    return DjangoStripeCustomerRepository(), DjangoSubscriptionRepository()
-
-
-class AccountView(APIView):
+class AccountView(AccountScopedView):
     """GET /api/v1/account — return the current user's profile."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "account"
 
     @extend_schema(responses=UserSerializer, tags=["account"])
     def get(self, request: Request) -> Response:
@@ -90,7 +68,6 @@ class AccountView(APIView):
         from apps.orgs.models import OrgMember
         from apps.orgs.services import decrement_subscription_seats, delete_orgs_created_by_user
 
-        customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)
 
         async def _pre_delete(user_id: uuid.UUID) -> None:
@@ -108,17 +85,16 @@ class AccountView(APIView):
         async_to_sync(delete_account)(
             user_id=user.id,
             user_repo=_user_repo,
-            customer_repo=customer_repo,
-            subscription_repo=subscription_repo,
+            customer_repo=_customer_repo,
+            subscription_repo=_subscription_repo,
             pre_delete_hook=_pre_delete,
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class AccountExportView(APIView):
+class AccountExportView(AccountScopedView):
     """GET /api/v1/account/export — GDPR right of access."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
     throttle_scope = "account_export"
 
     @extend_schema(
@@ -135,13 +111,12 @@ class AccountExportView(APIView):
         tags=["account"],
     )
     def get(self, request: Request) -> Response:
-        customer_repo, subscription_repo = _billing_repos()
         user = get_user(request)
         data = async_to_sync(export_user_data)(
             user_id=user.id,
             user_repo=_user_repo,
-            customer_repo=customer_repo,
-            subscription_repo=subscription_repo,
+            customer_repo=_customer_repo,
+            subscription_repo=_subscription_repo,
         )
         return Response(data)
 
@@ -170,11 +145,9 @@ class _AvatarUploadSerializer(serializers.Serializer["_AvatarUploadSerializer"])
         return value
 
 
-class AvatarView(APIView):
+class AvatarView(AccountScopedView):
     """POST/DELETE /api/v1/account/avatar/ — upload or delete avatar."""
 
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "account"
     parser_classes: ClassVar[list[type[MultiPartParser]]] = [MultiPartParser]  # type: ignore[misc]
 
     @extend_schema(

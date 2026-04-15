@@ -4,14 +4,46 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from uuid import UUID
 
 from django.db import transaction
 from saasmint_core.domain.subscription import FREE_SUBSCRIPTION_PERIOD_END
 
-from apps.billing.models import Plan, Subscription, SubscriptionStatus
-from apps.users.models import User
+from apps.billing.models import (
+    ACTIVE_SUBSCRIPTION_STATUSES,
+    Plan,
+    PlanContext,
+    Subscription,
+    SubscriptionStatus,
+)
+from apps.users.models import AccountType, User
 
 logger = logging.getLogger(__name__)
+
+
+def plan_context_for(user: User) -> PlanContext:
+    """Return the PlanContext a user is billed under based on account type."""
+    return (
+        PlanContext.TEAM
+        if user.account_type == AccountType.ORG_MEMBER
+        else PlanContext.PERSONAL
+    )
+
+
+def get_active_team_subscription(org_id: UUID) -> Subscription | None:
+    """Return the active team-billed Subscription for *org_id*, or None.
+
+    Centralises the ``StripeCustomer→Subscription`` lookup used by seat-limit
+    validation and decrement paths so the traversal stays in one place.
+    """
+    return (
+        Subscription.objects.select_related("stripe_customer")
+        .filter(
+            stripe_customer__org_id=org_id,
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+        )
+        .first()
+    )
 
 
 def assign_free_plan(user: User) -> None:

@@ -29,7 +29,7 @@ from apps.billing.models import ProductPrice as ProductPriceModel
 from apps.billing.models import StripeCustomer as StripeCustomerModel
 from apps.billing.models import StripeEvent as StripeEventModel
 from apps.billing.models import Subscription as SubscriptionModel
-from helpers import aget_or_none
+from helpers import aget_latest_or_none, aget_or_none
 
 if TYPE_CHECKING:
     from saasmint_core.services.webhooks import WebhookRepos
@@ -112,24 +112,22 @@ class DjangoSubscriptionRepository:
         return await aget_or_none(SubscriptionModel, self._to_domain, stripe_id=stripe_id)
 
     async def _get_latest_active(self, **filter_kwargs: object) -> Subscription | None:
-        try:
-            obj = await SubscriptionModel.objects.filter(
+        return await aget_latest_or_none(
+            SubscriptionModel.objects.filter(
                 status__in=ACTIVE_SUBSCRIPTION_STATUSES,
                 **filter_kwargs,
-            ).alatest("created_at")
-            return self._to_domain(obj)
-        except SubscriptionModel.DoesNotExist:
-            return None
+            ),
+            self._to_domain,
+        )
 
     async def get_active_for_user(self, user_id: UUID) -> Subscription | None:
-        try:
-            obj = await SubscriptionModel.objects.filter(
+        return await aget_latest_or_none(
+            SubscriptionModel.objects.filter(
                 Q(user_id=user_id) | Q(stripe_customer__user_id=user_id),
                 status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-            ).alatest("created_at")
-            return self._to_domain(obj)
-        except SubscriptionModel.DoesNotExist:
-            return None
+            ),
+            self._to_domain,
+        )
 
     async def get_active_for_customer(self, stripe_customer_id: UUID) -> Subscription | None:
         try:

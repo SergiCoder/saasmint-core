@@ -14,12 +14,11 @@ from django.db import IntegrityError, transaction
 from django.http import HttpResponseRedirect
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
-from rest_framework.permissions import AllowAny, BasePermission, IsAuthenticated
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
-from rest_framework.views import APIView
 
+from apps.base_views import AuthPublicView, AuthScopedView
 from apps.billing.services import assign_free_plan
 from apps.users.auth_serializers import (
     ChangePasswordSerializer,
@@ -51,7 +50,8 @@ from apps.users.oauth import (
     exchange_code,
     get_authorization_url,
 )
-from apps.users.services import resolve_oauth_user
+from apps.users.services import email_is_registered, resolve_oauth_user
+from apps.users.tasks import send_password_reset_email_task, send_verification_email_task
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
@@ -68,12 +68,54 @@ def _token_response(user: User, refresh_token: str, http_status: int = 200) -> R
     )
 
 
-class RegisterView(APIView):
-    """POST /api/v1/auth/register — create a new account."""
+def _register_user(
+    *,
+    email: str,
+    password: str,
+    full_name: str,
+    assign_free: bool,
+) -> Response:
+    """Create a new user and return a 201 token response.
 
-    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
+    ``assign_free=True`` creates a PERSONAL user and assigns the free plan;
+    ``assign_free=False`` creates an ORG_MEMBER user (team checkout will later
+    create the org + subscription).
+    """
+    if email_is_registered(email):
+        return Response(
+            {"detail": "Email already registered.", "code": "email_exists"},
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    account_type = AccountType.PERSONAL if assign_free else AccountType.ORG_MEMBER
+
+    try:
+        with transaction.atomic():
+            user = User.objects.create_user(
+                email=email,
+                password=password,
+                full_name=full_name,
+                is_verified=False,
+                account_type=account_type,
+            )
+    except IntegrityError:
+        return Response(
+            {"detail": "Email already registered.", "code": "email_exists"},
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    if assign_free:
+        assign_free_plan(user)
+
+    token = create_email_verification_token(user)
+    send_verification_email_task.delay(user.email, token)
+
+    refresh = create_refresh_token(user)
+    return _token_response(user, refresh, http_status=status.HTTP_201_CREATED)
+
+
+class RegisterView(AuthPublicView):
+    """POST /api/v1/auth/register — create a new account."""
 
     @extend_schema(
         request=RegisterSerializer,
@@ -83,50 +125,21 @@ class RegisterView(APIView):
     def post(self, request: Request) -> Response:
         ser = RegisterSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-
-        email = ser.validated_data["email"]
-        if User.objects.filter(email=email).exists():
-            return Response(
-                {"detail": "Email already registered.", "code": "email_exists"},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        try:
-            with transaction.atomic():
-                user = User.objects.create_user(
-                    email=email,
-                    password=ser.validated_data["password"],
-                    full_name=ser.validated_data["full_name"],
-                    is_verified=False,
-                )
-        except IntegrityError:
-            return Response(
-                {"detail": "Email already registered.", "code": "email_exists"},
-                status=status.HTTP_409_CONFLICT,
-            )
-        assign_free_plan(user)
-
-        # Send verification email asynchronously via Celery
-        token = create_email_verification_token(user)
-        from apps.users.tasks import send_verification_email_task
-
-        send_verification_email_task.delay(user.email, token)
-
-        refresh = create_refresh_token(user)
-        return _token_response(user, refresh, http_status=status.HTTP_201_CREATED)
+        return _register_user(
+            email=ser.validated_data["email"],
+            password=ser.validated_data["password"],
+            full_name=ser.validated_data["full_name"],
+            assign_free=True,
+        )
 
 
-class RegisterOrgOwnerView(APIView):
+class RegisterOrgOwnerView(AuthPublicView):
     """POST /api/v1/auth/register/org-owner — register as an org owner.
 
     Creates a user with account_type=ORG_MEMBER. No free plan is assigned;
     the user must complete team checkout to create an org and subscription.
     """
 
-    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
-
     @extend_schema(
         request=RegisterSerializer,
         responses={201: TokenResponseSerializer},
@@ -135,45 +148,16 @@ class RegisterOrgOwnerView(APIView):
     def post(self, request: Request) -> Response:
         ser = RegisterSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-
-        email = ser.validated_data["email"]
-        if User.objects.filter(email=email).exists():
-            return Response(
-                {"detail": "Email already registered.", "code": "email_exists"},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        try:
-            with transaction.atomic():
-                user = User.objects.create_user(
-                    email=email,
-                    password=ser.validated_data["password"],
-                    full_name=ser.validated_data["full_name"],
-                    is_verified=False,
-                    account_type=AccountType.ORG_MEMBER,
-                )
-        except IntegrityError:
-            return Response(
-                {"detail": "Email already registered.", "code": "email_exists"},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        # Send verification email asynchronously via Celery
-        token = create_email_verification_token(user)
-        from apps.users.tasks import send_verification_email_task
-
-        send_verification_email_task.delay(user.email, token)
-
-        refresh = create_refresh_token(user)
-        return _token_response(user, refresh, http_status=status.HTTP_201_CREATED)
+        return _register_user(
+            email=ser.validated_data["email"],
+            password=ser.validated_data["password"],
+            full_name=ser.validated_data["full_name"],
+            assign_free=False,
+        )
 
 
-class VerifyEmailView(APIView):
+class VerifyEmailView(AuthPublicView):
     """POST /api/v1/auth/verify-email — activate a user account."""
-
-    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
 
     @extend_schema(request=VerifyEmailSerializer, responses=TokenResponseSerializer, tags=["auth"])
     def post(self, request: Request) -> Response:
@@ -189,12 +173,8 @@ class VerifyEmailView(APIView):
         return _token_response(user, refresh)
 
 
-class LoginView(APIView):
+class LoginView(AuthPublicView):
     """POST /api/v1/auth/login — authenticate with email + password."""
-
-    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
 
     @extend_schema(request=LoginSerializer, responses=TokenResponseSerializer, tags=["auth"])
     def post(self, request: Request) -> Response:
@@ -228,12 +208,8 @@ class LoginView(APIView):
         return _token_response(user, refresh)
 
 
-class RefreshView(APIView):
+class RefreshView(AuthPublicView):
     """POST /api/v1/auth/refresh — rotate refresh token and get new tokens."""
-
-    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
 
     @extend_schema(request=RefreshSerializer, responses=TokenResponseSerializer, tags=["auth"])
     def post(self, request: Request) -> Response:
@@ -244,11 +220,8 @@ class RefreshView(APIView):
         return _token_response(user, new_refresh)
 
 
-class LogoutView(APIView):
+class LogoutView(AuthScopedView):
     """POST /api/v1/auth/logout — revoke refresh token."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
 
     @extend_schema(request=LogoutSerializer, responses={204: None}, tags=["auth"])
     def post(self, request: Request) -> Response:
@@ -258,12 +231,8 @@ class LogoutView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class ForgotPasswordView(APIView):
+class ForgotPasswordView(AuthPublicView):
     """POST /api/v1/auth/forgot-password — send reset email (always 200)."""
-
-    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
 
     @extend_schema(request=ForgotPasswordSerializer, responses={200: dict}, tags=["auth"])
     def post(self, request: Request) -> Response:
@@ -277,8 +246,6 @@ class ForgotPasswordView(APIView):
                 is_active=True,
             )
             token = create_password_reset_token(user)
-            from apps.users.tasks import send_password_reset_email_task
-
             send_password_reset_email_task.delay(user.email, token)
         except User.DoesNotExist:
             pass
@@ -291,12 +258,8 @@ class ForgotPasswordView(APIView):
         )
 
 
-class ResetPasswordView(APIView):
+class ResetPasswordView(AuthPublicView):
     """POST /api/v1/auth/reset-password — validate token and set new password."""
-
-    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
 
     @extend_schema(
         request=ResetPasswordSerializer, responses=TokenResponseSerializer, tags=["auth"]
@@ -316,12 +279,10 @@ class ResetPasswordView(APIView):
         return _token_response(user, refresh)
 
 
-class ChangePasswordView(APIView):
+class ChangePasswordView(AuthScopedView):
     """POST /api/v1/auth/change-password — change password while authenticated."""
 
     permission_classes: ClassVar[list[type[BasePermission]]] = [IsAuthenticated]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
 
     @extend_schema(
         request=ChangePasswordSerializer, responses=TokenResponseSerializer, tags=["auth"]
@@ -352,12 +313,13 @@ class ChangePasswordView(APIView):
 # ---------------------------------------------------------------------------
 
 
-class OAuthAuthorizeView(APIView):
-    """GET /api/v1/auth/oauth/{provider}/ — redirect to OAuth provider."""
+def _oauth_error_redirect(frontend_url: str, code: str) -> HttpResponseRedirect:
+    """Send the browser back to the frontend's OAuth error page."""
+    return HttpResponseRedirect(f"{frontend_url}/auth/error?{urlencode({'error': code})}")
 
-    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
+
+class OAuthAuthorizeView(AuthPublicView):
+    """GET /api/v1/auth/oauth/{provider}/ — redirect to OAuth provider."""
 
     @extend_schema(exclude=True)
     def get(self, request: Request, provider: str) -> Response | HttpResponseRedirect:
@@ -376,12 +338,8 @@ class OAuthAuthorizeView(APIView):
         return HttpResponseRedirect(url)
 
 
-class OAuthCallbackView(APIView):
+class OAuthCallbackView(AuthPublicView):
     """GET /api/v1/auth/oauth/{provider}/callback/ — exchange code for tokens."""
-
-    permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
-    throttle_scope = "auth"
 
     @extend_schema(exclude=True)
     def get(self, request: Request, provider: str) -> Response | HttpResponseRedirect:
@@ -398,32 +356,31 @@ class OAuthCallbackView(APIView):
         frontend_url: str = settings.FRONTEND_URL
 
         if error:
-            safe_error = urlencode({"error": error})
-            return HttpResponseRedirect(f"{frontend_url}/auth/error?{safe_error}")
+            return _oauth_error_redirect(frontend_url, error)
 
         expected_state = request.session.pop("oauth_state", None)
         if not state or state != expected_state:
-            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=invalid_state")
+            return _oauth_error_redirect(frontend_url, "invalid_state")
 
         if not code:
-            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=missing_code")
+            return _oauth_error_redirect(frontend_url, "missing_code")
 
         try:
             redirect_uri = request.build_absolute_uri(f"/api/v1/auth/oauth/{provider}/callback/")
             user_info = exchange_code(provider, code, redirect_uri)
         except (httpx.HTTPError, OAuthError, ValueError, KeyError):
             logger.exception("OAuth code exchange failed for %s", provider)
-            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=exchange_failed")
+            return _oauth_error_redirect(frontend_url, "exchange_failed")
 
         try:
             user = resolve_oauth_user(provider, user_info)
         except OAuthEmailNotVerifiedError:
-            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=email_not_verified")
+            return _oauth_error_redirect(frontend_url, "email_not_verified")
         except ValueError:
-            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=account_deactivated")
+            return _oauth_error_redirect(frontend_url, "account_deactivated")
 
         if not user.is_active:
-            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=account_deactivated")
+            return _oauth_error_redirect(frontend_url, "account_deactivated")
 
         refresh = create_refresh_token(user)
         access = create_access_token(user)

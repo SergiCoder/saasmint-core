@@ -154,6 +154,37 @@ async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
     return count
 
 
+def accept_invitation(
+    invitation: Invitation,
+    *,
+    password: str,
+    full_name: str,
+) -> tuple[User, Org]:
+    """Create the invitee's user + membership and mark the invitation accepted.
+
+    The invitation must already have been validated (not expired, org active,
+    email not registered). Runs in a single transaction so a failure midway
+    never leaves a dangling user, member, or accepted-but-unused invitation.
+    """
+    org = invitation.org
+    with transaction.atomic():
+        user = User.objects.create_user(
+            email=invitation.email,
+            password=password,
+            full_name=full_name,
+            account_type=AccountType.ORG_MEMBER,
+            is_verified=True,  # trusted: invited by existing member
+        )
+        OrgMember.objects.create(
+            org=org,
+            user=user,
+            role=invitation.role,
+        )
+        invitation.status = InvitationStatus.ACCEPTED
+        invitation.save(update_fields=["status"])
+    return user, org
+
+
 def delete_org(org: Org) -> None:
     """Delete an org: cancel Stripe subs, hard-delete members and the org itself.
 

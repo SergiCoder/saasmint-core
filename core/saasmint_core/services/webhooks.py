@@ -111,13 +111,8 @@ async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
 
 
 def _ts_to_dt(value: int | float | None) -> datetime | None:
-    """Convert an optional Unix timestamp to a UTC datetime."""
+    """Convert an optional Unix timestamp to a UTC datetime, or None."""
     return datetime.fromtimestamp(int(value), tz=UTC) if value is not None else None
-
-
-def _ts_to_dt_required(value: int | float) -> datetime:
-    """Convert a Unix timestamp to a UTC datetime (required field)."""
-    return datetime.fromtimestamp(int(value), tz=UTC)
 
 
 async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRepos) -> None:
@@ -201,8 +196,8 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         plan_id=plan_price.plan_id,
         quantity=int(first_item.get("quantity") or 1),
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
-        current_period_start=_ts_to_dt_required(period_start),
-        current_period_end=_ts_to_dt_required(period_end),
+        current_period_start=datetime.fromtimestamp(int(period_start), tz=UTC),
+        current_period_end=datetime.fromtimestamp(int(period_end), tz=UTC),
         canceled_at=_ts_to_dt(sub_data.get("canceled_at")),
         created_at=existing.created_at if existing else datetime.now(UTC),
     )

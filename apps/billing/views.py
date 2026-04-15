@@ -14,7 +14,6 @@ from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.subscription import Subscription
@@ -31,6 +30,7 @@ from saasmint_core.services.subscriptions import (
     update_seat_count,
 )
 
+from apps.base_views import BillingScopedView
 from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, ExchangeRate, PlanContext, PlanPrice
 from apps.billing.models import Plan as PlanModel
 from apps.billing.models import Product as ProductModel
@@ -47,7 +47,8 @@ from apps.billing.serializers import (
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
-from apps.users.models import AccountType
+from apps.billing.services import plan_context_for
+from apps.users.models import AccountType, User
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
@@ -62,22 +63,20 @@ _CURRENCY_PARAM = OpenApiParameter(
 )
 
 
-def _resolve_display_currency(request: Request) -> str:
-    """Resolve the display currency for a request.
+def _resolve_display_currency(
+    query_currency: str | None,
+    user: User | None,
+) -> str:
+    """Resolve the display currency.
 
-    Priority for anonymous: ``?currency=`` query param → ``"usd"``.
-    Priority for authenticated: ``?currency=`` → ``user.preferred_currency`` → ``"usd"``.
+    Priority: explicit query param → ``user.preferred_currency`` (if any) → USD.
     """
-    from apps.users.models import User
-
-    qp_raw = request.query_params.get("currency")
-    if qp_raw is not None and qp_raw != "":
-        qp = qp_raw.lower()
+    if query_currency is not None and query_currency != "":
+        qp = query_currency.lower()
         if qp not in SUPPORTED_CURRENCIES:
-            raise ValidationError({"currency": [f"Unsupported currency: {qp_raw!r}."]})
+            raise ValidationError({"currency": [f"Unsupported currency: {query_currency!r}."]})
         return qp
 
-    user: User | None = request.user if request.user.is_authenticated else None
     if user is not None:
         preferred = user.preferred_currency
         if preferred and preferred.lower() in SUPPORTED_CURRENCIES:
@@ -112,7 +111,9 @@ def _get_exchange_rate(currency: str) -> tuple[str, float]:
 
 def _currency_context(request: Request) -> dict[str, object]:
     """Build serializer context dict with currency and rate."""
-    currency, rate = _get_exchange_rate(_resolve_display_currency(request))
+    user: User | None = request.user if request.user.is_authenticated else None
+    resolved = _resolve_display_currency(request.query_params.get("currency"), user)
+    currency, rate = _get_exchange_rate(resolved)
     return {"currency": currency, "rate": rate}
 
 
@@ -189,12 +190,7 @@ class PlanListView(APIView):
 
         # Authenticated users only see plans matching their account type
         if request.user.is_authenticated:
-            context_filter = (
-                PlanContext.TEAM
-                if request.user.account_type == AccountType.ORG_MEMBER
-                else PlanContext.PERSONAL
-            )
-            qs = qs.filter(context=context_filter)
+            qs = qs.filter(context=plan_context_for(request.user))
 
         data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
         return Response({"results": data})
@@ -221,11 +217,8 @@ class ProductListView(APIView):
         return Response({"results": data})
 
 
-class CheckoutSessionView(APIView):
+class CheckoutSessionView(BillingScopedView):
     """POST /api/v1/billing/checkout-sessions — create a Stripe Checkout Session."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
 
     @extend_schema(
         request=CheckoutRequestSerializer,
@@ -295,11 +288,8 @@ class CheckoutSessionView(APIView):
         return Response({"url": url})
 
 
-class PortalSessionView(APIView):
+class PortalSessionView(BillingScopedView):
     """POST /api/v1/billing/portal-sessions — create a Stripe Customer Portal session."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
 
     @extend_schema(
         request=PortalRequestSerializer,
@@ -329,32 +319,24 @@ class PortalSessionView(APIView):
         return Response({"url": url})
 
 
-def _get_active_subscription_for_user(user: object) -> SubscriptionModel:
+def _get_active_subscription_for_user(user: User) -> SubscriptionModel:
     """Fetch the latest active subscription for a user (paid or free)."""
     # Org members may only reach an org subscription via their is_billing flag.
     # Non-billing members must not see the org's subscription details.
-    if getattr(user, "account_type", None) == AccountType.ORG_MEMBER:
+    if user.account_type == AccountType.ORG_MEMBER:
         from apps.orgs.models import OrgMember
 
-        user_id = getattr(user, "id", None)
-        if (
-            user_id is None
-            or not OrgMember.objects.filter(user_id=user_id, is_billing=True).exists()
-        ):
+        if not OrgMember.objects.filter(user_id=user.id, is_billing=True).exists():
             raise NotFound("No active subscription found.")
-    customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
+    customer = getattr(user, "stripe_customer", None)
+    customer_id = customer.id if customer is not None else None
     # Split into two queries instead of ORing `user` with `stripe_customer_id`
     # so each query can use its own partial index (idx_sub_user_status /
     # idx_sub_customer_status) instead of degenerating into a scan.
     base = SubscriptionModel.objects.select_related("plan__price").filter(
         status__in=ACTIVE_SUBSCRIPTION_STATUSES
     )
-    user_pk = getattr(user, "id", None)
-    sub_user = (
-        base.filter(user_id=user_pk).order_by("-created_at").first()
-        if user_pk is not None
-        else None
-    )
+    sub_user = base.filter(user_id=user.id).order_by("-created_at").first()
     sub_customer = (
         base.filter(stripe_customer_id=customer_id).order_by("-created_at").first()
         if customer_id is not None
@@ -366,11 +348,8 @@ def _get_active_subscription_for_user(user: object) -> SubscriptionModel:
     return max(candidates, key=lambda s: s.created_at)
 
 
-class SubscriptionView(APIView):
+class SubscriptionView(BillingScopedView):
     """GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current subscription."""
-
-    throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "billing"
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],

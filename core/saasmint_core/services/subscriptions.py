@@ -66,10 +66,12 @@ async def update_seat_count(
     if quantity < 1:
         raise ValueError("Seat count must be at least 1")
 
-    item_id = await _get_first_item_id(stripe_subscription_id)
-
+    # Single retrieve — read both item_id and current quantity from one Stripe
+    # round-trip instead of calling `Subscription.retrieve` twice.
     sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
-    current_quantity: int = sub["items"]["data"][0]["quantity"]
+    first_item = sub["items"]["data"][0]
+    item_id = str(first_item["id"])
+    current_quantity: int = first_item["quantity"]
     proration: Literal["create_prorations", "none"] = (
         "create_prorations" if quantity > current_quantity else "none"
     )

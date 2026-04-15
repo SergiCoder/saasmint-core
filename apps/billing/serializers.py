@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -53,20 +54,31 @@ def _validate_redirect_url(url: str) -> str:
 
 
 class _DisplayCurrencyMixin:
-    """Shared logic for serializers that add display_amount / currency fields."""
+    """Shared logic for serializers that add display_amount / currency fields.
+
+    The declared ``context`` attribute is only visible to type-checkers —
+    DRF's ``Serializer`` supplies the real ``self.context`` at runtime, so no
+    ``type: ignore`` is needed at each attribute access. ``display_amount`` /
+    ``currency`` / ``approximate`` fields are still declared on each concrete
+    subclass — DRF's ModelSerializer only picks up fields declared directly
+    on the class or parent Serializer classes, not on plain mixins.
+    """
+
+    if TYPE_CHECKING:
+        context: dict[str, Any]
 
     def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
         return _convert_amount(
             obj.amount,
-            self.context.get("currency", "usd"),  # type: ignore[attr-defined]
-            self.context.get("rate", 1.0),  # type: ignore[attr-defined]
+            self.context.get("currency", "usd"),
+            self.context.get("rate", 1.0),
         )
 
     def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
-        return str(self.context.get("currency", "usd"))  # type: ignore[attr-defined]
+        return str(self.context.get("currency", "usd"))
 
     def get_approximate(self, obj: PlanPrice | ProductPrice) -> bool:
-        currency: str = self.context.get("currency", "usd")  # type: ignore[attr-defined]
+        currency: str = self.context.get("currency", "usd")
         return currency != "usd"
 
 
