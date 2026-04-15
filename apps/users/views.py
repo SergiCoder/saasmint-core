@@ -144,8 +144,10 @@ class AccountExportView(APIView):
         return Response(data)
 
 
-_MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB
-_ALLOWED_AVATAR_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "gif"}
+_MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB upload cap
+_AVATAR_DIM = 128  # final square dimension
+_AVATAR_WEBP_QUALITY = 80
+_ALLOWED_AVATAR_INPUT_FORMATS: frozenset[str] = frozenset({"JPEG", "PNG", "WEBP", "GIF"})
 
 
 def _delete_local_avatar(avatar_url: str | None) -> None:
@@ -181,25 +183,53 @@ class AvatarView(APIView):
         tags=["account"],
     )
     def post(self, request: Request) -> Response:
-        """Upload avatar (multipart), return { avatar_url }."""
+        """Upload avatar (multipart), return { avatar_url }.
+
+        The uploaded image is decoded with Pillow, re-encoded as a 128x128 WebP,
+        and stored. The original bytes and client-supplied filename/content_type
+        are never written to storage — this blocks stored-XSS from polyglot or
+        mis-typed uploads (e.g. ``foo.svg``/``foo.html`` claiming to be images).
+        """
+        import io
+
+        from django.core.files.base import ContentFile
+        from PIL import Image, ImageOps, UnidentifiedImageError
+
         user = get_user(request)
 
         ser = _AvatarUploadSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         file = ser.validated_data["avatar"]
 
-        ext = (file.name.rsplit(".", 1)[-1] if "." in file.name else "jpg").lower()
-        if ext == "jpeg":
-            ext = "jpg"
-        if ext not in _ALLOWED_AVATAR_EXTENSIONS:
+        file.seek(0)
+        try:
+            with Image.open(file) as opened:
+                fmt = (opened.format or "").upper()
+                if fmt not in _ALLOWED_AVATAR_INPUT_FORMATS:
+                    raise serializers.ValidationError(
+                        {"avatar": ["Unsupported image type."]},
+                    )
+                img: Image.Image = ImageOps.exif_transpose(opened) or opened
+                if img.mode not in ("RGB", "RGBA"):
+                    img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+                img.thumbnail((_AVATAR_DIM, _AVATAR_DIM), Image.Resampling.LANCZOS)
+
+                buffer = io.BytesIO()
+                img.save(
+                    buffer,
+                    format="WEBP",
+                    quality=_AVATAR_WEBP_QUALITY,
+                    method=6,
+                )
+        except (UnidentifiedImageError, OSError) as exc:
             raise serializers.ValidationError(
-                {"avatar": ["Unsupported image type."]},
-            )
+                {"avatar": ["Invalid image file."]},
+            ) from exc
 
         _delete_local_avatar(user.avatar_url)
 
-        path = f"avatars/{user.id}/{uuid.uuid4().hex}.{ext}"
-        saved_path = default_storage.save(path, file)
+        path = f"avatars/{user.id}/{uuid.uuid4().hex}.webp"
+        saved_path = default_storage.save(path, ContentFile(buffer.getvalue()))
         avatar_url = request.build_absolute_uri(f"{settings.MEDIA_URL}{saved_path}")
 
         user.avatar_url = avatar_url
