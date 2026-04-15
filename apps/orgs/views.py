@@ -15,10 +15,10 @@ from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import APIException
+from rest_framework.exceptions import APIException, PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.pagination import LimitOffsetPagination
-from rest_framework.permissions import AllowAny
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -571,13 +571,20 @@ class InvitationAcceptView(APIView):
 class InvitationDeclineView(APIView):
     """POST /api/v1/invitations/{token}/decline/ — decline an invitation."""
 
-    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    permission_classes: ClassVar[list[type[IsAuthenticated]]] = [IsAuthenticated]  # type: ignore[misc]
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]  # drf-stubs types throttle_classes as list[type[BaseThrottle]]; narrowing to ScopedRateThrottle triggers misc
-    throttle_scope = "orgs"
+    throttle_scope = "account"
 
     @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def post(self, request: Request, token: str) -> Response:
         invitation = get_object_or_404(Invitation, token=token, status=InvitationStatus.PENDING)
+        # Require the authenticated user's email to match the invitee's. Prevents
+        # a leaked/guessed token from silently cancelling someone else's invite.
+        user = get_user(request)
+        if user.email.lower() != invitation.email.lower():
+            raise PermissionDenied(
+                {"detail": "This invitation is addressed to another account.", "code": "forbidden"}
+            )
         invitation.status = InvitationStatus.DECLINED
         invitation.save(update_fields=["status"])
         return Response(status=status.HTTP_204_NO_CONTENT)

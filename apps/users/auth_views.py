@@ -416,9 +416,7 @@ class OAuthCallbackView(APIView):
         try:
             user = resolve_oauth_user(provider, user_info)
         except OAuthEmailNotVerifiedError:
-            return HttpResponseRedirect(
-                f"{frontend_url}/auth/error?error=email_not_verified"
-            )
+            return HttpResponseRedirect(f"{frontend_url}/auth/error?error=email_not_verified")
         except ValueError:
             return HttpResponseRedirect(f"{frontend_url}/auth/error?error=account_deactivated")
 

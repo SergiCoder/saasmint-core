@@ -4,19 +4,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('billing', '0008_plan_tier_to_integer'),
+        ("billing", "0008_plan_tier_to_integer"),
     ]
 
     operations = [
         migrations.RemoveField(
-            model_name='exchangerate',
-            name='id',
+            model_name="exchangerate",
+            name="id",
         ),
         migrations.AlterField(
-            model_name='exchangerate',
-            name='currency',
+            model_name="exchangerate",
+            name="currency",
             field=models.CharField(max_length=3, primary_key=True, serialize=False),
         ),
     ]

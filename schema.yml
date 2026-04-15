@@ -656,7 +656,6 @@ paths:
       security:
       - JWT: []
       - cookieAuth: []
-      - {}
       responses:
         '204':
           description: No response body

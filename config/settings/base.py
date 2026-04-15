@@ -29,6 +29,7 @@ class _Env(BaseSettings):
     )
 
     django_secret_key: str
+    jwt_signing_key: str = ""  # if empty, falls back to django_secret_key
     stripe_secret_key: str
     stripe_webhook_secret: str
     redis_url: str = "redis://localhost:6379/0"
@@ -73,6 +74,7 @@ def _parse_db_url(url: str) -> dict[str, object]:
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = env.django_secret_key
+JWT_SIGNING_KEY = env.jwt_signing_key or env.django_secret_key
 DEBUG = env.debug
 SCHEMA_PUBLIC = env.schema_public
 ALLOWED_HOSTS = env.allowed_hosts
@@ -134,6 +136,16 @@ DATABASES = {"default": _parse_db_url(env.database_url)}
 
 AUTH_USER_MODEL = "users.User"
 LOGIN_URL = "/admin/login/"
+
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
+        "OPTIONS": {"min_length": 10},
+    },
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
+]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 

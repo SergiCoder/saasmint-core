@@ -28,9 +28,7 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
         pass
 
     if not user_info.email_verified:
-        raise OAuthEmailNotVerifiedError(
-            f"Provider {provider} did not confirm email ownership."
-        )
+        raise OAuthEmailNotVerifiedError(f"Provider {provider} did not confirm email ownership.")
 
     try:
         user = User.objects.get(email=user_info.email)

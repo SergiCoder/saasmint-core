@@ -139,9 +139,7 @@ class TestResolveOAuthUserUnverifiedEmail:
             full_name="Linked",
             registration_method="microsoft",
         )
-        SocialAccount.objects.create(
-            user=user, provider="microsoft", provider_user_id="ms-linked"
-        )
+        SocialAccount.objects.create(user=user, provider="microsoft", provider_user_id="ms-linked")
         info = _info(
             email="linked@example.com",
             provider_user_id="ms-linked",

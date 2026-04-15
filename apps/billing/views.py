@@ -328,6 +328,17 @@ class PortalSessionView(APIView):
 
 def _get_active_subscription_for_user(user: object) -> SubscriptionModel:
     """Fetch the latest active subscription for a user (paid or free)."""
+    # Org members may only reach an org subscription via their is_billing flag.
+    # Non-billing members must not see the org's subscription details.
+    if getattr(user, "account_type", None) == AccountType.ORG_MEMBER:
+        from apps.orgs.models import OrgMember
+
+        user_id = getattr(user, "id", None)
+        if (
+            user_id is None
+            or not OrgMember.objects.filter(user_id=user_id, is_billing=True).exists()
+        ):
+            raise NotFound("No active subscription found.")
     customer_id = getattr(getattr(user, "stripe_customer", None), "id", None)
     q = Q(user=user)
     if customer_id is not None:

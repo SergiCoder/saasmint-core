@@ -36,9 +36,12 @@ class SecurityHeadersMiddleware:
                     f"worker-src blob:; "
                     f"connect-src 'self' {cdn}"
                 )
-            else:
-                # unsafe-inline for style-src: required by DRF browsable API
+            elif path.startswith("/admin/") or path.startswith("/hijack/"):
+                # Django admin and DRF browsable API rely on inline styles.
                 response["Content-Security-Policy"] = (
                     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
                 )
+            else:
+                # API responses don't render inline styles or scripts; lock down CSP.
+                response["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
         return response

@@ -555,8 +555,8 @@ class TestInvitationAcceptView:
 
 @pytest.mark.django_db
 class TestInvitationDeclineView:
-    def test_decline_invitation(self, org, owner_membership, user):
-        invitation = Invitation.objects.create(
+    def test_decline_requires_authentication(self, org, owner_membership, user):
+        Invitation.objects.create(
             org=org,
             email="decline@example.com",
             role=OrgRole.MEMBER,
@@ -566,6 +566,32 @@ class TestInvitationDeclineView:
         )
         client = APIClient()  # unauthenticated
         resp = client.post("/api/v1/invitations/decline-token/decline/")
+        assert resp.status_code == 401
+
+    def test_decline_rejects_email_mismatch(self, org, owner_membership, user, authed_client):
+        invitation = Invitation.objects.create(
+            org=org,
+            email="someone-else@example.com",
+            role=OrgRole.MEMBER,
+            token="decline-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        resp = authed_client.post("/api/v1/invitations/decline-token/decline/")
+        assert resp.status_code == 403
+        invitation.refresh_from_db()
+        assert invitation.status == InvitationStatus.PENDING
+
+    def test_decline_invitation_as_invitee(self, org, owner_membership, user, authed_client):
+        invitation = Invitation.objects.create(
+            org=org,
+            email=user.email,
+            role=OrgRole.MEMBER,
+            token="decline-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        resp = authed_client.post("/api/v1/invitations/decline-token/decline/")
         assert resp.status_code == 204
         invitation.refresh_from_db()
         assert invitation.status == InvitationStatus.DECLINED
