@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+from django.db import transaction
 from saasmint_core.domain.subscription import FREE_SUBSCRIPTION_PERIOD_END
 
 from apps.billing.models import Plan, Subscription, SubscriptionStatus
@@ -16,7 +17,8 @@ logger = logging.getLogger(__name__)
 def assign_free_plan(user: User) -> None:
     """Create a free Subscription for *user*.
 
-    Idempotent: skips if the user already has any subscription.
+    Idempotent under concurrent register/OAuth races: the atomic+get_or_create
+    pair prevents two parallel callers from both creating a free subscription.
     Does nothing if no free plan exists in the database.
     """
     free_plan = Plan.free_plans().first()
@@ -24,15 +26,18 @@ def assign_free_plan(user: User) -> None:
         logger.warning("No free plan found; skipping free subscription for user %s", user.id)
         return
 
-    if Subscription.objects.filter(user=user).exists():
-        return
-
     now = datetime.now(UTC)
-    Subscription.objects.create(
-        user=user,
-        status=SubscriptionStatus.ACTIVE,
-        plan=free_plan,
-        quantity=1,
-        current_period_start=now,
-        current_period_end=FREE_SUBSCRIPTION_PERIOD_END,
-    )
+    with transaction.atomic():
+        # Lock the user row so two concurrent callers can't both see "no sub" and
+        # create duplicates (register + OAuth-link can race at signup).
+        User.objects.select_for_update().filter(id=user.id).first()
+        if Subscription.objects.filter(user=user).exists():
+            return
+        Subscription.objects.create(
+            user=user,
+            status=SubscriptionStatus.ACTIVE,
+            plan=free_plan,
+            quantity=1,
+            current_period_start=now,
+            current_period_end=FREE_SUBSCRIPTION_PERIOD_END,
+        )

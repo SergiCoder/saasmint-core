@@ -124,6 +124,9 @@ class StripeCustomer(models.Model):
 class Subscription(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     stripe_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    # CASCADE is intentional: subscriptions without a customer have no meaning,
+    # and StripeCustomer is only purged when its owning user/org is deleted,
+    # at which point the subscription history is no longer useful for audit.
     stripe_customer = models.ForeignKey(
         StripeCustomer,
         on_delete=models.CASCADE,
@@ -155,6 +158,13 @@ class Subscription(models.Model):
         indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.Index(fields=["stripe_customer", "status"], name="idx_sub_customer_status"),
             models.Index(fields=["user", "status"], name="idx_sub_user_status"),
+            # Hot path: "find the active subscription for this owner". Partial
+            # index keeps the tree small by excluding terminal-state rows.
+            models.Index(
+                fields=["stripe_customer", "user"],
+                name="idx_sub_active_owner",
+                condition=models.Q(status__in=("active", "trialing", "past_due")),
+            ),
         ]
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.CheckConstraint(
@@ -205,12 +215,13 @@ class ExchangeRate(models.Model):
     One row per supported currency (excluding USD).
     """
 
-    currency = models.CharField(max_length=3, unique=True)
+    currency = models.CharField(max_length=3, primary_key=True)
     rate = models.DecimalField(max_digits=18, decimal_places=8)
     fetched_at = models.DateTimeField()
 
     class Meta:
         db_table = "exchange_rates"
+        ordering = ("currency",)
 
     def __str__(self) -> str:
         return f"{self.currency.upper()}: {self.rate}"

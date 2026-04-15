@@ -102,6 +102,9 @@ class ExchangeRateAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-s
     def has_change_permission(self, request: HttpRequest, obj: object = None) -> bool:
         return False
 
+    def has_delete_permission(self, request: HttpRequest, obj: object = None) -> bool:
+        return False
+
 
 @admin.register(StripeEvent)
 class StripeEventAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
@@ -114,4 +117,9 @@ class StripeEventAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-st
         return False
 
     def has_change_permission(self, request: HttpRequest, obj: object = None) -> bool:
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj: object = None) -> bool:
+        # StripeEvent rows are the idempotency ledger for webhook processing —
+        # deleting them would allow Stripe to replay already-handled events.
         return False

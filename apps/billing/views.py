@@ -69,6 +69,8 @@ def _resolve_display_currency(request: Request) -> str:
     Priority for anonymous: ``?currency=`` query param → ``"usd"``.
     Priority for authenticated: ``?currency=`` → ``user.preferred_currency`` → ``"usd"``.
     """
+    from apps.users.models import User
+
     qp_raw = request.query_params.get("currency")
     if qp_raw is not None and qp_raw != "":
         qp = qp_raw.lower()
@@ -76,9 +78,9 @@ def _resolve_display_currency(request: Request) -> str:
             raise ValidationError({"currency": [f"Unsupported currency: {qp_raw!r}."]})
         return qp
 
-    user = getattr(request, "user", None)
-    if user is not None and getattr(user, "is_authenticated", False):
-        preferred: str | None = getattr(user, "preferred_currency", None)
+    user: User | None = request.user if request.user.is_authenticated else None
+    if user is not None:
+        preferred = user.preferred_currency
         if preferred and preferred.lower() in SUPPORTED_CURRENCIES:
             return preferred.lower()
 
