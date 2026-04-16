@@ -10,7 +10,7 @@ import hashlib
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING
 
 import jwt
 from django.conf import settings
@@ -20,6 +20,11 @@ from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.request import Request
 
 from apps.users.models import AUTH_USER_CACHE_KEY, RefreshToken, User
+
+if TYPE_CHECKING:
+    from apps.users.models import EmailVerificationToken, PasswordResetToken
+
+    OneTimeTokenModel = type[EmailVerificationToken] | type[PasswordResetToken]
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +125,7 @@ def revoke_all_refresh_tokens(user: User) -> None:
 
 
 def _create_one_time_token(
-    model_class: Any,  # noqa: ANN401  # EmailVerificationToken or PasswordResetToken — Django metaclass makes Protocol typing impractical
+    model_class: OneTimeTokenModel,
     user: User,
     lifetime: timedelta,
 ) -> str:
@@ -135,7 +140,7 @@ def _create_one_time_token(
 
 
 def _verify_one_time_token(
-    model_class: Any,  # noqa: ANN401  # same reason as _create_one_time_token
+    model_class: OneTimeTokenModel,
     raw_token: str,
     label: str,
 ) -> User:

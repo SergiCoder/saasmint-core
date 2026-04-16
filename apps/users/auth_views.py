@@ -10,15 +10,23 @@ from urllib.parse import urlencode
 import httpx
 from django.conf import settings
 from django.contrib.auth import authenticate
+from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.http import HttpResponseRedirect
 from drf_spectacular.utils import extend_schema
+from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from apps.base_views import AuthPublicView, AuthScopedView
+from apps.base_views import (
+    AuthLoginView,
+    AuthPublicView,
+    AuthRefreshView,
+    AuthRegisterView,
+    AuthScopedView,
+)
 from apps.billing.services import assign_free_plan
 from apps.users.auth_serializers import (
     ChangePasswordSerializer,
@@ -115,7 +123,7 @@ def _register_user(
     return _token_response(user, refresh, http_status=status.HTTP_201_CREATED)
 
 
-class RegisterView(AuthPublicView):
+class RegisterView(AuthRegisterView):
     """POST /api/v1/auth/register — create a new account."""
 
     @extend_schema(
@@ -134,7 +142,7 @@ class RegisterView(AuthPublicView):
         )
 
 
-class RegisterOrgOwnerView(AuthPublicView):
+class RegisterOrgOwnerView(AuthRegisterView):
     """POST /api/v1/auth/register/org-owner — register as an org owner.
 
     Creates a user with account_type=ORG_MEMBER. No free plan is assigned;
@@ -174,7 +182,7 @@ class VerifyEmailView(AuthPublicView):
         return _token_response(user, refresh)
 
 
-class LoginView(AuthPublicView):
+class LoginView(AuthLoginView):
     """POST /api/v1/auth/login — authenticate with email + password."""
 
     @extend_schema(request=LoginSerializer, responses=TokenResponseSerializer, tags=["auth"])
@@ -209,7 +217,7 @@ class LoginView(AuthPublicView):
         return _token_response(user, refresh)
 
 
-class RefreshView(AuthPublicView):
+class RefreshView(AuthRefreshView):
     """POST /api/v1/auth/refresh — rotate refresh token and get new tokens."""
 
     @extend_schema(request=RefreshSerializer, responses=TokenResponseSerializer, tags=["auth"])
@@ -389,7 +397,69 @@ class OAuthCallbackView(AuthPublicView):
 
         refresh = create_refresh_token(user)
         access = create_access_token(user)
-        # Tokens go into the URL fragment, not the query string, so they are
-        # not logged in browser history, proxies, or leaked via Referer.
-        params = urlencode({"access_token": access, "refresh_token": refresh})
-        return HttpResponseRedirect(f"{frontend_url}/auth/callback#{params}")
+        # Issue a single-use opaque code instead of embedding tokens in the
+        # redirect URL. Any third-party script that runs on /auth/callback
+        # (analytics, chat widgets) would otherwise be able to read tokens
+        # directly from window.location.hash. The frontend POSTs the code
+        # to /oauth/exchange/ which swaps it for the actual token pair.
+        code = _store_oauth_exchange(access, refresh)
+        return HttpResponseRedirect(f"{frontend_url}/auth/callback#{urlencode({'code': code})}")
+
+
+# ---------------------------------------------------------------------------
+# OAuth one-time-code exchange (PKCE-style)
+# ---------------------------------------------------------------------------
+
+_OAUTH_EXCHANGE_PREFIX = "oauth_exchange:"
+_OAUTH_EXCHANGE_TTL = 60  # seconds
+
+
+def _store_oauth_exchange(access_token: str, refresh_token: str) -> str:
+    """Cache the issued token pair under a fresh opaque code and return the code."""
+    code = secrets.token_urlsafe(32)
+    cache.set(
+        f"{_OAUTH_EXCHANGE_PREFIX}{code}",
+        {"access_token": access_token, "refresh_token": refresh_token},
+        timeout=_OAUTH_EXCHANGE_TTL,
+    )
+    return code
+
+
+def _consume_oauth_exchange(code: str) -> dict[str, str] | None:
+    """Atomically retrieve-and-delete a cached token pair by its one-time code."""
+    key = f"{_OAUTH_EXCHANGE_PREFIX}{code}"
+    data: dict[str, str] | None = cache.get(key)
+    if data is None:
+        return None
+    cache.delete(key)
+    return data
+
+
+class OAuthExchangeRequestSerializer(drf_serializers.Serializer[object]):
+    code = drf_serializers.CharField(max_length=128)
+
+
+class OAuthExchangeView(AuthPublicView):
+    """POST /api/v1/auth/oauth/exchange/ — swap a one-time code for a token pair."""
+
+    @extend_schema(
+        request=OAuthExchangeRequestSerializer,
+        responses={200: TokenResponseSerializer},
+        tags=["auth"],
+    )
+    def post(self, request: Request) -> Response:
+        ser = OAuthExchangeRequestSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = _consume_oauth_exchange(ser.validated_data["code"])
+        if data is None:
+            return Response(
+                {"detail": "Invalid or expired code.", "code": "invalid_code"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {
+                "access_token": data["access_token"],
+                "refresh_token": data["refresh_token"],
+                "token_type": "Bearer",
+            }
+        )

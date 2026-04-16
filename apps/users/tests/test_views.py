@@ -292,10 +292,12 @@ class TestAccountViewPATCHEdgeCases:
 
 @pytest.mark.django_db
 class TestAccountViewDELETE:
-    @patch("apps.users.views._subscription_repo", new=MagicMock())
-    @patch("apps.users.views._customer_repo", new=MagicMock())
+    @patch(
+        "apps.users.views._get_account_repos",
+        return_value=(MagicMock(), MagicMock(), MagicMock()),
+    )
     @patch("apps.users.views.delete_account", new_callable=AsyncMock, return_value=None)
-    def test_delete_immediate_returns_204(self, mock_delete, authed_client, user):
+    def test_delete_immediate_returns_204(self, mock_delete, _repos, authed_client, user):
         resp = authed_client.delete("/api/v1/account/")
         assert resp.status_code == 204
         mock_delete.assert_called_once()
@@ -310,10 +312,12 @@ class TestAccountViewDELETE:
 
 @pytest.mark.django_db
 class TestAccountExportView:
-    @patch("apps.users.views._subscription_repo", new=MagicMock())
-    @patch("apps.users.views._customer_repo", new=MagicMock())
+    @patch(
+        "apps.users.views._get_account_repos",
+        return_value=(MagicMock(), MagicMock(), MagicMock()),
+    )
     @patch("apps.users.views.export_user_data", new_callable=AsyncMock)
-    def test_export_returns_data(self, mock_export, authed_client, user):
+    def test_export_returns_data(self, mock_export, _repos, authed_client, user):
         mock_export.return_value = {"user": {"email": user.email}}
         resp = authed_client.get("/api/v1/account/export/")
         assert resp.status_code == 200

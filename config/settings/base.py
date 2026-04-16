@@ -177,7 +177,15 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "anon": "100/hour",
         "user": "1000/hour",
+        # `auth` is the shared bucket for verify-email, reset, change-password,
+        # OAuth start/callback, and invitation accept/decline — all low-volume
+        # but bursty flows. Login, refresh, and register are split into their
+        # own scopes so SPA reconnect bursts on refresh do not starve login
+        # attempts, and vice versa.
         "auth": "10/minute",
+        "auth_login": "5/minute",
+        "auth_register": "5/minute",
+        "auth_refresh": "60/minute",
         "billing": "100/hour",
         "account": "120/hour",
         "account_export": "3/hour",

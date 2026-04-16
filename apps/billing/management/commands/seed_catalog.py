@@ -25,9 +25,16 @@ class _PlanSpec(TypedDict):
     context: PlanContext
     tier: PlanTier
     interval: PlanInterval
+    amount: int
 
 
-PLANS: list[_PlanSpec] = [
+# Yearly plans are generated from monthly by charging 10x the monthly amount
+# (two months free) and appending an annual-billing note to the description.
+_YEARLY_DISCOUNT_MONTHS = 10
+_YEARLY_DESCRIPTION_SUFFIX = " Billed annually \u2014 two months free."
+
+
+_MONTHLY_PLANS: list[_PlanSpec] = [
     {
         "name": "Personal Free",
         "description": (
@@ -36,6 +43,7 @@ PLANS: list[_PlanSpec] = [
         "context": PlanContext.PERSONAL,
         "tier": PlanTier.FREE,
         "interval": PlanInterval.MONTH,
+        "amount": 0,
     },
     {
         "name": "Personal Basic",
@@ -45,6 +53,7 @@ PLANS: list[_PlanSpec] = [
         "context": PlanContext.PERSONAL,
         "tier": PlanTier.BASIC,
         "interval": PlanInterval.MONTH,
+        "amount": 1900,
     },
     {
         "name": "Personal Pro",
@@ -54,6 +63,7 @@ PLANS: list[_PlanSpec] = [
         "context": PlanContext.PERSONAL,
         "tier": PlanTier.PRO,
         "interval": PlanInterval.MONTH,
+        "amount": 4900,
     },
     {
         "name": "Team Basic",
@@ -63,6 +73,7 @@ PLANS: list[_PlanSpec] = [
         "context": PlanContext.TEAM,
         "tier": PlanTier.BASIC,
         "interval": PlanInterval.MONTH,
+        "amount": 1700,
     },
     {
         "name": "Team Pro",
@@ -72,65 +83,29 @@ PLANS: list[_PlanSpec] = [
         "context": PlanContext.TEAM,
         "tier": PlanTier.PRO,
         "interval": PlanInterval.MONTH,
-    },
-    {
-        "name": "Personal Basic",
-        "description": (
-            "For power users."
-            " Advanced analytics, priority email support, and API access."
-            " Billed annually \u2014 two months free."
-        ),
-        "context": PlanContext.PERSONAL,
-        "tier": PlanTier.BASIC,
-        "interval": PlanInterval.YEAR,
-    },
-    {
-        "name": "Personal Pro",
-        "description": (
-            "Everything in Basic plus custom integrations,"
-            " audit logs, and dedicated support."
-            " Billed annually \u2014 two months free."
-        ),
-        "context": PlanContext.PERSONAL,
-        "tier": PlanTier.PRO,
-        "interval": PlanInterval.YEAR,
-    },
-    {
-        "name": "Team Basic",
-        "description": (
-            "For small teams."
-            " Per-seat pricing, shared dashboards, and team analytics."
-            " Billed annually \u2014 two months free."
-        ),
-        "context": PlanContext.TEAM,
-        "tier": PlanTier.BASIC,
-        "interval": PlanInterval.YEAR,
-    },
-    {
-        "name": "Team Pro",
-        "description": (
-            "For growing organizations."
-            " Per-seat pricing, SSO, audit logs, and dedicated support."
-            " Billed annually \u2014 two months free."
-        ),
-        "context": PlanContext.TEAM,
-        "tier": PlanTier.PRO,
-        "interval": PlanInterval.YEAR,
+        "amount": 4500,
     },
 ]
 
-# (context, tier, interval, amount_usd_cents)
-PLAN_PRICES: list[tuple[str, int, str, int]] = [
-    (PlanContext.PERSONAL, PlanTier.FREE, PlanInterval.MONTH, 0),
-    (PlanContext.PERSONAL, PlanTier.BASIC, PlanInterval.MONTH, 1900),
-    (PlanContext.PERSONAL, PlanTier.PRO, PlanInterval.MONTH, 4900),
-    (PlanContext.TEAM, PlanTier.BASIC, PlanInterval.MONTH, 1700),
-    (PlanContext.TEAM, PlanTier.PRO, PlanInterval.MONTH, 4500),
-    (PlanContext.PERSONAL, PlanTier.BASIC, PlanInterval.YEAR, 19000),
-    (PlanContext.PERSONAL, PlanTier.PRO, PlanInterval.YEAR, 49000),
-    (PlanContext.TEAM, PlanTier.BASIC, PlanInterval.YEAR, 17000),
-    (PlanContext.TEAM, PlanTier.PRO, PlanInterval.YEAR, 45000),
-]
+
+def _build_plans() -> list[_PlanSpec]:
+    """Return monthly plans + a yearly variant for every paid monthly plan."""
+    yearly: list[_PlanSpec] = [
+        {
+            "name": spec["name"],
+            "description": spec["description"] + _YEARLY_DESCRIPTION_SUFFIX,
+            "context": spec["context"],
+            "tier": spec["tier"],
+            "interval": PlanInterval.YEAR,
+            "amount": spec["amount"] * _YEARLY_DISCOUNT_MONTHS,
+        }
+        for spec in _MONTHLY_PLANS
+        if spec["tier"] != PlanTier.FREE
+    ]
+    return [*_MONTHLY_PLANS, *yearly]
+
+
+PLANS: list[_PlanSpec] = _build_plans()
 
 # (name, credit_count, amount_usd_cents)
 BOOST_PRODUCTS: list[tuple[str, int, int]] = [
@@ -164,19 +139,13 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f"  + Plan: {plan.name}")
 
-        # Load all active plans once to avoid a get() per PLAN_PRICES row.
-        plans_by_identity: dict[tuple[str, int, str], Plan] = {
-            (p.context, p.tier, p.interval): p for p in Plan.objects.filter(is_active=True)
-        }
-        for context, tier, interval, amount in PLAN_PRICES:
-            plan = plans_by_identity[context, tier, interval]
-            price_id = f"price_placeholder_{context}_{tier}_{interval}"
-            _, created = PlanPrice.objects.get_or_create(
+            price_id = f"price_placeholder_{spec['context']}_{spec['tier']}_{spec['interval']}"
+            _, price_created = PlanPrice.objects.get_or_create(
                 plan=plan,
-                defaults={"amount": amount, "stripe_price_id": price_id},
+                defaults={"amount": spec["amount"], "stripe_price_id": price_id},
             )
-            if created:
-                self.stdout.write(f"  + PlanPrice: {plan.name} = {amount}c")
+            if price_created:
+                self.stdout.write(f"  + PlanPrice: {plan.name} = {spec['amount']}c")
 
     def _seed_products(self) -> None:
         for name, credit_count, amount in BOOST_PRODUCTS:
