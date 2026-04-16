@@ -20,12 +20,14 @@ def _mock_response(status_code: int = 200, json_data: dict | list | None = None)
     resp.json.return_value = json_data if json_data is not None else {}
 
     if status_code >= 400:
+
         def _raise():
             raise httpx.HTTPStatusError(
                 f"{status_code}",
                 request=httpx.Request("POST", "https://example.com"),
                 response=httpx.Response(status_code),
             )
+
         resp.raise_for_status.side_effect = _raise
     else:
         resp.raise_for_status.return_value = None
