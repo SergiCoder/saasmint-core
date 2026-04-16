@@ -20,6 +20,24 @@ class AuthPublicView(AuthScopedView):
     permission_classes: ClassVar[list[type[BasePermission]]] = [AllowAny]  # type: ignore[misc]
 
 
+class AuthLoginView(AuthPublicView):
+    """Login endpoint — narrower scope than `auth` so a refresh burst can't starve logins."""
+
+    throttle_scope = "auth_login"
+
+
+class AuthRegisterView(AuthPublicView):
+    """Register endpoint — own scope so signup bursts are isolated from login/refresh."""
+
+    throttle_scope = "auth_register"
+
+
+class AuthRefreshView(AuthPublicView):
+    """Refresh-token endpoint — higher per-minute cap for SPA reconnect bursts."""
+
+    throttle_scope = "auth_refresh"
+
+
 class BillingScopedView(APIView):
     throttle_classes: ClassVar[list[type[ScopedRateThrottle]]] = [ScopedRateThrottle]  # type: ignore[misc]
     throttle_scope = "billing"

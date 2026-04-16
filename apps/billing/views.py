@@ -11,7 +11,7 @@ from django.core.cache import cache
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import APIException, NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -36,10 +36,7 @@ from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, ExchangeRate, Plan
 from apps.billing.models import Plan as PlanModel
 from apps.billing.models import Product as ProductModel
 from apps.billing.models import Subscription as SubscriptionModel
-from apps.billing.repositories import (
-    DjangoStripeCustomerRepository,
-    DjangoSubscriptionRepository,
-)
+from apps.billing.repositories import get_billing_repos
 from apps.billing.serializers import (
     CheckoutRequestSerializer,
     PlanSerializer,
@@ -55,6 +52,20 @@ from helpers import get_user
 logger = logging.getLogger(__name__)
 
 MIN_TEAM_SEATS = 1
+
+
+class _AccountTypeMismatch(APIException):
+    """409 — account_type does not match the plan's context (personal vs team).
+
+    Raising a bare ``ValidationError({"detail": "..."})`` would coerce the
+    string into a list (``{"detail": ["..."]}``) and escape past the custom
+    exception middleware, leaking DRF's internal shape. A typed
+    ``APIException`` keeps the envelope flat and carries a stable ``code``.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "Account type does not match the plan's context."
+    default_code = "account_type_mismatch"
 
 _CURRENCY_PARAM = OpenApiParameter(
     name="currency",
@@ -118,10 +129,6 @@ def _currency_context(request: Request) -> dict[str, object]:
     return {"currency": currency, "rate": rate}
 
 
-_customer_repo = DjangoStripeCustomerRepository()
-_subscription_repo = DjangoSubscriptionRepository()
-
-
 def _validate_quantity_for_context(context: PlanContext, quantity: int) -> int:
     """Enforce seat rules: personal plans always 1, team plans >= MIN_TEAM_SEATS."""
     if context == PlanContext.PERSONAL:
@@ -147,10 +154,11 @@ async def _get_customer_and_paid_subscription(
     as a non-optional ``str`` lets callers avoid re-checking for ``None``.
     Raises NotFound when the customer or paid sub is missing.
     """
-    customer = await _customer_repo.get_by_user_id(user_id)
+    repos = get_billing_repos()
+    customer = await repos.customers.get_by_user_id(user_id)
     if customer is None:
         raise NotFound("No Stripe customer found.")
-    sub = await _subscription_repo.get_active_for_customer(customer.id)
+    sub = await repos.subscriptions.get_active_for_customer(customer.id)
     if sub is None or sub.stripe_id is None:
         raise NotFound("No active subscription found.")
     return customer, sub, sub.stripe_id
@@ -261,14 +269,12 @@ class CheckoutSessionView(BillingScopedView):
 
         # Enforce account_type / plan context match
         if is_team and user.account_type != AccountType.ORG_MEMBER:
-            raise ValidationError(
-                {
-                    "detail": "Only org accounts can check out team plans. "
-                    "Register at /api/v1/auth/register/org-owner/ first."
-                }
+            raise _AccountTypeMismatch(
+                "Only org accounts can check out team plans. "
+                "Register at /api/v1/auth/register/org-owner/ first."
             )
         if not is_team and user.account_type != AccountType.PERSONAL:
-            raise ValidationError({"detail": "Org accounts cannot check out personal plans."})
+            raise _AccountTypeMismatch("Org accounts cannot check out personal plans.")
 
         # Team plans require org_name
         if is_team:
@@ -293,7 +299,7 @@ class CheckoutSessionView(BillingScopedView):
                 email=str(user.email),
                 name=user.full_name,
                 locale=user.preferred_locale,
-                customer_repo=_customer_repo,
+                customer_repo=get_billing_repos().customers,
             )
             return await create_checkout_session(
                 stripe_customer_id=customer.stripe_id,
@@ -330,7 +336,7 @@ class PortalSessionView(BillingScopedView):
                 email=str(user.email),
                 name=user.full_name,
                 locale=user.preferred_locale,
-                customer_repo=_customer_repo,
+                customer_repo=get_billing_repos().customers,
             )
             return await create_billing_portal_session(
                 stripe_customer_id=customer.stripe_id,
@@ -404,18 +410,19 @@ class SubscriptionView(BillingScopedView):
             _validate_quantity_for_plan(plan_price, data["quantity"])
 
         async def _do() -> None:
+            repos = get_billing_repos()
             customer, sub, stripe_sub_id = await _get_customer_and_paid_subscription(user.id)
             if "cancel_at_period_end" in data:
                 if data["cancel_at_period_end"]:
                     await cancel_subscription(
                         stripe_customer_id=customer.id,
                         at_period_end=True,
-                        subscription_repo=_subscription_repo,
+                        subscription_repo=repos.subscriptions,
                     )
                 else:
                     await resume_subscription(
                         stripe_customer_id=customer.id,
-                        subscription_repo=_subscription_repo,
+                        subscription_repo=repos.subscriptions,
                     )
             elif plan_price:
                 await change_plan(
@@ -429,9 +436,7 @@ class SubscriptionView(BillingScopedView):
                 # current subscription's plan, otherwise a personal sub could
                 # be bumped to N seats and a team sub down to 1.
                 current_plan = await PlanModel.objects.only("context").aget(id=sub.plan_id)
-                _validate_quantity_for_context(
-                    PlanContext(current_plan.context), data["quantity"]
-                )
+                _validate_quantity_for_context(PlanContext(current_plan.context), data["quantity"])
                 await update_seat_count(
                     stripe_subscription_id=stripe_sub_id,
                     quantity=data["quantity"],
@@ -460,7 +465,7 @@ class SubscriptionView(BillingScopedView):
             await cancel_subscription(
                 stripe_customer_id=customer.id,
                 at_period_end=True,
-                subscription_repo=_subscription_repo,
+                subscription_repo=get_billing_repos().subscriptions,
             )
 
         async_to_sync(_do)()

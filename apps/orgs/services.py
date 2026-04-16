@@ -44,14 +44,21 @@ def generate_unique_slug(name: str) -> str:
     if len(base) < 2:
         base = "org"
 
-    # Pull every existing variant in one query (`base`, `base-2`, `base-3`, ...)
-    # and pick the lowest free suffix. Avoids O(N) `exists()` calls for hot slugs.
-    existing = set(
-        Org.objects.filter(
-            slug__regex=rf"^{re.escape(base)}(-\d+)?$",
+    # Pull candidate variants in one query (`base`, `base-2`, `base-3`, ...)
+    # using a ``startswith`` scan so the ``idx_orgs_slug_active`` partial index
+    # can seek the prefix — ``slug__regex`` was opaque to the planner and
+    # fell back to a full-table scan. Filter to exact-match or ``-<digits>``
+    # in Python; anything else (e.g. ``foo-bar`` when base=``foo``) is
+    # discarded, so the wider candidate set is harmless.
+    _suffix_re = re.compile(rf"^{re.escape(base)}(?:-\d+)?$")
+    existing = {
+        slug
+        for slug in Org.objects.filter(
+            slug__startswith=base,
             deleted_at__isnull=True,
         ).values_list("slug", flat=True)
-    )
+        if _suffix_re.match(slug)
+    }
     if base not in existing:
         return base
     suffix = 2
@@ -173,7 +180,16 @@ def accept_invitation(
     The invitation must already have been validated (not expired, org active,
     email not registered). Runs in a single transaction so a failure midway
     never leaves a dangling user, member, or accepted-but-unused invitation.
+
+    The user is created with ``is_verified=False`` — a verification email is
+    queued on commit so the invitee must prove mailbox control before they
+    can log in. This blocks a leaked/forwarded invitation token from
+    silently onboarding an attacker, since they cannot click the verify
+    link that lands in the real invitee's inbox.
     """
+    from apps.users.authentication import create_email_verification_token
+    from apps.users.tasks import send_verification_email_task
+
     org = invitation.org
     with transaction.atomic():
         user = User.objects.create_user(
@@ -181,7 +197,7 @@ def accept_invitation(
             password=password,
             full_name=full_name,
             account_type=AccountType.ORG_MEMBER,
-            is_verified=True,  # trusted: invited by existing member
+            is_verified=False,
         )
         OrgMember.objects.create(
             org=org,
@@ -190,24 +206,25 @@ def accept_invitation(
         )
         invitation.status = InvitationStatus.ACCEPTED
         invitation.save(update_fields=["status"])
+        verification_token = create_email_verification_token(user)
+        transaction.on_commit(
+            lambda: send_verification_email_task.delay(user.email, verification_token)
+        )
     return user, org
 
 
-def delete_org(org: Org) -> None:
-    """Delete an org: cancel Stripe subs, hard-delete members and the org itself.
+def _delete_org_db_only(org: Org) -> None:
+    """Delete an org's DB state (invitations, members, users, the org row).
 
-    DB work runs in a single atomic block; the Stripe cancellation is scheduled
-    via on_commit so a Stripe failure cannot leave the DB partially deleted and
-    a DB rollback cannot leave a dangling Stripe cancellation.
+    No Stripe cancellation — the caller owns the fan-out, so it can either
+    schedule one task per org (:func:`delete_org`) or batch one task across
+    many orgs (:func:`delete_orgs_created_by_user`).
     """
+    from django.db.models import Exists, OuterRef, Subquery
+
     org_id = org.id
     with transaction.atomic():
-        # Snapshot the Stripe subscription ID before deletion — StripeCustomer is
-        # CASCADE-deleted with the org, so we must capture it first.
-        active_sub = _get_active_stripe_sub(org_id)
-        stripe_sub_id = active_sub.stripe_id if active_sub is not None else None
-
-        # Inline sync UPDATE — delete_org already runs in a sync transaction,
+        # Inline sync UPDATE — the caller already runs in a sync transaction,
         # so bouncing through async_to_sync to call the async helper would
         # just wrap the same UPDATE in an event loop for no reason.
         Invitation.objects.filter(org_id=org_id, status=InvitationStatus.PENDING).update(
@@ -219,8 +236,6 @@ def delete_org(org: Org) -> None:
         # deleting org A would wipe accounts still active in org B.
         # The NOT EXISTS subquery is evaluated in the DB so we don't need to
         # materialize thousands of UUIDs into Python for the IN clause.
-        from django.db.models import Exists, OuterRef, Subquery
-
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id=org_id
         )
@@ -235,21 +250,62 @@ def delete_org(org: Org) -> None:
 
         org.delete()
 
-        # Offload Stripe cancellation to Celery so the request returns
-        # immediately instead of blocking on the Stripe round-trip.
-        if stripe_sub_id is not None:
-            from apps.orgs.tasks import cancel_stripe_subs_task
 
-            transaction.on_commit(
-                lambda: cancel_stripe_subs_task.delay([stripe_sub_id], str(org_id))
-            )
+def delete_org(org: Org) -> None:
+    """Delete an org: cancel its Stripe sub, hard-delete members and the org itself.
+
+    DB work runs in a single atomic block; the Stripe cancellation is scheduled
+    via on_commit so a Stripe failure cannot leave the DB partially deleted and
+    a DB rollback cannot leave a dangling Stripe cancellation.
+    """
+    from apps.orgs.tasks import cancel_stripe_subs_task
+
+    org_id = org.id
+    # Snapshot the Stripe subscription ID before deletion — StripeCustomer is
+    # CASCADE-deleted with the org, so we must capture it first.
+    active_sub = _get_active_stripe_sub(org_id)
+    stripe_sub_id = active_sub.stripe_id if active_sub is not None else None
+
+    _delete_org_db_only(org)
+
+    # Offload Stripe cancellation to Celery so the request returns
+    # immediately instead of blocking on the Stripe round-trip.
+    if stripe_sub_id is not None:
+        transaction.on_commit(
+            lambda: cancel_stripe_subs_task.delay([stripe_sub_id], str(org_id))
+        )
 
 
 def delete_orgs_created_by_user(user_id: UUID) -> None:
-    """Delete all active orgs created by a user (used during account deletion)."""
+    """Delete every active org created by *user_id* (used during account deletion).
+
+    Collects every org's active Stripe subscription first, then fires one
+    batched ``cancel_stripe_subs_task`` with all the IDs instead of dispatching
+    one Celery message per org. The cancel task already accepts a list, so
+    the behavior is unchanged — we just avoid K broker round-trips for a user
+    who created K orgs.
+    """
+    from apps.orgs.tasks import cancel_stripe_subs_task
+
     orgs = list(Org.objects.filter(created_by_id=user_id, deleted_at__isnull=True))
+    if not orgs:
+        return
+
+    pending_stripe_sub_ids: list[str] = []
     for org in orgs:
-        delete_org(org)
+        sub = _get_active_stripe_sub(org.id)
+        if sub is not None and sub.stripe_id is not None:
+            pending_stripe_sub_ids.append(sub.stripe_id)
+        _delete_org_db_only(org)
+
+    if pending_stripe_sub_ids:
+        # No single org_id owns the batch — pass the caller's user_id instead
+        # so failures can still be traced back to the originating delete.
+        transaction.on_commit(
+            lambda: cancel_stripe_subs_task.delay(
+                pending_stripe_sub_ids, f"user:{user_id}"
+            )
+        )
 
 
 def _get_active_stripe_sub(org_id: UUID) -> SubscriptionModel | None:

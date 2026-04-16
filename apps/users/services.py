@@ -40,7 +40,10 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
         raise OAuthEmailNotVerifiedError(f"Provider {provider} did not confirm email ownership.")
 
     try:
-        user = User.objects.get(email=user_info.email)
+        # Case-insensitive: provider returning "Alice@Example.com" must match
+        # a stored "alice@example.com" — otherwise we'd create a duplicate
+        # user with is_verified=True alongside the password-registered one.
+        user = User.objects.get(email__iexact=user_info.email)
     except User.DoesNotExist:
         try:
             # Atomic covers create_user + assign_free_plan + SocialAccount link
@@ -64,7 +67,7 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
             return user
         except IntegrityError:
             # Race: another request created the user between our get and create
-            user = User.objects.get(email=user_info.email)
+            user = User.objects.get(email__iexact=user_info.email)
 
     # Auto-link provider for the existing-user path
     SocialAccount.objects.get_or_create(

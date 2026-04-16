@@ -218,7 +218,8 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "account_type_mismatch"
         assert "org accounts" in resp.data["detail"].lower()
 
     def test_org_member_cannot_checkout_personal_plan(self, org_member_client, plan_price):
@@ -232,7 +233,8 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "account_type_mismatch"
         assert "personal plans" in resp.data["detail"].lower()
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
@@ -295,6 +297,70 @@ class TestCheckoutSessionView:
             format="json",
         )
         assert mock_create.call_args.kwargs["metadata"] == {"org_name": "My Team Org"}
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_already_subscribed_user_can_still_create_checkout(
+        self,
+        mock_get_customer,
+        mock_create,
+        authed_client,
+        plan_price,
+        subscription,
+        mock_stripe_customer,
+    ):
+        """A user with an existing active subscription may still open a new
+        Checkout Session — e.g. to upgrade or re-subscribe after cancel.
+        The view does not guard against duplicate checkouts; Stripe's Billing
+        flow handles proration / replacement.
+        """
+        mock_get_customer.return_value = mock_stripe_customer
+        mock_create.return_value = "https://checkout.stripe.com/session-dup"
+
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(plan_price.id),
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["url"] == "https://checkout.stripe.com/session-dup"
+        mock_create.assert_called_once()
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_display_currency_query_param_does_not_drift_checkout_price(
+        self, mock_get_customer, mock_create, authed_client, plan_price, mock_stripe_customer
+    ):
+        """Catalog display currency (?currency=eur) must not leak into checkout.
+
+        The Stripe price_id is USD-pinned; a drifted display currency on
+        the pricing page cannot cause us to quote the user in a currency
+        we don't actually charge in.
+        """
+        ExchangeRate.objects.create(
+            currency="eur",
+            rate="0.90",
+            fetched_at=datetime.now(UTC),
+        )
+        mock_get_customer.return_value = mock_stripe_customer
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/?currency=eur",
+            {
+                "plan_price_id": str(plan_price.id),
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        # price_id forwarded verbatim — no currency-converted variant.
+        assert mock_create.call_args.kwargs["price_id"] == plan_price.stripe_price_id
 
 
 @pytest.mark.django_db

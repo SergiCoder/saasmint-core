@@ -4,14 +4,17 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('users', '0005_remove_deleted_at_scheduled_deletion_at'),
+        ("users", "0005_remove_deleted_at_scheduled_deletion_at"),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='refreshtoken',
-            index=models.Index(condition=models.Q(('revoked_at__isnull', True)), fields=['user'], name='idx_refresh_user_active'),
+            model_name="refreshtoken",
+            index=models.Index(
+                condition=models.Q(("revoked_at__isnull", True)),
+                fields=["user"],
+                name="idx_refresh_user_active",
+            ),
         ),
     ]

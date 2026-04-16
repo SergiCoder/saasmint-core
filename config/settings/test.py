@@ -20,3 +20,11 @@ CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = [
     "https://example.com",
 ]
+
+# Tests run without Redis — fall back to in-process cache. Each test runs
+# in a single process so LocMemCache's per-process isolation is harmless.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+    },
+}

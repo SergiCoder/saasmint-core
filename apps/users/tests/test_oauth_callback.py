@@ -59,7 +59,7 @@ class TestOAuthCallbackNewUser:
                 {"code": "auth-code", "state": "test-state"},
             )
         assert resp.status_code == 302
-        assert "access_token" in resp["Location"]
+        assert "#code=" in resp["Location"]
 
         user = User.objects.get(email="oauth@example.com")
         assert user.registration_method == "google"
@@ -96,7 +96,7 @@ class TestOAuthCallbackExistingEmailUser:
                 {"code": "auth-code", "state": "test-state"},
             )
         assert resp.status_code == 302
-        assert "access_token" in resp["Location"]
+        assert "#code=" in resp["Location"]
 
         # User keeps original registration_method
         user.refresh_from_db()
@@ -123,15 +123,15 @@ class TestOAuthCallbackReturningSocialUser:
                 {"code": "auth-code", "state": "test-state"},
             )
         assert resp.status_code == 302
-        assert "access_token" in resp["Location"]
+        assert "#code=" in resp["Location"]
 
         # No duplicate SocialAccount created
         assert SocialAccount.objects.filter(user=user, provider="github").count() == 1
 
 
 @pytest.mark.django_db
-class TestOAuthCallbackTokensInFragment:
-    def test_tokens_are_placed_in_url_fragment(self, client, _oauth_state):
+class TestOAuthCallbackCodeInFragment:
+    def test_code_is_placed_in_url_fragment(self, client, _oauth_state):
         with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
@@ -139,9 +139,63 @@ class TestOAuthCallbackTokensInFragment:
             )
         assert resp.status_code == 302
         location = resp["Location"]
-        # Tokens must be in the fragment (after #), not the query string.
-        assert "#access_token=" in location
-        assert "?access_token=" not in location
+        # One-time code must be in the fragment (after #), not the query string,
+        # so it never leaks into referrer headers or server logs.
+        assert "#code=" in location
+        assert "?code=" not in location
+        assert "access_token" not in location
+        assert "refresh_token" not in location
+
+
+@pytest.mark.django_db
+class TestOAuthExchange:
+    """The exchange endpoint trades the one-time code for tokens."""
+
+    def _get_code(self, client) -> str:
+        session = client.session
+        session["oauth_state"] = "test-state"
+        session.save()
+        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        location = resp["Location"]
+        return location.split("#code=", 1)[1]
+
+    def test_valid_code_returns_tokens(self, client):
+        code = self._get_code(client)
+        resp = client.post(
+            "/api/v1/auth/oauth/exchange/",
+            {"code": code},
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert "access_token" in resp.json()
+        assert "refresh_token" in resp.json()
+
+    def test_code_is_single_use(self, client):
+        code = self._get_code(client)
+        first = client.post(
+            "/api/v1/auth/oauth/exchange/",
+            {"code": code},
+            content_type="application/json",
+        )
+        assert first.status_code == 200
+        second = client.post(
+            "/api/v1/auth/oauth/exchange/",
+            {"code": code},
+            content_type="application/json",
+        )
+        assert second.status_code in (400, 401)
+
+    def test_invalid_code_rejected(self, client):
+        resp = client.post(
+            "/api/v1/auth/oauth/exchange/",
+            {"code": "not-a-real-code"},
+            content_type="application/json",
+        )
+        assert resp.status_code in (400, 401)
 
 
 @pytest.mark.django_db

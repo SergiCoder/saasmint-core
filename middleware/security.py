@@ -38,8 +38,13 @@ class SecurityHeadersMiddleware:
                 )
             elif path.startswith("/admin/") or path.startswith("/hijack/"):
                 # Django admin and DRF browsable API rely on inline styles.
+                # Explicit `frame-ancestors 'self'` blocks third-party sites
+                # from embedding the admin in an iframe (clickjacking defense)
+                # — the top-level API CSP sets this to 'none', but the admin
+                # CSP doesn't inherit from it.
                 response["Content-Security-Policy"] = (
-                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+                    "default-src 'self'; script-src 'self'; "
+                    "style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"
                 )
             else:
                 # API responses don't render inline styles or scripts; lock down CSP.

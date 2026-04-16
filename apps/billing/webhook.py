@@ -16,6 +16,11 @@ from apps.billing.tasks import process_stripe_webhook
 
 logger = logging.getLogger(__name__)
 
+# Stripe's documented webhook payload ceiling is far below this; the cap is a
+# belt-and-braces guard against an attacker submitting a giant body to force
+# the process to buffer it before signature verification.
+_MAX_WEBHOOK_BODY = 256 * 1024  # 256 KB
+
 
 @csrf_exempt
 @require_POST
@@ -26,7 +31,24 @@ def stripe_webhook(request: HttpRequest) -> HttpResponse:
     read from the DB row. This keeps PII out of the Celery queue and lets a
     task retry after a webhook-secret rotation without re-verifying.
     """
+    # Reject oversized bodies before reading them. `request.body` would buffer
+    # the full payload into memory otherwise.
+    try:
+        content_length = int(request.META.get("CONTENT_LENGTH") or 0)
+    except ValueError:
+        content_length = 0
+    if content_length > _MAX_WEBHOOK_BODY:
+        logger.warning(
+            "Stripe webhook rejected: Content-Length %d exceeds %d",
+            content_length,
+            _MAX_WEBHOOK_BODY,
+        )
+        return HttpResponse(status=413)
+
     payload = request.body
+    if len(payload) > _MAX_WEBHOOK_BODY:
+        logger.warning("Stripe webhook rejected: body length %d exceeds cap", len(payload))
+        return HttpResponse(status=413)
     signature = request.META.get("HTTP_STRIPE_SIGNATURE", "")
 
     try:

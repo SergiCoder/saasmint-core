@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -61,6 +62,9 @@ class DjangoStripeCustomerRepository:
         return await aget_or_none(StripeCustomerModel, self._to_domain, org_id=org_id)
 
     async def save(self, customer: StripeCustomer) -> StripeCustomer:
+        # ``lookup`` is spread as ``**kwargs`` into ``aupdate_or_create``, which
+        # expects ``Mapping[str, Any]``. ``defaults`` is passed by value and can
+        # use the stricter ``dict[str, object]`` — DO NOT unify the two.
         lookup: dict[str, Any] = {}
         if customer.user_id:
             lookup["user_id"] = customer.user_id
@@ -341,4 +345,25 @@ def get_webhook_repos() -> WebhookRepos:
         plans=DjangoPlanRepository(),
         on_team_checkout_completed=on_team_checkout_completed,
         on_org_subscription_canceled=deactivate_org,
+    )
+
+
+@dataclass(frozen=True)
+class BillingRepos:
+    """Bundle of billing repositories used by views and GDPR flows."""
+
+    customers: DjangoStripeCustomerRepository
+    subscriptions: DjangoSubscriptionRepository
+
+
+def get_billing_repos() -> BillingRepos:
+    """Build the repositories used by DRF views touching customers/subscriptions.
+
+    Exposed as a factory (mirroring ``get_webhook_repos``) so tests can swap a
+    single call target instead of patching module-level singletons in every
+    consumer module.
+    """
+    return BillingRepos(
+        customers=DjangoStripeCustomerRepository(),
+        subscriptions=DjangoSubscriptionRepository(),
     )

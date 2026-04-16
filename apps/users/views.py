@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import io
 import uuid
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from asgiref.sync import async_to_sync
 from django.conf import settings
+from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from drf_spectacular.utils import extend_schema, inline_serializer
+from PIL import Image, ImageOps, UnidentifiedImageError
 from rest_framework import serializers, status
 from rest_framework.parsers import MultiPartParser
 from rest_framework.request import Request
@@ -19,17 +22,31 @@ from saasmint_core.services.gdpr import (
 )
 
 from apps.base_views import AccountScopedView
-from apps.billing.repositories import (
-    DjangoStripeCustomerRepository,
-    DjangoSubscriptionRepository,
-)
+from apps.billing.repositories import get_billing_repos
 from apps.users.repositories import DjangoUserRepository
 from apps.users.serializers import UpdateUserSerializer, UserSerializer
 from helpers import get_user
 
-_user_repo = DjangoUserRepository()
-_customer_repo = DjangoStripeCustomerRepository()
-_subscription_repo = DjangoSubscriptionRepository()
+if TYPE_CHECKING:
+    from apps.billing.repositories import (
+        DjangoStripeCustomerRepository,
+        DjangoSubscriptionRepository,
+    )
+
+
+def _get_account_repos() -> tuple[
+    DjangoUserRepository,
+    DjangoStripeCustomerRepository,
+    DjangoSubscriptionRepository,
+]:
+    """Assemble the repo tuple consumed by GDPR helpers (delete/export).
+
+    Exposed as a factory (mirroring ``get_billing_repos`` / ``get_webhook_repos``)
+    so tests can swap one call target rather than patching three module-level
+    singletons in every consumer module.
+    """
+    billing = get_billing_repos()
+    return DjangoUserRepository(), billing.customers, billing.subscriptions
 
 
 class AccountView(AccountScopedView):
@@ -66,7 +83,8 @@ class AccountView(AccountScopedView):
         from asgiref.sync import sync_to_async
 
         from apps.orgs.models import OrgMember
-        from apps.orgs.services import decrement_subscription_seats, delete_orgs_created_by_user
+        from apps.orgs.services import delete_orgs_created_by_user
+        from apps.orgs.tasks import decrement_subscription_seats_task
 
         user = get_user(request)
 
@@ -79,14 +97,19 @@ class AccountView(AccountScopedView):
             org_ids = [m.org_id async for m in memberships]
             if org_ids:
                 await memberships.adelete()
+                # Fan out to Celery instead of running Stripe seat updates
+                # inline: each call is a 500-1500 ms round-trip, so K orgs
+                # would stall the DELETE request for K*~1 s. The memberships
+                # are already gone, so the task is free to run at any time.
                 for org_id in org_ids:
-                    await sync_to_async(decrement_subscription_seats)(org_id)
+                    decrement_subscription_seats_task.delay(str(org_id))
 
+        user_repo, customer_repo, subscription_repo = _get_account_repos()
         async_to_sync(delete_account)(
             user_id=user.id,
-            user_repo=_user_repo,
-            customer_repo=_customer_repo,
-            subscription_repo=_subscription_repo,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
             pre_delete_hook=_pre_delete,
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -112,11 +135,12 @@ class AccountExportView(AccountScopedView):
     )
     def get(self, request: Request) -> Response:
         user = get_user(request)
+        user_repo, customer_repo, subscription_repo = _get_account_repos()
         data = async_to_sync(export_user_data)(
             user_id=user.id,
-            user_repo=_user_repo,
-            customer_repo=_customer_repo,
-            subscription_repo=_subscription_repo,
+            user_repo=user_repo,
+            customer_repo=customer_repo,
+            subscription_repo=subscription_repo,
         )
         return Response(data)
 
@@ -165,11 +189,6 @@ class AvatarView(AccountScopedView):
         are never written to storage — this blocks stored-XSS from polyglot or
         mis-typed uploads (e.g. ``foo.svg``/``foo.html`` claiming to be images).
         """
-        import io
-
-        from django.core.files.base import ContentFile
-        from PIL import Image, ImageOps, UnidentifiedImageError
-
         user = get_user(request)
 
         ser = _AvatarUploadSerializer(data=request.data)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from rest_framework.test import APIClient
@@ -292,15 +292,125 @@ class TestAccountViewPATCHEdgeCases:
 
 @pytest.mark.django_db
 class TestAccountViewDELETE:
-    @patch("apps.users.views._subscription_repo", new=MagicMock())
-    @patch("apps.users.views._customer_repo", new=MagicMock())
-    @patch("apps.users.views.delete_account", new_callable=AsyncMock, return_value=None)
-    def test_delete_immediate_returns_204(self, mock_delete, authed_client, user):
+    @patch("saasmint_core.services.gdpr.stripe.Subscription.cancel")
+    @patch("saasmint_core.services.gdpr.stripe.Customer.delete")
+    def test_delete_hard_deletes_user_and_stripe_customer(
+        self, mock_cust_del, mock_sub_cancel, authed_client, user
+    ):
+        from datetime import UTC, datetime
+
+        from apps.billing.models import (
+            Plan,
+            PlanContext,
+            PlanInterval,
+            PlanPrice,
+            PlanTier,
+            StripeCustomer,
+            Subscription,
+        )
+
+        cust = StripeCustomer.objects.create(
+            stripe_id="cus_gdpr_del", user=user, livemode=False
+        )
+        plan = Plan.objects.create(
+            name="Personal Basic",
+            context=PlanContext.PERSONAL,
+            tier=PlanTier.BASIC,
+            interval=PlanInterval.MONTH,
+            is_active=True,
+        )
+        PlanPrice.objects.create(plan=plan, stripe_price_id="price_gdpr_del", amount=999)
+        Subscription.objects.create(
+            stripe_id="sub_gdpr_del",
+            stripe_customer=cust,
+            status="active",
+            plan=plan,
+            quantity=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+
+        resp = authed_client.delete("/api/v1/account/")
+
+        assert resp.status_code == 204
+        assert not User.objects.filter(id=user.id).exists()
+        assert not StripeCustomer.objects.filter(id=cust.id).exists()
+        mock_cust_del.assert_called_once_with("cus_gdpr_del")
+        mock_sub_cancel.assert_called_once_with("sub_gdpr_del")
+
+    @patch("saasmint_core.services.gdpr.stripe.Customer.delete")
+    def test_delete_without_stripe_customer_still_hard_deletes_user(
+        self, mock_cust_del, authed_client, user
+    ):
         resp = authed_client.delete("/api/v1/account/")
         assert resp.status_code == 204
-        mock_delete.assert_called_once()
-        call_kwargs = mock_delete.call_args.kwargs
-        assert call_kwargs["user_id"] == user.id
+        assert not User.objects.filter(id=user.id).exists()
+        mock_cust_del.assert_not_called()
+
+    @patch("saasmint_core.services.gdpr.stripe.Customer.delete")
+    def test_delete_non_owner_membership_decrements_seats(
+        self, mock_cust_del, authed_client, user
+    ):
+        """Deleting a non-owner member cascades through pre_delete_hook:
+        the membership is removed and the team sub quantity is decremented."""
+        from datetime import UTC, datetime
+
+        from apps.billing.models import (
+            Plan,
+            PlanContext,
+            PlanInterval,
+            PlanPrice,
+            PlanTier,
+            StripeCustomer,
+            Subscription,
+        )
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import AccountType
+
+        owner = User.objects.create_user(
+            email="teamowner@example.com",
+            full_name="Team Owner",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        org = Org.objects.create(name="Delete Test Org", slug="delete-test-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org, user=user, role=OrgRole.MEMBER)
+
+        team_cust = StripeCustomer.objects.create(
+            stripe_id="cus_seatdec", org=org, livemode=False
+        )
+        team_plan = Plan.objects.create(
+            name="Team",
+            context=PlanContext.TEAM,
+            tier=PlanTier.BASIC,
+            interval=PlanInterval.MONTH,
+            is_active=True,
+        )
+        PlanPrice.objects.create(plan=team_plan, stripe_price_id="price_seatdec", amount=1500)
+        Subscription.objects.create(
+            stripe_id="sub_seatdec",
+            stripe_customer=team_cust,
+            status="active",
+            plan=team_plan,
+            quantity=2,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+
+        with patch(
+            "apps.orgs.tasks.decrement_subscription_seats_task.delay"
+        ) as mock_dispatch:
+            resp = authed_client.delete("/api/v1/account/")
+
+        assert resp.status_code == 204
+        assert not User.objects.filter(id=user.id).exists()
+        # Org and owner survive
+        assert User.objects.filter(id=owner.id).exists()
+        assert Org.objects.filter(id=org.id).exists()
+        # Deleted user's membership is gone
+        assert not OrgMember.objects.filter(user_id=user.id).exists()
+        # Seat-count decrement was fanned out to Celery with the org id
+        mock_dispatch.assert_called_once_with(str(org.id))
 
     def test_unauthenticated_delete_rejected(self):
         client = APIClient()
@@ -310,15 +420,53 @@ class TestAccountViewDELETE:
 
 @pytest.mark.django_db
 class TestAccountExportView:
-    @patch("apps.users.views._subscription_repo", new=MagicMock())
-    @patch("apps.users.views._customer_repo", new=MagicMock())
-    @patch("apps.users.views.export_user_data", new_callable=AsyncMock)
-    def test_export_returns_data(self, mock_export, authed_client, user):
-        mock_export.return_value = {"user": {"email": user.email}}
+    def test_export_returns_user_data_without_stripe(self, authed_client, user):
         resp = authed_client.get("/api/v1/account/export/")
         assert resp.status_code == 200
         assert resp.data["user"]["email"] == user.email
-        mock_export.assert_called_once()
+        assert resp.data["user"]["id"] == str(user.id)
+        assert "stripe_customer" not in resp.data
+        assert "subscription" not in resp.data
+
+    def test_export_includes_stripe_customer_and_subscription(self, authed_client, user):
+        from datetime import UTC, datetime
+
+        from apps.billing.models import (
+            Plan,
+            PlanContext,
+            PlanInterval,
+            PlanPrice,
+            PlanTier,
+            StripeCustomer,
+            Subscription,
+        )
+
+        cust = StripeCustomer.objects.create(
+            stripe_id="cus_export", user=user, livemode=False
+        )
+        plan = Plan.objects.create(
+            name="Personal Basic",
+            context=PlanContext.PERSONAL,
+            tier=PlanTier.BASIC,
+            interval=PlanInterval.MONTH,
+            is_active=True,
+        )
+        PlanPrice.objects.create(plan=plan, stripe_price_id="price_export", amount=999)
+        Subscription.objects.create(
+            stripe_id="sub_export",
+            stripe_customer=cust,
+            status="active",
+            plan=plan,
+            quantity=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+
+        resp = authed_client.get("/api/v1/account/export/")
+        assert resp.status_code == 200
+        assert resp.data["user"]["email"] == user.email
+        assert resp.data["stripe_customer"]["stripe_id"] == "cus_export"
+        assert resp.data["subscription"]["stripe_id"] == "sub_export"
 
     def test_unauthenticated_export_rejected(self):
         client = APIClient()

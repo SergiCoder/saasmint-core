@@ -40,6 +40,35 @@ class _TokenResponse(TypedDict, total=False):
     access_token: str
 
 
+class _GoogleUserInfo(TypedDict, total=False):
+    id: str
+    email: str
+    name: str
+    picture: str
+    verified_email: bool
+    email_verified: bool
+
+
+class _GitHubUserInfo(TypedDict, total=False):
+    id: int
+    name: str
+    login: str
+    avatar_url: str
+
+
+class _GitHubEmailEntry(TypedDict, total=False):
+    email: str
+    primary: bool
+    verified: bool
+
+
+class _MicrosoftUserInfo(TypedDict, total=False):
+    id: str
+    mail: str
+    userPrincipalName: str
+    displayName: str
+
+
 class OAuthEmailNotVerifiedError(Exception):
     """Raised when the OAuth provider did not confirm email ownership."""
 
@@ -131,37 +160,40 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
 
     match prov:
         case Provider.GOOGLE:
-            email = info.get("email")
+            google: _GoogleUserInfo = info
+            email = google.get("email")
             if not email:
                 raise OAuthError("Google OAuth response missing email")
             return OAuthUserInfo(
                 email=email,
-                full_name=info.get("name") or email.split("@")[0],
-                provider_user_id=str(info["id"]),
-                avatar_url=info.get("picture"),
-                email_verified=bool(info.get("verified_email") or info.get("email_verified")),
+                full_name=google.get("name") or email.split("@")[0],
+                provider_user_id=str(google["id"]),
+                avatar_url=google.get("picture"),
+                email_verified=bool(google.get("verified_email") or google.get("email_verified")),
             )
         case Provider.GITHUB:
+            github: _GitHubUserInfo = info
             # Always use /user/emails as the authoritative source — the public
             # email on /user is not guaranteed verified.
             email = _fetch_github_primary_email(access_token)
             return OAuthUserInfo(
                 email=email,
-                full_name=info.get("name") or info.get("login") or email.split("@")[0],
-                provider_user_id=str(info["id"]),
-                avatar_url=info.get("avatar_url"),
+                full_name=github.get("name") or github.get("login") or email.split("@")[0],
+                provider_user_id=str(github["id"]),
+                avatar_url=github.get("avatar_url"),
                 email_verified=True,
             )
         case Provider.MICROSOFT:
+            ms: _MicrosoftUserInfo = info
             # Microsoft Graph does not expose a reliable email_verified flag for
             # consumer accounts, so treat these emails as unverified.
-            email = info.get("mail") or info.get("userPrincipalName")
+            email = ms.get("mail") or ms.get("userPrincipalName")
             if not email:
                 raise OAuthError("Microsoft OAuth response missing email")
             return OAuthUserInfo(
                 email=email,
-                full_name=info.get("displayName", ""),
-                provider_user_id=str(info["id"]),
+                full_name=ms.get("displayName", ""),
+                provider_user_id=str(ms["id"]),
                 email_verified=False,
             )
         case _ as unreachable:
@@ -176,7 +208,8 @@ def _fetch_github_primary_email(access_token: str) -> str:
         timeout=_OAUTH_TIMEOUT,
     )
     resp.raise_for_status()
-    for entry in resp.json():
+    entries: list[_GitHubEmailEntry] = resp.json()
+    for entry in entries:
         if entry.get("primary") and entry.get("verified"):
             return str(entry["email"])
     raise OAuthError("No verified primary email found on GitHub account")

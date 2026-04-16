@@ -6,8 +6,11 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from django.conf import settings
+from django.contrib.admin.views.decorators import staff_member_required
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 from django.urls import reverse
+from django.utils.decorators import method_decorator
+from django.views.decorators.http import require_POST
 from django.views.generic import TemplateView
 from hijack.views import AcquireUserView, ReleaseUserView
 from saasmint_core.domain.subscription import PlanContext
@@ -28,13 +31,24 @@ async def _get_org_memberships(user: User) -> list[OrgMember]:
     return [m async for m in OrgMember.objects.filter(user=user).select_related("org")]
 
 
+@method_decorator(staff_member_required, name="dispatch")
+@method_decorator(require_POST, name="dispatch")
 class HijackAcquireView(AcquireUserView):
-    """Override hijack acquire to always land on the dashboard."""
+    """Override hijack acquire to always land on the dashboard.
+
+    `staff_member_required` forces staff login before the hijack machinery
+    checks HIJACK_PERMISSION_CHECK (superusers only). `require_POST` ensures
+    the view never services a GET, which is never a valid hijack trigger
+    (hijack's base view already POSTs, but we enforce it at the URL layer
+    since the endpoint is mounted outside `/admin/`).
+    """
 
     def get_success_url(self) -> str:
         return reverse("dashboard:dashboard")
 
 
+@method_decorator(staff_member_required, name="dispatch")
+@method_decorator(require_POST, name="dispatch")
 class HijackReleaseView(ReleaseUserView):
     """Override hijack release to redirect to admin users list."""
 

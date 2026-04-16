@@ -30,13 +30,17 @@ def sync_exchange_rates() -> None:
         return
 
     now = datetime.now(UTC)
-    rates: dict[str, float] = dict(rates_obj.rates)  # type: ignore[arg-type]  # Stripe stubs type mismatch; values used for display-only conversion
+    # Stripe stubs type ``ExchangeRate.rates`` as ``float``; the runtime value is
+    # a ``dict[str, float]``. Cast once, then iterate — the audit flagged that
+    # materialising a whole intermediate ``dict`` via ``dict(rates_obj.rates)``
+    # was wasteful when we only read each currency once.
+    raw_rates: dict[str, float] = rates_obj.rates  # type: ignore[assignment]  # Stripe stubs type mismatch
 
     rows: list[ExchangeRate] = []
     for currency in SUPPORTED_CURRENCIES:
         if currency == "usd":
             continue
-        rate = rates.get(currency)
+        rate = raw_rates.get(currency)
         if rate is None:
             logger.warning("No rate returned by Stripe for currency: %s", currency)
             continue

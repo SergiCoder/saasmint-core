@@ -16,7 +16,6 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serial
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.exceptions import APIException, NotFound, PermissionDenied
-from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
@@ -71,6 +70,16 @@ class _InvitationOrgGone(NotFound):
 class _InvitationEmailExists(_Conflict):
     default_detail = "This email is already registered."
     default_code = "email_exists"
+
+
+class _InvitationPendingExists(_Conflict):
+    default_detail = "A pending invitation already exists for this email."
+    default_code = "invitation_pending"
+
+
+class _SeatLimitReached(_Conflict):
+    default_detail = "Org has reached its seat limit. Upgrade your plan to invite more members."
+    default_code = "seat_limit_reached"
 
 
 class _InvitationAddressedToOther(PermissionDenied):
@@ -392,17 +401,13 @@ class InvitationListCreateView(OrgsScopedView):
 
         # Cannot invite users who already have an account
         if email_is_registered(email):
-            raise DRFValidationError(
-                {"email": ["This email is already registered. Only new users can be invited."]}
-            )
+            raise _InvitationEmailExists
 
         # Cannot invite someone with a pending invitation
         if Invitation.objects.filter(
             org=org, email=email, status=InvitationStatus.PENDING
         ).exists():
-            raise DRFValidationError(
-                {"email": ["A pending invitation already exists for this email."]}
-            )
+            raise _InvitationPendingExists
 
         token = secrets.token_urlsafe(32)
         # The caller owns the atomic block so the seat-limit check and the
@@ -441,7 +446,7 @@ class InvitationListCreateView(OrgsScopedView):
 
 
 def _validate_seat_limit(org: Org) -> None:
-    """Raise ValidationError if the org has reached its subscription seat limit.
+    """Raise ``_SeatLimitReached`` if the org has reached its subscription seat limit.
 
     Must be called inside an ``atomic()`` block owned by the caller so the
     row lock taken here stays held until the caller's Invitation INSERT
@@ -471,9 +476,7 @@ def _validate_seat_limit(org: Org) -> None:
     ).count()
 
     if current_members + pending_invitations >= sub.quantity:
-        raise DRFValidationError(
-            {"detail": "Org has reached its seat limit. Upgrade your plan to invite more members."}
-        )
+        raise _SeatLimitReached
 
 
 class InvitationCancelView(OrgsScopedView):
@@ -522,6 +525,12 @@ class InvitationAcceptView(OrgsScopedView):
 
     Unauthenticated endpoint. The invitee provides registration data
     (full_name, password) and is created as an org_member user.
+
+    No session tokens are issued here — the invite token alone does not prove
+    mailbox control, so a leaked/forwarded link would otherwise onboard an
+    attacker with live credentials. Instead the account is created unverified
+    and a verification email is sent; the invitee must click the link to
+    activate and sign in (``POST /api/v1/auth/verify-email/`` returns tokens).
     """
 
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
@@ -534,17 +543,14 @@ class InvitationAcceptView(OrgsScopedView):
                 "InvitationAcceptResponse",
                 {
                     "org": OrgSerializer(),
-                    "access_token": drf_serializers.CharField(),
-                    "refresh_token": drf_serializers.CharField(),
-                    "token_type": drf_serializers.CharField(),
+                    "detail": drf_serializers.CharField(),
+                    "code": drf_serializers.CharField(),
                 },
             )
         },
         tags=["orgs"],
     )
     def post(self, request: Request, token: str) -> Response:
-        from apps.users.authentication import create_access_token, create_refresh_token
-
         invitation = get_object_or_404(Invitation, token=token, status=InvitationStatus.PENDING)
 
         # Check expiry
@@ -566,20 +572,17 @@ class InvitationAcceptView(OrgsScopedView):
 
         from apps.orgs.services import accept_invitation
 
-        user, org = accept_invitation(
+        _user, org = accept_invitation(
             invitation,
             password=ser.validated_data["password"],
             full_name=ser.validated_data["full_name"],
         )
 
-        refresh = create_refresh_token(user)
-        access = create_access_token(user)
         return Response(
             {
                 "org": OrgSerializer(org).data,
-                "access_token": access,
-                "refresh_token": refresh,
-                "token_type": "Bearer",
+                "detail": "Account created. Check your email to verify and sign in.",
+                "code": "verification_email_sent",
             },
             status=status.HTTP_201_CREATED,
         )

@@ -51,9 +51,7 @@ class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ge
         )
         by_user = active.filter(user_id=OuterRef("pk")).values("status")[:1]
         by_customer = active.filter(stripe_customer__user_id=OuterRef("pk")).values("status")[:1]
-        return qs.annotate(
-            _subscription_status=Coalesce(Subquery(by_user), Subquery(by_customer))
-        )
+        return qs.annotate(_subscription_status=Coalesce(Subquery(by_user), Subquery(by_customer)))
 
     @admin.display(description="Subscription")
     def subscription_status(self, obj: User) -> str | SafeString:

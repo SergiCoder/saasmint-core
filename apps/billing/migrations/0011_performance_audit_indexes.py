@@ -4,18 +4,25 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('billing', '0010_django_audit_medium_low'),
+        ("billing", "0010_django_audit_medium_low"),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='plan',
-            index=models.Index(condition=models.Q(('is_active', True)), fields=['context'], name='idx_plan_active_context'),
+            model_name="plan",
+            index=models.Index(
+                condition=models.Q(("is_active", True)),
+                fields=["context"],
+                name="idx_plan_active_context",
+            ),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=models.Index(condition=models.Q(('is_active', True)), fields=['is_active'], name='idx_product_active'),
+            model_name="product",
+            index=models.Index(
+                condition=models.Q(("is_active", True)),
+                fields=["is_active"],
+                name="idx_product_active",
+            ),
         ),
     ]

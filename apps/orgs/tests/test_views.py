@@ -383,7 +383,8 @@ class TestInvitationListCreateView:
             {"email": member_user.email, "role": "member"},
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "email_exists"
 
     @patch("apps.orgs.tasks.send_invitation_email_task.delay")
     def test_cannot_create_duplicate_pending_invitation(
@@ -403,7 +404,8 @@ class TestInvitationListCreateView:
             {"email": "dupe@example.com", "role": "member"},
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "invitation_pending"
 
     def test_list_pending_invitations(self, authed_client, org, owner_membership, user):
         Invitation.objects.create(
@@ -468,7 +470,14 @@ class TestInvitationCancelView:
 @pytest.mark.django_db
 class TestInvitationAcceptView:
     def test_accept_invitation_registers_user(self, org, owner_membership, user):
-        """Accepting an invitation creates a new user account and joins the org."""
+        """Accepting creates an unverified user, joins the org, and prepares a verify email.
+
+        Tokens are intentionally NOT returned — the invite token alone does
+        not prove mailbox control, so the invitee must click the verification
+        email to activate and sign in.
+        """
+        from apps.users.models import EmailVerificationToken
+
         invitation = Invitation.objects.create(
             org=org,
             email="newuser@example.com",
@@ -485,15 +494,18 @@ class TestInvitationAcceptView:
         )
         assert resp.status_code == 201
         assert resp.data["org"]["name"] == org.name
-        assert "access_token" in resp.data
-        assert "refresh_token" in resp.data
-        # New user created as org_member
+        assert resp.data["code"] == "verification_email_sent"
+        assert "access_token" not in resp.data
+        assert "refresh_token" not in resp.data
+        # New user created as org_member, not yet verified
         new_user = User.objects.get(email="newuser@example.com")
         assert new_user.account_type == "org_member"
-        assert new_user.is_verified is True
+        assert new_user.is_verified is False
         assert OrgMember.objects.filter(org=org, user=new_user).exists()
         invitation.refresh_from_db()
         assert invitation.status == InvitationStatus.ACCEPTED
+        # A verification token was created so the invitee can prove mailbox control
+        assert EmailVerificationToken.objects.filter(user=new_user).exists()
 
     def test_accept_rejects_already_registered_email(self, org, owner_membership, user, other_user):
         """Cannot accept if the invited email is already registered."""
@@ -608,6 +620,109 @@ class TestInvitationAcceptView:
         )
         assert resp.status_code == 400
         assert "password" in resp.data
+
+    def test_accept_against_soft_deleted_org_returns_404(self, org, owner_membership, user):
+        """Accepting an invite for a soft-deleted org returns 404 via _InvitationOrgGone."""
+        Invitation.objects.create(
+            org=org,
+            email="deleted-org@example.com",
+            role=OrgRole.MEMBER,
+            token="deleted-org-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        org.deleted_at = timezone.now()
+        org.save(update_fields=["deleted_at"])
+
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/deleted-org-token/accept/",
+            {"full_name": "Ghost", "password": "securepass123"},
+            format="json",
+        )
+        assert resp.status_code == 404
+        # Invitation itself was not marked accepted.
+        inv = Invitation.objects.get(token="deleted-org-token")  # noqa: S106
+        assert inv.status == InvitationStatus.PENDING
+
+    def test_accept_against_inactive_org_returns_404(self, org, owner_membership, user):
+        Invitation.objects.create(
+            org=org,
+            email="inactive-org@example.com",
+            role=OrgRole.MEMBER,
+            token="inactive-org-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        org.is_active = False
+        org.save(update_fields=["is_active"])
+
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/inactive-org-token/accept/",
+            {"full_name": "Ghost", "password": "securepass123"},
+            format="json",
+        )
+        assert resp.status_code == 404
+
+    def test_accept_succeeds_even_when_seats_exhausted(self, org, owner_membership, user):
+        """Accept-time has no seat check — seat enforcement is invite-time only.
+
+        Documents the intentional behavior: if seats are exhausted between
+        invite creation and accept, the accept still succeeds. Seats are
+        validated at invite-time under a row lock.
+        """
+        from datetime import UTC, datetime
+
+        from apps.billing.models import (
+            Plan,
+            PlanContext,
+            PlanInterval,
+            PlanPrice,
+            PlanTier,
+            StripeCustomer,
+            Subscription,
+        )
+
+        customer = StripeCustomer.objects.create(
+            stripe_id="cus_accept_full", org=org, livemode=False
+        )
+        plan = Plan.objects.create(
+            name="Team-accept",
+            context=PlanContext.TEAM,
+            tier=PlanTier.BASIC,
+            interval=PlanInterval.MONTH,
+            is_active=True,
+        )
+        PlanPrice.objects.create(plan=plan, stripe_price_id="price_accept_full", amount=1500)
+        Subscription.objects.create(
+            stripe_id="sub_accept_full",
+            stripe_customer=customer,
+            status="active",
+            plan=plan,
+            quantity=1,  # only 1 seat — already filled by owner
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        Invitation.objects.create(
+            org=org,
+            email="late-accept@example.com",
+            role=OrgRole.MEMBER,
+            token="late-accept-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/late-accept-token/accept/",
+            {"full_name": "Late Accept", "password": "securepass123"},
+            format="json",
+        )
+        assert resp.status_code == 201
+        assert OrgMember.objects.filter(
+            org=org, user__email="late-accept@example.com"
+        ).exists()
 
 
 @pytest.mark.django_db
@@ -804,33 +919,207 @@ class TestInactiveOrgFiltering:
 
 @pytest.mark.django_db
 class TestInvitationSeatLimit:
+    @staticmethod
+    def _make_team_sub(org, *, quantity: int, stripe_suffix: str = "a"):
+        from datetime import UTC, datetime
+
+        from apps.billing.models import (
+            Plan,
+            PlanContext,
+            PlanInterval,
+            PlanPrice,
+            PlanTier,
+            StripeCustomer,
+            Subscription,
+        )
+
+        customer = StripeCustomer.objects.create(
+            stripe_id=f"cus_seat_{stripe_suffix}", org=org, livemode=False
+        )
+        plan = Plan.objects.create(
+            name=f"Team-{stripe_suffix}",
+            context=PlanContext.TEAM,
+            tier=PlanTier.BASIC,
+            interval=PlanInterval.MONTH,
+            is_active=True,
+        )
+        PlanPrice.objects.create(
+            plan=plan, stripe_price_id=f"price_seat_{stripe_suffix}", amount=1500
+        )
+        return Subscription.objects.create(
+            stripe_id=f"sub_seat_{stripe_suffix}",
+            stripe_customer=customer,
+            status="active",
+            plan=plan,
+            quantity=quantity,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+
     @patch("apps.orgs.tasks.send_invitation_email_task.delay")
     def test_invitation_rejected_when_seat_limit_reached(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        from datetime import UTC, datetime
-
-        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
-
-        customer = StripeCustomer.objects.create(
-            stripe_id="cus_seat_limit", org=org, livemode=False
-        )
-        plan = Plan.objects.create(name="Team", context="team", interval="month", is_active=True)
-        PlanPrice.objects.create(plan=plan, stripe_price_id="price_seat_limit", amount=1500)
-        Subscription.objects.create(
-            stripe_id="sub_seat_limit",
-            stripe_customer=customer,
-            status="active",
-            plan=plan,
-            quantity=1,  # only 1 seat
-            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
-        )
+        self._make_team_sub(org, quantity=1, stripe_suffix="limit")
         # org already has 1 member (owner) and sub has quantity=1
         resp = authed_client.post(
             f"/api/v1/orgs/{org.id}/invitations/",
             {"email": "overflow@example.com", "role": "member"},
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "seat_limit_reached"
         assert "seat limit" in resp.data["detail"].lower()
+
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_invitation_allowed_one_below_boundary(
+        self, mock_email, authed_client, org, owner_membership, user
+    ):
+        # quantity=2, 1 existing member, 0 pending → 1 seat free, allowed.
+        self._make_team_sub(org, quantity=2, stripe_suffix="below")
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "newhire@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 201
+
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_invitation_rejected_exactly_at_boundary(
+        self, mock_email, authed_client, org, owner_membership, user
+    ):
+        # quantity=2, 1 member + 1 pending invitation → at boundary.
+        self._make_team_sub(org, quantity=2, stripe_suffix="atboundary")
+        Invitation.objects.create(
+            org=org,
+            email="pending@example.com",
+            role=OrgRole.MEMBER,
+            token="boundary-pending",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "overflow@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 409
+        assert resp.data["code"] == "seat_limit_reached"
+        assert "seat limit" in resp.data["detail"].lower()
+
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_cancelled_invitation_frees_seat(
+        self, mock_email, authed_client, org, owner_membership, user
+    ):
+        # quantity=2, 1 owner + 1 pending → boundary.
+        self._make_team_sub(org, quantity=2, stripe_suffix="cancel")
+        pending = Invitation.objects.create(
+            org=org,
+            email="pending@example.com",
+            role=OrgRole.MEMBER,
+            token="cancel-pending",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        # Cancelling the pending invitation returns a seat.
+        pending.status = InvitationStatus.CANCELLED
+        pending.save(update_fields=["status"])
+
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "newhire@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 201
+
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_declined_and_expired_invitations_do_not_consume_seats(
+        self, mock_email, authed_client, org, owner_membership, user
+    ):
+        self._make_team_sub(org, quantity=2, stripe_suffix="declined")
+        Invitation.objects.create(
+            org=org,
+            email="declined@example.com",
+            role=OrgRole.MEMBER,
+            token="declined-tok",  # noqa: S106
+            invited_by=user,
+            status=InvitationStatus.DECLINED,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        Invitation.objects.create(
+            org=org,
+            email="expired@example.com",
+            role=OrgRole.MEMBER,
+            token="expired-tok",  # noqa: S106
+            invited_by=user,
+            status=InvitationStatus.EXPIRED,
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "newhire@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 201
+
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_no_active_subscription_allows_invitation(
+        self, mock_email, authed_client, org, owner_membership
+    ):
+        # Free-plan org default: no team sub attached. `_validate_seat_limit`
+        # returns early and the invitation is allowed (seat enforcement
+        # kicks in only once a paid team sub exists).
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "newhire@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 201
+
+    @patch("apps.orgs.tasks.send_invitation_email_task.delay")
+    def test_personal_subscription_ignored_for_seat_check(
+        self, mock_email, authed_client, org, owner_membership, user
+    ):
+        # A personal sub linked to the owner user (not the org) must not
+        # be picked up as the org's team sub.
+        from datetime import UTC, datetime
+
+        from apps.billing.models import (
+            Plan,
+            PlanContext,
+            PlanInterval,
+            PlanPrice,
+            PlanTier,
+            StripeCustomer,
+            Subscription,
+        )
+
+        personal_cust = StripeCustomer.objects.create(
+            stripe_id="cus_personal_only", user=user, livemode=False
+        )
+        personal_plan = Plan.objects.create(
+            name="Personal Basic",
+            context=PlanContext.PERSONAL,
+            tier=PlanTier.BASIC,
+            interval=PlanInterval.MONTH,
+            is_active=True,
+        )
+        PlanPrice.objects.create(
+            plan=personal_plan, stripe_price_id="price_personal_only", amount=999
+        )
+        Subscription.objects.create(
+            stripe_id="sub_personal_only",
+            stripe_customer=personal_cust,
+            status="active",
+            plan=personal_plan,
+            quantity=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        # Org has no sub → invitation allowed.
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/invitations/",
+            {"email": "newhire@example.com", "role": "member"},
+            format="json",
+        )
+        assert resp.status_code == 201

@@ -510,3 +510,122 @@ class TestDjangoStripeEventRepository:
         results = await repo.list_recent(limit=200)
         # Should not error, just cap
         assert isinstance(results, list)
+
+    def test_save_if_new_preserves_original_on_duplicate(self, repo, db):
+        """Duplicate stripe_id must not overwrite the original row.
+
+        Replay of the same webhook delivery (Stripe can redeliver) must leave
+        the original event's id, type, and payload intact. Otherwise a replay
+        with a mutated payload would silently corrupt the event log.
+        """
+        from saasmint_core.domain.stripe_event import StripeEvent as DomainEvent
+
+        original = StripeEvent.objects.create(
+            stripe_id="evt_replay",
+            type="checkout.session.completed",
+            livemode=False,
+            payload={"v": 1, "original": True},
+        )
+        original_id = original.id
+
+        replay = DomainEvent(
+            id=uuid4(),  # fresh uuid
+            stripe_id="evt_replay",
+            type="checkout.session.completed",
+            livemode=False,
+            payload={"v": 2, "tampered": True},  # different payload
+            created_at=datetime.now(UTC),
+        )
+        created = async_to_sync(repo.save_if_new)(replay)
+
+        assert created is False
+        obj = StripeEvent.objects.get(stripe_id="evt_replay")
+        assert obj.id == original_id  # id preserved
+        assert obj.payload == {"v": 1, "original": True}  # payload preserved
+        assert StripeEvent.objects.filter(stripe_id="evt_replay").count() == 1
+
+    def test_save_if_new_concurrent_replays_only_create_once(self, repo, db):
+        """Back-to-back save_if_new calls for the same stripe_id: only one
+        returns True. Guarantees exactly-once insertion under rapid replay."""
+        from saasmint_core.domain.stripe_event import StripeEvent as DomainEvent
+
+        def _mk_event() -> DomainEvent:
+            return DomainEvent(
+                id=uuid4(),
+                stripe_id="evt_once",
+                type="customer.subscription.updated",
+                livemode=False,
+                payload={},
+                created_at=datetime.now(UTC),
+            )
+
+        first = async_to_sync(repo.save_if_new)(_mk_event())
+        second = async_to_sync(repo.save_if_new)(_mk_event())
+        third = async_to_sync(repo.save_if_new)(_mk_event())
+
+        assert [first, second, third] == [True, False, False]
+        assert StripeEvent.objects.filter(stripe_id="evt_once").count() == 1
+
+    def test_mark_processed_clears_previous_error(self, repo, db):
+        """A retry that succeeds must clear the prior error message."""
+        StripeEvent.objects.create(
+            stripe_id="evt_retry",
+            type="test",
+            livemode=False,
+            payload={},
+            error="previous transient failure",
+        )
+        async_to_sync(repo.mark_processed)("evt_retry")
+        obj = StripeEvent.objects.get(stripe_id="evt_retry")
+        assert obj.error is None
+        assert obj.processed_at is not None
+
+    def test_mark_processed_nonexistent_is_noop(self, repo, db):
+        """mark_processed on an unknown stripe_id is a silent no-op (no exception)."""
+        async_to_sync(repo.mark_processed)("evt_missing")
+        assert not StripeEvent.objects.filter(stripe_id="evt_missing").exists()
+
+    def test_mark_failed_nonexistent_is_noop(self, repo, db):
+        async_to_sync(repo.mark_failed)("evt_missing", "boom")
+        assert not StripeEvent.objects.filter(stripe_id="evt_missing").exists()
+
+    def test_mark_failed_is_idempotent_on_repeated_calls(self, repo, db):
+        """Two failure marks leave the latest message — not duplicated rows."""
+        StripeEvent.objects.create(
+            stripe_id="evt_fail_idem",
+            type="test",
+            livemode=False,
+            payload={},
+        )
+        async_to_sync(repo.mark_failed)("evt_fail_idem", "first")
+        async_to_sync(repo.mark_failed)("evt_fail_idem", "second")
+        obj = StripeEvent.objects.get(stripe_id="evt_fail_idem")
+        assert obj.error == "second"
+        assert StripeEvent.objects.filter(stripe_id="evt_fail_idem").count() == 1
+
+    def test_save_upsert_overwrites_existing_by_id(self, repo, db):
+        """`save` is an upsert by primary key — existing row is overwritten."""
+        from saasmint_core.domain.stripe_event import StripeEvent as DomainEvent
+
+        existing_id = uuid4()
+        StripeEvent.objects.create(
+            id=existing_id,
+            stripe_id="evt_upsert",
+            type="original",
+            livemode=False,
+            payload={"old": True},
+        )
+        domain = DomainEvent(
+            id=existing_id,
+            stripe_id="evt_upsert",
+            type="updated",
+            livemode=False,
+            payload={"new": True},
+            processed_at=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+        )
+        async_to_sync(repo.save)(domain)
+        obj = StripeEvent.objects.get(id=existing_id)
+        assert obj.type == "updated"
+        assert obj.payload == {"new": True}
+        assert obj.processed_at is not None
