@@ -14,9 +14,12 @@ dependencies = [
     "django-cors-headers>=4.7",
     "psycopg[binary]>=3.3.3",
     "celery[redis]>=5.6.3",
-    # redis is pinned by celery's kombu dep to <6.5; redis 7.x requires a kombu/celery upgrade first.
-    # Enforce the cap explicitly here so upgrades don't silently pick up redis 7.x via a transitive bump.
-    "redis>=6.4.0,<7",
+    # redis 7.x is ahead of kombu 5.6.2's declared cap (<6.5), but the relevant
+    # kombu PR #2398 (merged 2026-02-04, milestone 5.7.0) already widened the
+    # allowed range to <7.1. Until kombu 5.7.0 ships, we force the upgrade via
+    # [tool.uv] override-dependencies below; drop the override once kombu 5.7+
+    # is on PyPI and this becomes a plain transitive pull.
+    "redis>=7,<8",
     "pydantic-settings>=2.13.1",
     "django-hijack>=3.7.6",     # user impersonation in admin
     "whitenoise>=6.12.0",
@@ -46,6 +49,14 @@ packages = ["config", "apps", "middleware"]
 
 [tool.uv.sources]
 saasmint-core-lib = { path = "core", editable = true }
+
+[tool.uv]
+# Force redis 7.x past kombu 5.6.2's <6.5 cap. Kombu PR #2398 (merged
+# 2026-02-04, milestone 5.7.0) widens the cap to <7.1; drop this override
+# once kombu 5.7+ is on PyPI.
+override-dependencies = [
+    "redis>=7,<8",
+]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
