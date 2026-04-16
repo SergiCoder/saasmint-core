@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from apps.users.models import SocialAccount, User
-from apps.users.oauth import OAuthUserInfo
+from apps.users.oauth import OAuthError, OAuthUserInfo
 
 _TEST_DRF = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
@@ -198,3 +199,114 @@ class TestOAuthCallbackDeactivatedUser:
             )
         assert resp.status_code == 302
         assert "account_deactivated" in resp["Location"]
+
+
+@pytest.mark.django_db
+class TestOAuthCallbackStateValidation:
+    def test_missing_state_param_redirects_invalid_state(self, client, _oauth_state):
+        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code"},
+            )
+        assert resp.status_code == 302
+        assert "invalid_state" in resp["Location"]
+        mock_exchange.assert_not_called()
+
+    def test_mismatched_state_redirects_invalid_state(self, client, _oauth_state):
+        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code", "state": "attacker-forged"},
+            )
+        assert resp.status_code == 302
+        assert "invalid_state" in resp["Location"]
+        mock_exchange.assert_not_called()
+
+    def test_missing_session_state_redirects_invalid_state(self, client):
+        # No `_oauth_state` fixture — session has no expected state.
+        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "invalid_state" in resp["Location"]
+        mock_exchange.assert_not_called()
+
+    def test_state_is_popped_after_callback(self, client, _oauth_state):
+        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
+            client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert "oauth_state" not in client.session
+
+
+@pytest.mark.django_db
+class TestOAuthCallbackParamValidation:
+    def test_unsupported_provider_returns_400(self, client, _oauth_state):
+        resp = client.get(
+            "/api/v1/auth/oauth/facebook/callback/",
+            {"code": "auth-code", "state": "test-state"},
+        )
+        assert resp.status_code == 400
+
+    def test_missing_code_redirects_missing_code(self, client, _oauth_state):
+        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "missing_code" in resp["Location"]
+        mock_exchange.assert_not_called()
+
+    def test_provider_error_param_short_circuits(self, client, _oauth_state):
+        # Provider may redirect back with ?error=access_denied without `code`.
+        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"error": "access_denied", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "access_denied" in resp["Location"]
+        mock_exchange.assert_not_called()
+
+
+@pytest.mark.django_db
+class TestOAuthCallbackExchangeFailures:
+    def test_http_error_redirects_exchange_failed(self, client, _oauth_state):
+        req = httpx.Request("POST", "https://oauth2.googleapis.com/token")
+        resp_obj = httpx.Response(400, request=req)
+        err = httpx.HTTPStatusError("bad", request=req, response=resp_obj)
+        with patch("apps.users.auth_views.exchange_code", side_effect=err):
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "exchange_failed" in resp["Location"]
+        assert not User.objects.filter(email="oauth@example.com").exists()
+
+    def test_oauth_error_redirects_exchange_failed(self, client, _oauth_state):
+        with patch(
+            "apps.users.auth_views.exchange_code",
+            side_effect=OAuthError("missing access_token"),
+        ):
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "exchange_failed" in resp["Location"]
+
+    def test_value_error_redirects_exchange_failed(self, client, _oauth_state):
+        # e.g. Provider(provider) raising on an enum-coerce edge case.
+        with patch("apps.users.auth_views.exchange_code", side_effect=ValueError("bad")):
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "exchange_failed" in resp["Location"]
