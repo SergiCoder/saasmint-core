@@ -170,8 +170,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: {}
+                $ref: '#/components/schemas/MessageResponse'
           description: ''
   /api/v1/auth/login/:
     post:
@@ -407,9 +406,9 @@ paths:
   /api/v1/billing/plans/:
     get:
       operationId: billing_plans_retrieve
-      description: 'List all active plans with prices. Returned as a non-paginated
-        ``{results: [...]}`` envelope — the catalog is bounded to a small number of
-        plans.'
+      description: List all active plans with prices. Emits the DRF paginated envelope
+        (``count``/``next``/``previous``/``results``) — the catalog is bounded, so
+        ``next`` and ``previous`` are always ``null``.
       parameters:
       - in: query
         name: currency
@@ -457,9 +456,9 @@ paths:
   /api/v1/billing/products/:
     get:
       operationId: billing_products_retrieve
-      description: 'List all active one-time products with prices. Returned as a non-paginated
-        ``{results: [...]}`` envelope — the catalog is bounded to a small number of
-        products.'
+      description: List all active one-time products with prices. Emits the DRF paginated
+        envelope (``count``/``next``/``previous``/``results``) — the catalog is bounded,
+        so ``next`` and ``previous`` are always ``null``.
       parameters:
       - in: query
         name: currency
@@ -536,8 +535,9 @@ paths:
           description: ''
     delete:
       operationId: billing_subscriptions_me_destroy
-      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
-        subscription.
+      description: Schedule subscription cancellation at the end of the current billing
+        period. Returns 202 Accepted — the subscription remains active until the period
+        end timestamp returned in the body.
       parameters:
       - in: query
         name: currency
@@ -550,7 +550,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
+        '202':
           content:
             application/json:
               schema:
@@ -680,7 +680,7 @@ paths:
           description: ''
   /api/v1/orgs/:
     get:
-      operationId: orgs_list
+      operationId: orgs_retrieve
       description: GET /api/v1/orgs/ — list user's orgs.
       parameters:
       - in: query
@@ -703,13 +703,11 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Org'
+                $ref: '#/components/schemas/OrgListResponse'
           description: ''
   /api/v1/orgs/{org_id}/:
     get:
-      operationId: orgs_retrieve
+      operationId: orgs_retrieve_2
       description: GET/PATCH /api/v1/orgs/{org_id}/.
       parameters:
       - in: path
@@ -765,7 +763,7 @@ paths:
           description: ''
   /api/v1/orgs/{org_id}/invitations/:
     get:
-      operationId: orgs_invitations_list
+      operationId: orgs_invitations_retrieve
       description: GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations.
       parameters:
       - in: query
@@ -794,9 +792,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Invitation'
+                $ref: '#/components/schemas/InvitationListResponse'
           description: ''
     post:
       operationId: orgs_invitations_create
@@ -860,7 +856,7 @@ paths:
           description: No response body
   /api/v1/orgs/{org_id}/members/:
     get:
-      operationId: orgs_members_list
+      operationId: orgs_members_retrieve
       description: GET /api/v1/orgs/{org_id}/members/ — list members.
       parameters:
       - in: query
@@ -889,9 +885,7 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/OrgMember'
+                $ref: '#/components/schemas/OrgMemberListResponse'
           description: ''
   /api/v1/orgs/{org_id}/members/{member_user_id}/:
     patch:
@@ -935,8 +929,10 @@ paths:
           description: ''
     delete:
       operationId: orgs_members_destroy
-      description: Remove a member — decrements Stripe seats and hard-deletes their
-        account.
+      description: Remove a member from the org. **Destructive:** this hard-deletes
+        the member's user account in addition to their membership row, and decrements
+        the org's Stripe seat count. The target cannot be the org owner — transfer
+        ownership first.
       parameters:
       - in: path
         name: member_user_id
@@ -996,7 +992,7 @@ paths:
           description: ''
   /api/v1/phone-prefixes/:
     get:
-      operationId: phone_prefixes_retrieve
+      operationId: phone_prefixes_list
       description: GET /api/v1/phone-prefixes/ — list supported phone prefixes.
       tags:
       - references
@@ -1011,9 +1007,7 @@ paths:
               schema:
                 type: array
                 items:
-                  type: object
-                  additionalProperties:
-                    type: string
+                  $ref: '#/components/schemas/PhonePrefix'
           description: ''
   /api/v1/timezones/:
     get:
@@ -1242,6 +1236,28 @@ components:
       - org
       - refresh_token
       - token_type
+    InvitationListResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Invitation'
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
+      required:
+      - count
+      - next
+      - previous
+      - results
     InvitationStatusEnum:
       enum:
       - pending
@@ -1278,6 +1294,19 @@ components:
           minLength: 1
       required:
       - refresh_token
+    MessageResponse:
+      type: object
+      description: Schema-only serializer for ``{detail, code}`` envelope responses.
+      properties:
+        detail:
+          type: string
+          description: Human-readable message.
+        code:
+          type: string
+          description: Machine-readable code.
+      required:
+      - code
+      - detail
     Org:
       type: object
       properties:
@@ -1306,6 +1335,28 @@ components:
       - logo_url
       - name
       - slug
+    OrgListResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Org'
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
+      required:
+      - count
+      - next
+      - previous
+      - results
     OrgMember:
       type: object
       properties:
@@ -1339,6 +1390,28 @@ components:
       - org
       - role
       - user
+    OrgMemberListResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrgMember'
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
+      required:
+      - count
+      - next
+      - previous
+      - results
     PatchedUpdateMemberRequest:
       type: object
       properties:
@@ -1412,6 +1485,19 @@ components:
           nullable: true
           minLength: 1
           maxLength: 500
+    PhonePrefix:
+      type: object
+      description: Schema for a single phone prefix entry.
+      properties:
+        prefix:
+          type: string
+          description: E.164 prefix including the '+' sign.
+        label:
+          type: string
+          description: Human-readable country name.
+      required:
+      - label
+      - prefix
     Plan:
       type: object
       properties:
@@ -1458,11 +1544,24 @@ components:
     PlanListResponse:
       type: object
       properties:
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
         results:
           type: array
           items:
             $ref: '#/components/schemas/Plan'
       required:
+      - count
+      - next
+      - previous
       - results
     PlanPrice:
       type: object
@@ -1552,11 +1651,24 @@ components:
     ProductListResponse:
       type: object
       properties:
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
         results:
           type: array
           items:
             $ref: '#/components/schemas/Product'
       required:
+      - count
+      - next
+      - previous
       - results
     ProductPrice:
       type: object

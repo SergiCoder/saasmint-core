@@ -98,7 +98,7 @@ services:
     command:
       - listen
       - --forward-to
-      - django:8001/api/v1/webhooks/stripe
+      - django:8001/api/v1/webhooks/stripe/
       - --skip-verify
     volumes:
       # Not :ro — stripe-cli writes device metadata to config.toml on startup.

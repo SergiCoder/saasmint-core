@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import timedelta
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import UUID
 
 from django.db import transaction
@@ -15,7 +15,7 @@ from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import APIException, PermissionDenied
+from rest_framework.exceptions import APIException, NotFound, PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -58,6 +58,26 @@ class _Conflict(APIException):
     default_code = "conflict"
 
 
+class _InvitationExpired(_Gone):
+    default_detail = "This invitation has expired."
+    default_code = "invitation_expired"
+
+
+class _InvitationOrgGone(NotFound):
+    default_detail = "This organization no longer exists."
+    default_code = "org_not_found"
+
+
+class _InvitationEmailExists(_Conflict):
+    default_detail = "This email is already registered."
+    default_code = "email_exists"
+
+
+class _InvitationAddressedToOther(PermissionDenied):
+    default_detail = "This invitation is addressed to another account."
+    default_code = "forbidden"
+
+
 INVITATION_EXPIRY_DAYS = 7
 
 _DEFAULT_PAGE_SIZE = 50
@@ -70,6 +90,25 @@ def _default_paginator() -> LimitOffsetPagination:
     paginator.default_limit = _DEFAULT_PAGE_SIZE
     paginator.max_limit = _MAX_PAGE_SIZE
     return paginator
+
+
+def _paginated_response_schema(
+    name: str, child: drf_serializers.BaseSerializer[Any]
+) -> drf_serializers.Serializer[object]:
+    """Build an inline serializer for the DRF paginated envelope.
+
+    Document the real wire shape of ``LimitOffsetPagination`` responses —
+    a bare ``child(many=True)`` hides ``count``/``next``/``previous``.
+    """
+    return inline_serializer(
+        name,
+        {
+            "count": drf_serializers.IntegerField(),
+            "next": drf_serializers.URLField(allow_null=True),
+            "previous": drf_serializers.URLField(allow_null=True),
+            "results": child,
+        },
+    )
 
 
 def _get_org_and_member(
@@ -103,7 +142,7 @@ class OrgListView(OrgsScopedView):
     """GET /api/v1/orgs/ — list user's orgs."""
 
     @extend_schema(
-        responses=OrgSerializer(many=True),
+        responses=_paginated_response_schema("OrgListResponse", OrgSerializer(many=True)),
         parameters=[
             OpenApiParameter("limit", int, description="Page size (max 100)"),
             OpenApiParameter("offset", int, description="Number of items to skip"),
@@ -156,7 +195,9 @@ class OrgMemberListView(OrgsScopedView):
     """GET /api/v1/orgs/{org_id}/members/ — list members."""
 
     @extend_schema(
-        responses=OrgMemberSerializer(many=True),
+        responses=_paginated_response_schema(
+            "OrgMemberListResponse", OrgMemberSerializer(many=True)
+        ),
         parameters=[
             OpenApiParameter("limit", int, description="Page size (max 100)"),
             OpenApiParameter("offset", int, description="Number of items to skip"),
@@ -207,7 +248,17 @@ class OrgMemberDetailView(OrgsScopedView):
         target.save(update_fields=list(ser.validated_data.keys()))
         return Response(OrgMemberSerializer(target).data)
 
-    @extend_schema(request=None, responses={204: None}, tags=["orgs"])
+    @extend_schema(
+        request=None,
+        responses={204: None},
+        description=(
+            "Remove a member from the org. **Destructive:** this hard-deletes the"
+            " member's user account in addition to their membership row, and"
+            " decrements the org's Stripe seat count. The target cannot be the"
+            " org owner — transfer ownership first."
+        ),
+        tags=["orgs"],
+    )
     def delete(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
         """Remove a member — decrements Stripe seats and hard-deletes their account."""
         user = get_user(request)
@@ -284,7 +335,13 @@ class OrgOwnerView(OrgsScopedView):
             caller.is_billing = False
             caller.save(update_fields=["role", "is_billing"])
 
-        return Response(OrgMemberSerializer(target).data)
+        location = request.build_absolute_uri(
+            reverse(
+                "org-member-detail",
+                kwargs={"org_id": org_id, "member_user_id": target.user_id},
+            )
+        )
+        return Response(OrgMemberSerializer(target).data, headers={"Location": location})
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +353,9 @@ class InvitationListCreateView(OrgsScopedView):
     """GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations."""
 
     @extend_schema(
-        responses=InvitationSerializer(many=True),
+        responses=_paginated_response_schema(
+            "InvitationListResponse", InvitationSerializer(many=True)
+        ),
         parameters=[
             OpenApiParameter("limit", int, description="Page size (max 100)"),
             OpenApiParameter("offset", int, description="Number of items to skip"),
@@ -492,19 +551,15 @@ class InvitationAcceptView(OrgsScopedView):
         if invitation.expires_at < timezone.now():
             invitation.status = InvitationStatus.EXPIRED
             invitation.save(update_fields=["status"])
-            raise _Gone({"detail": "This invitation has expired.", "code": "invitation_expired"})
+            raise _InvitationExpired
 
         org = invitation.org
         if org.deleted_at is not None or not org.is_active:
-            from rest_framework.exceptions import NotFound
-
-            raise NotFound(
-                {"detail": "This organization no longer exists.", "code": "org_not_found"}
-            )
+            raise _InvitationOrgGone
 
         # Email must not already be registered
         if email_is_registered(invitation.email):
-            raise _Conflict({"detail": "This email is already registered.", "code": "email_exists"})
+            raise _InvitationEmailExists
 
         ser = InvitationAcceptSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -543,9 +598,7 @@ class InvitationDeclineView(OrgsScopedView):
         # a leaked/guessed token from silently cancelling someone else's invite.
         user = get_user(request)
         if user.email.lower() != invitation.email.lower():
-            raise PermissionDenied(
-                {"detail": "This invitation is addressed to another account.", "code": "forbidden"}
-            )
+            raise _InvitationAddressedToOther
         invitation.status = InvitationStatus.DECLINED
         invitation.save(update_fields=["status"])
         return Response(status=status.HTTP_204_NO_CONTENT)
