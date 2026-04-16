@@ -251,17 +251,15 @@ def _get_active_stripe_subs(org_id: UUID) -> list[SubscriptionModel]:
     Shared by seat decrement and subscription cancellation to avoid
     duplicating the StripeCustomer → Subscription lookup.
     """
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
     from apps.billing.models import Subscription as SubscriptionModel
 
-    try:
-        customer = StripeCustomer.objects.get(org_id=org_id)
-    except StripeCustomer.DoesNotExist:
-        return []
-
+    # Single JOIN via stripe_customer__org_id — the previous two-step
+    # (StripeCustomer.get → Subscription.filter) took two round-trips even when
+    # the org had no customer row.
     return list(
         SubscriptionModel.objects.filter(
-            stripe_customer=customer,
+            stripe_customer__org_id=org_id,
             status__in=ACTIVE_SUBSCRIPTION_STATUSES,
             stripe_id__isnull=False,
         )
