@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from rest_framework.test import APIClient
@@ -387,21 +387,19 @@ class TestAccountViewDELETE:
             is_active=True,
         )
         PlanPrice.objects.create(plan=team_plan, stripe_price_id="price_seatdec", amount=1500)
-        with patch(
-            "saasmint_core.services.subscriptions.update_seat_count",
-            new_callable=AsyncMock,
-            return_value=None,
-        ) as mock_update_seats:
-            Subscription.objects.create(
-                stripe_id="sub_seatdec",
-                stripe_customer=team_cust,
-                status="active",
-                plan=team_plan,
-                quantity=2,
-                current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-                current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
-            )
+        Subscription.objects.create(
+            stripe_id="sub_seatdec",
+            stripe_customer=team_cust,
+            status="active",
+            plan=team_plan,
+            quantity=2,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
 
+        with patch(
+            "apps.orgs.tasks.decrement_subscription_seats_task.delay"
+        ) as mock_dispatch:
             resp = authed_client.delete("/api/v1/account/")
 
         assert resp.status_code == 204
@@ -411,9 +409,8 @@ class TestAccountViewDELETE:
         assert Org.objects.filter(id=org.id).exists()
         # Deleted user's membership is gone
         assert not OrgMember.objects.filter(user_id=user.id).exists()
-        # Seat-count update called with new quantity=1
-        mock_update_seats.assert_called_once()
-        assert mock_update_seats.call_args.kwargs["quantity"] == 1
+        # Seat-count decrement was fanned out to Celery with the org id
+        mock_dispatch.assert_called_once_with(str(org.id))
 
     def test_unauthenticated_delete_rejected(self):
         client = APIClient()

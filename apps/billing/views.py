@@ -11,7 +11,7 @@ from django.core.cache import cache
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import APIException, NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -52,6 +52,20 @@ from helpers import get_user
 logger = logging.getLogger(__name__)
 
 MIN_TEAM_SEATS = 1
+
+
+class _AccountTypeMismatch(APIException):
+    """409 — account_type does not match the plan's context (personal vs team).
+
+    Raising a bare ``ValidationError({"detail": "..."})`` would coerce the
+    string into a list (``{"detail": ["..."]}``) and escape past the custom
+    exception middleware, leaking DRF's internal shape. A typed
+    ``APIException`` keeps the envelope flat and carries a stable ``code``.
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "Account type does not match the plan's context."
+    default_code = "account_type_mismatch"
 
 _CURRENCY_PARAM = OpenApiParameter(
     name="currency",
@@ -255,14 +269,12 @@ class CheckoutSessionView(BillingScopedView):
 
         # Enforce account_type / plan context match
         if is_team and user.account_type != AccountType.ORG_MEMBER:
-            raise ValidationError(
-                {
-                    "detail": "Only org accounts can check out team plans. "
-                    "Register at /api/v1/auth/register/org-owner/ first."
-                }
+            raise _AccountTypeMismatch(
+                "Only org accounts can check out team plans. "
+                "Register at /api/v1/auth/register/org-owner/ first."
             )
         if not is_team and user.account_type != AccountType.PERSONAL:
-            raise ValidationError({"detail": "Org accounts cannot check out personal plans."})
+            raise _AccountTypeMismatch("Org accounts cannot check out personal plans.")
 
         # Team plans require org_name
         if is_team:

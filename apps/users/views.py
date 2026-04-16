@@ -83,7 +83,8 @@ class AccountView(AccountScopedView):
         from asgiref.sync import sync_to_async
 
         from apps.orgs.models import OrgMember
-        from apps.orgs.services import decrement_subscription_seats, delete_orgs_created_by_user
+        from apps.orgs.services import delete_orgs_created_by_user
+        from apps.orgs.tasks import decrement_subscription_seats_task
 
         user = get_user(request)
 
@@ -96,8 +97,12 @@ class AccountView(AccountScopedView):
             org_ids = [m.org_id async for m in memberships]
             if org_ids:
                 await memberships.adelete()
+                # Fan out to Celery instead of running Stripe seat updates
+                # inline: each call is a 500-1500 ms round-trip, so K orgs
+                # would stall the DELETE request for K*~1 s. The memberships
+                # are already gone, so the task is free to run at any time.
                 for org_id in org_ids:
-                    await sync_to_async(decrement_subscription_seats)(org_id)
+                    decrement_subscription_seats_task.delay(str(org_id))
 
         user_repo, customer_repo, subscription_repo = _get_account_repos()
         async_to_sync(delete_account)(

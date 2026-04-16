@@ -640,6 +640,12 @@ paths:
 
         Unauthenticated endpoint. The invitee provides registration data
         (full_name, password) and is created as an org_member user.
+
+        No session tokens are issued here — the invite token alone does not prove
+        mailbox control, so a leaked/forwarded link would otherwise onboard an
+        attacker with live credentials. Instead the account is created unverified
+        and a verification email is sent; the invitee must click the link to
+        activate and sign in (``POST /api/v1/auth/verify-email/`` returns tokens).
       parameters:
       - in: path
         name: token
@@ -1255,17 +1261,14 @@ components:
       properties:
         org:
           $ref: '#/components/schemas/Org'
-        access_token:
+        detail:
           type: string
-        refresh_token:
-          type: string
-        token_type:
+        code:
           type: string
       required:
-      - access_token
+      - code
+      - detail
       - org
-      - refresh_token
-      - token_type
     InvitationListResponse:
       type: object
       properties:
@@ -1555,10 +1558,8 @@ components:
           - $ref: '#/components/schemas/ContextEnum'
           readOnly: true
         tier:
-          allOf:
-          - $ref: '#/components/schemas/TierEnum'
+          type: string
           readOnly: true
-          default: 2
         interval:
           allOf:
           - $ref: '#/components/schemas/IntervalEnum'
@@ -1566,7 +1567,6 @@ components:
         is_active:
           type: boolean
           readOnly: true
-          default: true
         price:
           allOf:
           - $ref: '#/components/schemas/PlanPrice'
@@ -1889,16 +1889,6 @@ components:
         * `incomplete_expired` - Incomplete Expired
         * `paused` - Paused
         * `unpaid` - Unpaid
-    TierEnum:
-      enum:
-      - 1
-      - 2
-      - 3
-      type: integer
-      description: |-
-        * `1` - Free
-        * `2` - Basic
-        * `3` - Pro
     TokenResponse:
       type: object
       properties:

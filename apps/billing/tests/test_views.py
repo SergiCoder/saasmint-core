@@ -218,7 +218,8 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "account_type_mismatch"
         assert "org accounts" in resp.data["detail"].lower()
 
     def test_org_member_cannot_checkout_personal_plan(self, org_member_client, plan_price):
@@ -232,7 +233,8 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "account_type_mismatch"
         assert "personal plans" in resp.data["detail"].lower()
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)

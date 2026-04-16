@@ -9,7 +9,7 @@ from django.conf import settings
 from rest_framework import serializers
 from saasmint_core.services.currency import format_amount, round_friendly
 
-from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, Subscription
+from apps.billing.models import Plan, PlanPrice, PlanTier, Product, ProductPrice, Subscription
 
 
 def _convert_amount(amount: int, currency: str, rate: float) -> float:
@@ -98,6 +98,11 @@ class PlanPriceSerializer(_PriceSerializer):
 
 class PlanSerializer(serializers.ModelSerializer[Plan]):
     price = PlanPriceSerializer(read_only=True)
+    # Expose the tier as its string label (``"free"``/``"basic"``/``"pro"``) to
+    # stay consistent with every other enum on the wire (``context``,
+    # ``interval``, ``status``, ``role``) — clients otherwise have to
+    # special-case an int for this one field.
+    tier = serializers.SerializerMethodField()
 
     class Meta:
         model = Plan
@@ -112,6 +117,9 @@ class PlanSerializer(serializers.ModelSerializer[Plan]):
             "price",
         )
         read_only_fields = fields
+
+    def get_tier(self, obj: Plan) -> str:
+        return PlanTier(obj.tier).label.lower()
 
 
 class ProductPriceSerializer(_PriceSerializer):

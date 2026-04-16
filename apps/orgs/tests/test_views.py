@@ -383,7 +383,8 @@ class TestInvitationListCreateView:
             {"email": member_user.email, "role": "member"},
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "email_exists"
 
     @patch("apps.orgs.tasks.send_invitation_email_task.delay")
     def test_cannot_create_duplicate_pending_invitation(
@@ -403,7 +404,8 @@ class TestInvitationListCreateView:
             {"email": "dupe@example.com", "role": "member"},
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "invitation_pending"
 
     def test_list_pending_invitations(self, authed_client, org, owner_membership, user):
         Invitation.objects.create(
@@ -468,7 +470,14 @@ class TestInvitationCancelView:
 @pytest.mark.django_db
 class TestInvitationAcceptView:
     def test_accept_invitation_registers_user(self, org, owner_membership, user):
-        """Accepting an invitation creates a new user account and joins the org."""
+        """Accepting creates an unverified user, joins the org, and prepares a verify email.
+
+        Tokens are intentionally NOT returned — the invite token alone does
+        not prove mailbox control, so the invitee must click the verification
+        email to activate and sign in.
+        """
+        from apps.users.models import EmailVerificationToken
+
         invitation = Invitation.objects.create(
             org=org,
             email="newuser@example.com",
@@ -485,15 +494,18 @@ class TestInvitationAcceptView:
         )
         assert resp.status_code == 201
         assert resp.data["org"]["name"] == org.name
-        assert "access_token" in resp.data
-        assert "refresh_token" in resp.data
-        # New user created as org_member
+        assert resp.data["code"] == "verification_email_sent"
+        assert "access_token" not in resp.data
+        assert "refresh_token" not in resp.data
+        # New user created as org_member, not yet verified
         new_user = User.objects.get(email="newuser@example.com")
         assert new_user.account_type == "org_member"
-        assert new_user.is_verified is True
+        assert new_user.is_verified is False
         assert OrgMember.objects.filter(org=org, user=new_user).exists()
         invitation.refresh_from_db()
         assert invitation.status == InvitationStatus.ACCEPTED
+        # A verification token was created so the invitee can prove mailbox control
+        assert EmailVerificationToken.objects.filter(user=new_user).exists()
 
     def test_accept_rejects_already_registered_email(self, org, owner_membership, user, other_user):
         """Cannot accept if the invited email is already registered."""
@@ -955,7 +967,8 @@ class TestInvitationSeatLimit:
             {"email": "overflow@example.com", "role": "member"},
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "seat_limit_reached"
         assert "seat limit" in resp.data["detail"].lower()
 
     @patch("apps.orgs.tasks.send_invitation_email_task.delay")
@@ -990,7 +1003,8 @@ class TestInvitationSeatLimit:
             {"email": "overflow@example.com", "role": "member"},
             format="json",
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 409
+        assert resp.data["code"] == "seat_limit_reached"
         assert "seat limit" in resp.data["detail"].lower()
 
     @patch("apps.orgs.tasks.send_invitation_email_task.delay")
