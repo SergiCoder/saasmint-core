@@ -6,6 +6,7 @@ from typing import ClassVar
 from zoneinfo import available_timezones
 
 from drf_spectacular.utils import extend_schema
+from rest_framework import serializers
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -14,6 +15,25 @@ from rest_framework.views import APIView
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 from saasmint_core.services.locale import SUPPORTED_LOCALES
 from saasmint_core.services.phone import SUPPORTED_PHONE_PREFIXES, sort_prefix_key
+
+# Raw OpenAPI schemas keep the bare-array response shape (no envelope) while
+# giving generated clients concrete item types instead of ``any``.
+_STRING_ARRAY_SCHEMA: dict[str, object] = {
+    "type": "array",
+    "items": {"type": "string"},
+}
+
+
+class PhonePrefixSerializer(serializers.Serializer[object]):
+    """Schema for a single phone prefix entry."""
+
+    prefix = serializers.CharField(help_text="E.164 prefix including the '+' sign.")
+    # ``label`` shadows ``rest_framework.Field.label`` (typed as ``str | None``),
+    # so mypy reads the subclass assignment as re-typing the base attribute.
+    # Safe here because this is a schema-only Serializer — not a Field.
+    label = serializers.CharField(  # type: ignore[assignment]
+        help_text="Human-readable country name."
+    )
 
 
 class _ReferenceView(APIView):
@@ -31,7 +51,7 @@ _CURRENCIES: list[str] = sorted(SUPPORTED_CURRENCIES)
 class LocaleListView(_ReferenceView):
     """GET /api/v1/locales/ — list supported locales."""
 
-    @extend_schema(responses={200: list[str]}, tags=["references"])
+    @extend_schema(responses={200: _STRING_ARRAY_SCHEMA}, tags=["references"])
     def get(self, request: Request) -> Response:
         return Response(_LOCALES)
 
@@ -39,7 +59,7 @@ class LocaleListView(_ReferenceView):
 class CurrencyListView(_ReferenceView):
     """GET /api/v1/currencies/ — list supported currencies."""
 
-    @extend_schema(responses={200: list[str]}, tags=["references"])
+    @extend_schema(responses={200: _STRING_ARRAY_SCHEMA}, tags=["references"])
     def get(self, request: Request) -> Response:
         return Response(_CURRENCIES)
 
@@ -53,7 +73,7 @@ _PHONE_PREFIXES: list[dict[str, str]] = [
 class PhonePrefixListView(_ReferenceView):
     """GET /api/v1/phone-prefixes/ — list supported phone prefixes."""
 
-    @extend_schema(responses={200: list[dict[str, str]]}, tags=["references"])
+    @extend_schema(responses={200: PhonePrefixSerializer(many=True)}, tags=["references"])
     def get(self, request: Request) -> Response:
         return Response(_PHONE_PREFIXES)
 
@@ -64,6 +84,6 @@ _TIMEZONES: list[str] = sorted(available_timezones())
 class TimezoneListView(_ReferenceView):
     """GET /api/v1/timezones/ — list IANA timezones."""
 
-    @extend_schema(responses={200: list[str]}, tags=["references"])
+    @extend_schema(responses={200: _STRING_ARRAY_SCHEMA}, tags=["references"])
     def get(self, request: Request) -> Response:
         return Response(_TIMEZONES)

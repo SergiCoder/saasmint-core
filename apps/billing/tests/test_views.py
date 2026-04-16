@@ -378,7 +378,9 @@ class TestCancelSubscription:
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
     def test_cancels_subscription(self, mock_cancel, authed_client, subscription):
         resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 200
+        # Cancellation takes effect at period end, so the response is 202 Accepted
+        # with the still-active subscription echoed back.
+        assert resp.status_code == 202
         mock_cancel.assert_called_once()
         assert mock_cancel.call_args.kwargs["at_period_end"] is True
 

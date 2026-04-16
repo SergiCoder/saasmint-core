@@ -10,6 +10,7 @@ from asgiref.sync import async_to_sync
 from django.core.cache import cache
 from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
 from rest_framework import serializers as drf_serializers
+from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
@@ -167,6 +168,16 @@ def _get_active_plan_price(plan_price_id: UUID) -> PlanPrice:
     return plan_price
 
 
+def _catalog_envelope(results: list[dict[str, object]]) -> dict[str, object]:
+    """Wrap catalog results in a DRF-style paginated envelope.
+
+    The catalog is bounded, so ``next`` and ``previous`` are always ``None``
+    and ``count`` is simply ``len(results)`` — but emitting the same shape as
+    real paginated endpoints lets clients share one decoder.
+    """
+    return {"count": len(results), "next": None, "previous": None, "results": results}
+
+
 class PlanListView(APIView):
     """GET /api/v1/billing/plans — list active plans with prices (public)."""
 
@@ -176,11 +187,17 @@ class PlanListView(APIView):
         parameters=[_CURRENCY_PARAM],
         responses=inline_serializer(
             "PlanListResponse",
-            {"results": PlanSerializer(many=True)},
+            {
+                "count": drf_serializers.IntegerField(),
+                "next": drf_serializers.URLField(allow_null=True),
+                "previous": drf_serializers.URLField(allow_null=True),
+                "results": PlanSerializer(many=True),
+            },
         ),
         description=(
-            "List all active plans with prices. Returned as a non-paginated"
-            " ``{results: [...]}`` envelope — the catalog is bounded to a small number of plans."
+            "List all active plans with prices. Emits the DRF paginated envelope"
+            " (``count``/``next``/``previous``/``results``) — the catalog is bounded,"
+            " so ``next`` and ``previous`` are always ``null``."
         ),
         tags=["billing"],
         auth=[],
@@ -193,7 +210,7 @@ class PlanListView(APIView):
             qs = qs.filter(context=plan_context_for(request.user))
 
         data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
-        return Response({"results": data})
+        return Response(_catalog_envelope(list(data)))
 
 
 class ProductListView(APIView):
@@ -203,18 +220,24 @@ class ProductListView(APIView):
         parameters=[_CURRENCY_PARAM],
         responses=inline_serializer(
             "ProductListResponse",
-            {"results": ProductSerializer(many=True)},
+            {
+                "count": drf_serializers.IntegerField(),
+                "next": drf_serializers.URLField(allow_null=True),
+                "previous": drf_serializers.URLField(allow_null=True),
+                "results": ProductSerializer(many=True),
+            },
         ),
         description=(
-            "List all active one-time products with prices. Returned as a non-paginated"
-            " ``{results: [...]}`` envelope — the catalog is bounded to a small number of products."
+            "List all active one-time products with prices. Emits the DRF paginated envelope"
+            " (``count``/``next``/``previous``/``results``) — the catalog is bounded,"
+            " so ``next`` and ``previous`` are always ``null``."
         ),
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
         products = ProductModel.objects.filter(is_active=True).select_related("price")
         data = ProductSerializer(products, many=True, context=_currency_context(request)).data
-        return Response({"results": data})
+        return Response(_catalog_envelope(list(data)))
 
 
 class CheckoutSessionView(BillingScopedView):
@@ -421,7 +444,12 @@ class SubscriptionView(BillingScopedView):
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
         request=None,
-        responses={200: SubscriptionSerializer},
+        responses={202: SubscriptionSerializer},
+        description=(
+            "Schedule subscription cancellation at the end of the current billing period."
+            " Returns 202 Accepted — the subscription remains active until the period end"
+            " timestamp returned in the body."
+        ),
         tags=["billing"],
     )
     def delete(self, request: Request) -> Response:
@@ -437,4 +465,7 @@ class SubscriptionView(BillingScopedView):
 
         async_to_sync(_do)()
         sub = _get_active_subscription_for_user(user)
-        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
+        return Response(
+            SubscriptionSerializer(sub, context=_currency_context(request)).data,
+            status=status.HTTP_202_ACCEPTED,
+        )

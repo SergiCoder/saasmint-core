@@ -67,3 +67,10 @@ class TokenResponseSerializer(serializers.Serializer[User]):
     access_token = serializers.CharField()
     refresh_token = serializers.CharField()
     token_type = serializers.CharField(default="Bearer")
+
+
+class MessageResponseSerializer(serializers.Serializer[object]):
+    """Schema-only serializer for ``{detail, code}`` envelope responses."""
+
+    detail = serializers.CharField(help_text="Human-readable message.")
+    code = serializers.CharField(help_text="Machine-readable code.")

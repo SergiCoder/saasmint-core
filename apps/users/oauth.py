@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TypedDict
+from typing import TypedDict, assert_never
 from urllib.parse import urlencode
 
 import httpx
@@ -164,6 +164,8 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
                 provider_user_id=str(info["id"]),
                 email_verified=False,
             )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 def _fetch_github_primary_email(access_token: str) -> str:

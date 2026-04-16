@@ -25,6 +25,7 @@ from apps.users.auth_serializers import (
     ForgotPasswordSerializer,
     LoginSerializer,
     LogoutSerializer,
+    MessageResponseSerializer,
     RefreshSerializer,
     RegisterSerializer,
     ResetPasswordSerializer,
@@ -234,7 +235,11 @@ class LogoutView(AuthScopedView):
 class ForgotPasswordView(AuthPublicView):
     """POST /api/v1/auth/forgot-password — send reset email (always 200)."""
 
-    @extend_schema(request=ForgotPasswordSerializer, responses={200: dict}, tags=["auth"])
+    @extend_schema(
+        request=ForgotPasswordSerializer,
+        responses={200: MessageResponseSerializer},
+        tags=["auth"],
+    )
     def post(self, request: Request) -> Response:
         ser = ForgotPasswordSerializer(data=request.data)
         ser.is_valid(raise_exception=True)

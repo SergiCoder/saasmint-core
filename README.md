@@ -174,7 +174,7 @@ make seed
 3. Seed the local catalog — `python manage.py seed_catalog` creates the default Plans, PlanPrices, and Boost Products with placeholder `stripe_price_id` values. It is idempotent and runs automatically from `infra/entrypoint.sh` after `migrate` on every deploy. To customize the catalog, edit `apps/billing/management/commands/seed_catalog.py`.
 4. Push the local catalog to Stripe with `make sync-stripe` — this creates Stripe Products/Prices via `python manage.py sync_stripe_catalog` and writes the resulting `stripe_price_id` back onto `PlanPrice` / `ProductPrice`, replacing the placeholders from step 3. The command is idempotent (uses Stripe `lookup_key`s) and should also be run after every deploy.
 5. Webhook forwarding for local development is handled automatically by the bundled `stripe-cli` service in `docker-compose.yml`. Run `stripe login` once on the host (its config is mounted into the container), then `make dev` will start the forwarder alongside Django. Tail it with `make stripe-logs`.
-6. In production, set up a webhook endpoint pointing to `/api/v1/webhooks/stripe` with these events:
+6. In production, set up a webhook endpoint pointing to `/api/v1/webhooks/stripe/` with these events:
    - `checkout.session.completed`
    - `customer.subscription.created`
    - `customer.subscription.updated`

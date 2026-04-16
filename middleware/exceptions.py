@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 import stripe
+from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 from rest_framework.views import exception_handler
 from saasmint_core.exceptions import (
@@ -62,4 +63,18 @@ def domain_exception_handler(exc: Exception, context: dict[str, Any]) -> Respons
             status=http_status,
         )
 
-    return exception_handler(exc, context)
+    response = exception_handler(exc, context)
+    if response is None:
+        return None
+
+    # Attach `code` to single-key `{"detail": ...}` envelopes so clients can
+    # branch on a stable machine-readable identifier instead of parsing the
+    # human-readable message. Multi-key payloads (field-validation errors,
+    # custom dict-as-detail raises) are left untouched.
+    if (
+        isinstance(exc, APIException)
+        and isinstance(response.data, dict)
+        and set(response.data.keys()) == {"detail"}
+    ):
+        response.data["code"] = exc.default_code
+    return response
