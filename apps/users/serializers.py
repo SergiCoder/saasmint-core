@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import functools
 from typing import Any
+from zoneinfo import available_timezones
 
 from rest_framework import serializers
 
 from apps.users.models import User
+
+
+@functools.cache
+def _available_timezones() -> frozenset[str]:
+    return frozenset(available_timezones())
 
 
 class _PhoneReadSerializer(serializers.Serializer[User]):
@@ -92,9 +99,7 @@ class UpdateUserSerializer(serializers.Serializer[User]):
     def validate_timezone(self, value: str | None) -> str | None:
         if value is None:
             return value
-        from zoneinfo import available_timezones
-
-        if value not in available_timezones():
+        if value not in _available_timezones():
             raise serializers.ValidationError(
                 "Unsupported timezone. Must be a valid IANA timezone identifier."
             )

@@ -68,6 +68,16 @@ class OrgMember(models.Model):
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(fields=["org", "user"], name="org_members_org_user_uniq"),
         ]
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            # Hot path: `SubscriptionView` checks whether an org-member user has
+            # the billing flag on every `GET /billing/subscriptions/me/`. The
+            # unique (org, user) index doesn't help since `user` isn't the prefix.
+            models.Index(
+                fields=["user"],
+                name="idx_orgmember_billing_user",
+                condition=models.Q(is_billing=True),
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.user} @ {self.org} ({self.role})"
@@ -105,6 +115,16 @@ class Invitation(models.Model):
                 fields=["org", "email"],
                 condition=models.Q(status="pending"),
                 name="idx_invitations_org_email_pending",
+            ),
+        ]
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            # Hot paths: listing pending invites for an org, seat-limit counts,
+            # and bulk-cancel on org delete. Partial on status='pending' so the
+            # tree stays small once invites age into accepted/expired/declined.
+            models.Index(
+                fields=["org", "-created_at"],
+                name="idx_invitation_pending_org",
+                condition=models.Q(status="pending"),
             ),
         ]
 

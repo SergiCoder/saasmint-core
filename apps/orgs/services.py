@@ -194,11 +194,10 @@ def delete_org(org: Org) -> None:
     """
     org_id = org.id
     with transaction.atomic():
-        # Snapshot Stripe subscription IDs before deletion — StripeCustomer is
-        # CASCADE-deleted with the org, so we must capture them first.
-        stripe_sub_ids = [
-            s.stripe_id for s in _get_active_stripe_subs(org_id) if s.stripe_id is not None
-        ]
+        # Snapshot the Stripe subscription ID before deletion — StripeCustomer is
+        # CASCADE-deleted with the org, so we must capture it first.
+        active_sub = _get_active_stripe_sub(org_id)
+        stripe_sub_id = active_sub.stripe_id if active_sub is not None else None
 
         # Inline sync UPDATE — delete_org already runs in a sync transaction,
         # so bouncing through async_to_sync to call the async helper would
@@ -228,13 +227,13 @@ def delete_org(org: Org) -> None:
 
         org.delete()
 
-        # Offload Stripe cancellations to Celery so the request returns
-        # immediately instead of blocking on N sequential Stripe round-trips.
-        if stripe_sub_ids:
+        # Offload Stripe cancellation to Celery so the request returns
+        # immediately instead of blocking on the Stripe round-trip.
+        if stripe_sub_id is not None:
             from apps.orgs.tasks import cancel_stripe_subs_task
 
             transaction.on_commit(
-                lambda: cancel_stripe_subs_task.delay(stripe_sub_ids, str(org_id))
+                lambda: cancel_stripe_subs_task.delay([stripe_sub_id], str(org_id))
             )
 
 
@@ -245,26 +244,24 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
         delete_org(org)
 
 
-def _get_active_stripe_subs(org_id: UUID) -> list[SubscriptionModel]:
-    """Return active Stripe-backed subscriptions for an org.
+def _get_active_stripe_sub(org_id: UUID) -> SubscriptionModel | None:
+    """Return the active Stripe-backed subscription for an org, or None.
 
-    Shared by seat decrement and subscription cancellation to avoid
-    duplicating the StripeCustomer → Subscription lookup.
+    Each org holds at most one active Stripe subscription at a time — the
+    singular return makes that invariant explicit. If multiple active rows
+    exist (sync-window drift, duplicate webhook), the newest wins.
     """
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, StripeCustomer
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
     from apps.billing.models import Subscription as SubscriptionModel
 
-    try:
-        customer = StripeCustomer.objects.get(org_id=org_id)
-    except StripeCustomer.DoesNotExist:
-        return []
-
-    return list(
+    return (
         SubscriptionModel.objects.filter(
-            stripe_customer=customer,
+            stripe_customer__org_id=org_id,
             status__in=ACTIVE_SUBSCRIPTION_STATUSES,
             stripe_id__isnull=False,
         )
+        .order_by("-created_at")
+        .first()
     )
 
 
@@ -272,12 +269,8 @@ def decrement_subscription_seats(org_id: UUID) -> None:
     """Decrement the team subscription's seat count to match member count."""
     from saasmint_core.services.subscriptions import update_seat_count
 
-    subs = _get_active_stripe_subs(org_id)
-    if not subs:
-        return
-
-    sub = subs[0]
-    if sub.stripe_id is None:
+    sub = _get_active_stripe_sub(org_id)
+    if sub is None or sub.stripe_id is None:
         return
 
     # Lock the OrgMember rows while we compute the new seat count so two
@@ -310,14 +303,14 @@ def decrement_subscription_seats(org_id: UUID) -> None:
 
 def _cancel_team_subscription(org: Org) -> None:
     """Cancel the team subscription for an org via Stripe (immediate cancellation)."""
-    for sub in _get_active_stripe_subs(org.id):
-        if sub.stripe_id is None:
-            continue
-        try:
-            stripe.Subscription.cancel(sub.stripe_id)
-        except stripe.StripeError:
-            logger.exception(
-                "Failed to cancel Stripe sub %s for org %s",
-                sub.stripe_id,
-                org.id,
-            )
+    sub = _get_active_stripe_sub(org.id)
+    if sub is None or sub.stripe_id is None:
+        return
+    try:
+        stripe.Subscription.cancel(sub.stripe_id)
+    except stripe.StripeError:
+        logger.exception(
+            "Failed to cancel Stripe sub %s for org %s",
+            sub.stripe_id,
+            org.id,
+        )

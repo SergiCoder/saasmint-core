@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from django.db.models import Q
 from saasmint_core.domain.product import Product, ProductPrice, ProductType
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.stripe_event import StripeEvent
@@ -121,13 +120,18 @@ class DjangoSubscriptionRepository:
         )
 
     async def get_active_for_user(self, user_id: UUID) -> Subscription | None:
-        return await aget_latest_or_none(
-            SubscriptionModel.objects.filter(
-                Q(user_id=user_id) | Q(stripe_customer__user_id=user_id),
-                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-            ),
-            self._to_domain,
+        # Split the OR into two index-friendly queries — the OR'd predicate
+        # can't use either of `idx_sub_user_status` / `idx_sub_customer_status`
+        # and degenerates into a scan on hot dashboard paths.
+        base = SubscriptionModel.objects.filter(status__in=ACTIVE_SUBSCRIPTION_STATUSES)
+        by_user = await aget_latest_or_none(base.filter(user_id=user_id), self._to_domain)
+        by_customer = await aget_latest_or_none(
+            base.filter(stripe_customer__user_id=user_id), self._to_domain
         )
+        candidates = [s for s in (by_user, by_customer) if s is not None]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda s: s.created_at)
 
     async def get_active_for_customer(self, stripe_customer_id: UUID) -> Subscription | None:
         try:

@@ -6,7 +6,8 @@ Re-registers User with subscription status column and sets site_url to /dashboar
 from typing import ClassVar
 
 from django.contrib import admin
-from django.db.models import OuterRef, Q, QuerySet, Subquery
+from django.db.models import OuterRef, QuerySet, Subquery
+from django.db.models.functions import Coalesce
 from django.http import HttpRequest
 from django.utils.html import format_html
 from django.utils.safestring import SafeString
@@ -42,11 +43,17 @@ class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ge
 
     def get_queryset(self, request: HttpRequest) -> QuerySet[User]:
         qs = super().get_queryset(request)  # type: ignore[misc]  # django-stubs returns QuerySet[Any]; narrowing to QuerySet[User]
-        customer_sub = Subscription.objects.filter(
-            Q(user=OuterRef("pk")) | Q(stripe_customer__user=OuterRef("pk")),
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        ).order_by("-created_at")
-        return qs.annotate(_subscription_status=Subquery(customer_sub.values("status")[:1]))
+        # Two separate subqueries so each one hits a single-column predicate
+        # and can use its partial index (idx_sub_user_status / idx_sub_customer_status).
+        # The OR'd form defeats both indexes and turns into a seq scan per row.
+        active = Subscription.objects.filter(status__in=ACTIVE_SUBSCRIPTION_STATUSES).order_by(
+            "-created_at"
+        )
+        by_user = active.filter(user_id=OuterRef("pk")).values("status")[:1]
+        by_customer = active.filter(stripe_customer__user_id=OuterRef("pk")).values("status")[:1]
+        return qs.annotate(
+            _subscription_status=Coalesce(Subquery(by_user), Subquery(by_customer))
+        )
 
     @admin.display(description="Subscription")
     def subscription_status(self, obj: User) -> str | SafeString:
