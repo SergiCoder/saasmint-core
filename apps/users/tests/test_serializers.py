@@ -106,7 +106,6 @@ class TestUpdateUserSerializer:
         ser = UpdateUserSerializer(
             data={
                 "full_name": "Full Name",
-                "avatar_url": "https://example.com/avatar.png",
                 "preferred_locale": "en",
                 "preferred_currency": "usd",
             }
@@ -122,18 +121,11 @@ class TestUpdateUserSerializer:
         assert not ser.is_valid()
         assert "full_name" in ser.errors
 
-    def test_null_avatar_url_is_valid(self):
-        ser = UpdateUserSerializer(data={"avatar_url": None})
+    def test_avatar_url_is_not_writable(self):
+        """avatar_url must only be updated via AvatarView (POST/DELETE)."""
+        ser = UpdateUserSerializer(data={"avatar_url": "javascript:alert(1)"})
         assert ser.is_valid(), ser.errors
-
-    def test_avatar_url_accepts_relative_path(self):
-        ser = UpdateUserSerializer(data={"avatar_url": "/media/avatars/abc.jpg"})
-        assert ser.is_valid(), ser.errors
-
-    def test_avatar_url_too_long_rejected(self):
-        ser = UpdateUserSerializer(data={"avatar_url": "x" * 501})
-        assert not ser.is_valid()
-        assert "avatar_url" in ser.errors
+        assert "avatar_url" not in ser.validated_data
 
     def test_unsupported_locale_rejected(self):
         ser = UpdateUserSerializer(data={"preferred_locale": "xx-FAKE"})

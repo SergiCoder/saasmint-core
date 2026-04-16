@@ -552,6 +552,63 @@ class TestInvitationAcceptView:
         resp = client.post("/api/v1/invitations/nodata-token/accept/", {}, format="json")
         assert resp.status_code == 400
 
+    def test_short_password_rejected(self, org, owner_membership, user):
+        """Passwords shorter than 10 chars fail serializer min_length."""
+        Invitation.objects.create(
+            org=org,
+            email="short@example.com",
+            role=OrgRole.MEMBER,
+            token="short-pass-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/short-pass-token/accept/",
+            {"full_name": "Short Pass", "password": "short1"},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "password" in resp.data
+
+    def test_common_password_rejected(self, org, owner_membership, user):
+        """Passwords on CommonPasswordValidator's blocklist are rejected."""
+        Invitation.objects.create(
+            org=org,
+            email="common@example.com",
+            role=OrgRole.MEMBER,
+            token="common-pass-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/common-pass-token/accept/",
+            {"full_name": "Common Pass", "password": "password123"},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "password" in resp.data
+
+    def test_numeric_password_rejected(self, org, owner_membership, user):
+        """Fully numeric passwords are rejected by NumericPasswordValidator."""
+        Invitation.objects.create(
+            org=org,
+            email="numeric@example.com",
+            role=OrgRole.MEMBER,
+            token="numeric-pass-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/numeric-pass-token/accept/",
+            {"full_name": "Numeric Pass", "password": "1234567890"},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "password" in resp.data
+
 
 @pytest.mark.django_db
 class TestInvitationDeclineView:
@@ -688,6 +745,30 @@ class TestInvitationDetailView:
         client = APIClient()
         resp = client.get("/api/v1/invitations/done-token/")
         assert resp.status_code == 404
+
+
+class TestInvitationThrottleScope:
+    """Pin all three token-based invitation endpoints to the `auth` throttle scope.
+
+    The detail/accept endpoints are unauthenticated and leak org metadata;
+    decline takes a user-chosen token. All three belong in the same bucket as
+    login/register to prevent enumeration or brute force.
+    """
+
+    def test_detail_view_uses_auth_throttle(self):
+        from apps.orgs.views import InvitationDetailView
+
+        assert InvitationDetailView.throttle_scope == "auth"
+
+    def test_accept_view_uses_auth_throttle(self):
+        from apps.orgs.views import InvitationAcceptView
+
+        assert InvitationAcceptView.throttle_scope == "auth"
+
+    def test_decline_view_uses_auth_throttle(self):
+        from apps.orgs.views import InvitationDeclineView
+
+        assert InvitationDeclineView.throttle_scope == "auth"
 
 
 # ---------------------------------------------------------------------------

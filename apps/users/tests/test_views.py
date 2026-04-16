@@ -114,14 +114,21 @@ class TestAccountViewPATCHEdgeCases:
         user.refresh_from_db()
         assert user.preferred_currency == "eur"
 
-    def test_update_avatar_url(self, authed_client, user):
+    def test_patch_ignores_avatar_url(self, authed_client, user):
+        """avatar_url is read-only on PATCH; use AvatarView (POST/DELETE) instead.
+
+        Prevents stored-XSS via `javascript:`/`data:` URLs or phishing links.
+        """
+        original_url = user.avatar_url
         resp = authed_client.patch(
             "/api/v1/account/",
-            {"avatar_url": "https://cdn.example.com/img.png"},
+            {"avatar_url": "javascript:alert(1)"},
             format="json",
         )
         assert resp.status_code == 200
-        assert resp.data["avatar_url"] == "https://cdn.example.com/img.png"
+        user.refresh_from_db()
+        assert user.avatar_url == original_url
+        assert resp.data["avatar_url"] == original_url
 
     def test_update_empty_body_is_noop(self, authed_client, user):
         original_name = user.full_name

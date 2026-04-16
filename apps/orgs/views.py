@@ -239,9 +239,7 @@ class OrgMemberDetailView(OrgsScopedView):
             # would leave Stripe seat count out of sync with actual members.
             # Offload to Celery so the 500-1500ms Stripe round-trip doesn't
             # sit in the request path.
-            transaction.on_commit(
-                lambda: decrement_subscription_seats_task.delay(str(org_id))
-            )
+            transaction.on_commit(lambda: decrement_subscription_seats_task.delay(str(org_id)))
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -449,6 +447,8 @@ class InvitationDetailView(OrgsScopedView):
     """
 
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
+    throttle_scope = "auth"
+
     @extend_schema(responses={200: InvitationSerializer}, tags=["orgs"])
     def get(self, request: Request, token: str) -> Response:
         invitation = get_object_or_404(
@@ -535,7 +535,7 @@ class InvitationDeclineView(OrgsScopedView):
     """POST /api/v1/invitations/{token}/decline/ — decline an invitation."""
 
     permission_classes: ClassVar[list[type[IsAuthenticated]]] = [IsAuthenticated]  # type: ignore[misc]
-    throttle_scope = "account"
+    throttle_scope = "auth"
 
     @extend_schema(request=None, responses={204: None}, tags=["orgs"])
     def post(self, request: Request, token: str) -> Response:

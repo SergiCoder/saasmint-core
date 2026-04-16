@@ -12,6 +12,7 @@ paths:
       - account
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -37,6 +38,7 @@ paths:
               $ref: '#/components/schemas/PatchedUpdateUserRequest'
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -54,6 +56,7 @@ paths:
       - account
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -77,6 +80,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -91,6 +95,7 @@ paths:
       - account
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -102,6 +107,7 @@ paths:
       - account
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -129,6 +135,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -156,6 +163,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -185,6 +193,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -213,6 +222,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -236,6 +246,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -264,6 +275,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '201':
@@ -296,6 +308,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '201':
@@ -324,6 +337,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -352,6 +366,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -381,6 +396,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -430,6 +446,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -453,6 +470,7 @@ paths:
       - billing
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -475,6 +493,7 @@ paths:
       - billing
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -507,6 +526,7 @@ paths:
               $ref: '#/components/schemas/PatchedUpdateSubscriptionRequest'
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -528,6 +548,7 @@ paths:
       - billing
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -543,6 +564,7 @@ paths:
       - references
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -571,6 +593,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -609,6 +632,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '201':
@@ -631,6 +655,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -642,6 +667,7 @@ paths:
       - references
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -671,6 +697,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -695,6 +722,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -727,6 +755,7 @@ paths:
               $ref: '#/components/schemas/PatchedUpdateOrgRequest'
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -759,6 +788,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -794,6 +824,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '201':
           content:
@@ -823,6 +854,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -851,6 +883,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -892,6 +925,7 @@ paths:
               $ref: '#/components/schemas/PatchedUpdateMemberRequest'
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -920,6 +954,7 @@ paths:
       - orgs
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '204':
           description: No response body
@@ -951,6 +986,7 @@ paths:
         required: true
       security:
       - JWT: []
+      - cookieAuth: []
       responses:
         '200':
           content:
@@ -966,6 +1002,7 @@ paths:
       - references
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -986,6 +1023,7 @@ paths:
       - references
       security:
       - JWT: []
+      - cookieAuth: []
       - {}
       responses:
         '200':
@@ -1183,7 +1221,7 @@ components:
         password:
           type: string
           writeOnly: true
-          minLength: 8
+          minLength: 10
           maxLength: 128
       required:
       - full_name
@@ -1342,11 +1380,6 @@ components:
           type: string
           minLength: 3
           maxLength: 255
-        avatar_url:
-          type: string
-          nullable: true
-          minLength: 1
-          maxLength: 500
         preferred_locale:
           type: string
           minLength: 1
@@ -1913,3 +1946,7 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: 'Django-issued JWT. Pass as `Authorization: Bearer <token>`.'
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid
