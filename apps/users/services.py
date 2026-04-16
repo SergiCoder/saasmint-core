@@ -43,6 +43,10 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
         user = User.objects.get(email=user_info.email)
     except User.DoesNotExist:
         try:
+            # Atomic covers create_user + assign_free_plan + SocialAccount link
+            # so a partial failure can't leave a user without a free sub or
+            # without the provider linked (retry would then hit the email
+            # collision and follow the existing-user path).
             with transaction.atomic():
                 user = User.objects.create_user(
                     email=user_info.email,
@@ -51,13 +55,18 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> User:
                     is_verified=True,
                     registration_method=provider,
                 )
+                assign_free_plan(user)
+                SocialAccount.objects.get_or_create(
+                    provider=provider,
+                    provider_user_id=user_info.provider_user_id,
+                    defaults={"user": user},
+                )
+            return user
         except IntegrityError:
             # Race: another request created the user between our get and create
             user = User.objects.get(email=user_info.email)
-        else:
-            assign_free_plan(user)
 
-    # Auto-link provider for steps 2 and 3
+    # Auto-link provider for the existing-user path
     SocialAccount.objects.get_or_create(
         provider=provider,
         provider_user_id=user_info.provider_user_id,

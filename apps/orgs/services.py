@@ -200,14 +200,30 @@ def delete_org(org: Org) -> None:
             s.stripe_id for s in _get_active_stripe_subs(org_id) if s.stripe_id is not None
         ]
 
-        async_to_sync(cancel_pending_invitations_for_org)(org_id)
+        # Inline sync UPDATE — delete_org already runs in a sync transaction,
+        # so bouncing through async_to_sync to call the async helper would
+        # just wrap the same UPDATE in an event loop for no reason.
+        Invitation.objects.filter(org_id=org_id, status=InvitationStatus.PENDING).update(
+            status=InvitationStatus.CANCELLED
+        )
 
-        # Push the member_user_id set into the DB via a Subquery instead of
-        # materializing thousands of UUIDs into Python for the IN clause.
-        from django.db.models import Subquery
+        # Delete only users whose *only* membership is in this org — users
+        # who also belong to another org must keep their account, otherwise
+        # deleting org A would wipe accounts still active in org B.
+        # The NOT EXISTS subquery is evaluated in the DB so we don't need to
+        # materialize thousands of UUIDs into Python for the IN clause.
+        from django.db.models import Exists, OuterRef, Subquery
 
-        member_user_ids_sq = OrgMember.objects.filter(org=org).values("user_id")
-        User.objects.filter(id__in=Subquery(member_user_ids_sq)).delete()
+        other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
+            org_id=org_id
+        )
+        single_org_member_user_ids = (
+            OrgMember.objects.filter(org=org)
+            .annotate(has_other=Exists(other_memberships))
+            .filter(has_other=False)
+            .values("user_id")
+        )
+        User.objects.filter(id__in=Subquery(single_org_member_user_ids)).delete()
         OrgMember.objects.filter(org=org).delete()
 
         org.delete()
@@ -264,7 +280,17 @@ def decrement_subscription_seats(org_id: UUID) -> None:
     if sub.stripe_id is None:
         return
 
-    new_quantity = OrgMember.objects.filter(org_id=org_id, org__deleted_at__isnull=True).count()
+    # Lock the OrgMember rows while we compute the new seat count so two
+    # concurrent member removals can't both read the pre-decrement total
+    # and then push the same (stale) count to Stripe. Snapshot the count
+    # inside the txn and push to Stripe only after commit to avoid holding
+    # DB locks across the external API call.
+    with transaction.atomic():
+        new_quantity = (
+            OrgMember.objects.select_for_update()
+            .filter(org_id=org_id, org__deleted_at__isnull=True)
+            .count()
+        )
 
     if new_quantity < 1:
         return

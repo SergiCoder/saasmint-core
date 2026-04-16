@@ -345,11 +345,13 @@ class InvitationListCreateView(OrgsScopedView):
                 {"email": ["A pending invitation already exists for this email."]}
             )
 
-        # Check seat limit against subscription quantity
-        _validate_seat_limit(org)
-
         token = secrets.token_urlsafe(32)
+        # The caller owns the atomic block so the seat-limit check and the
+        # Invitation INSERT run under the same transaction — otherwise the
+        # row-lock released between check and insert lets two concurrent
+        # invites both pass the check and overrun the seat quota.
         with transaction.atomic():
+            _validate_seat_limit(org)
             invitation = Invitation.objects.create(
                 org=org,
                 email=email,
@@ -382,40 +384,37 @@ class InvitationListCreateView(OrgsScopedView):
 def _validate_seat_limit(org: Org) -> None:
     """Raise ValidationError if the org has reached its subscription seat limit.
 
-    Lock the Subscription row so concurrent invites can't both pass the check
-    and overrun the seat quota.
+    Must be called inside an ``atomic()`` block owned by the caller so the
+    row lock taken here stays held until the caller's Invitation INSERT
+    commits — otherwise two concurrent invites can both pass the check and
+    overrun the quota.
     """
-    with transaction.atomic():
-        # Lock the active team sub row so concurrent invites can't both pass
-        # the check and overrun the seat quota. We can't use the shared
-        # read-only helper here because this one must take a row lock.
-        from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
-        from apps.billing.models import Subscription as SubscriptionModel
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+    from apps.billing.models import Subscription as SubscriptionModel
 
-        sub = (
-            SubscriptionModel.objects.select_for_update()
-            .select_related("stripe_customer")
-            .filter(
-                stripe_customer__org=org,
-                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-            )
-            .first()
+    # Lock the active team sub row. We can't use the shared read-only helper
+    # here because this one must take a row lock.
+    sub = (
+        SubscriptionModel.objects.select_for_update()
+        .select_related("stripe_customer")
+        .filter(
+            stripe_customer__org=org,
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
         )
-        if sub is None:
-            return  # No active subscription — can't validate seats
+        .first()
+    )
+    if sub is None:
+        return  # No active subscription — can't validate seats
 
-        current_members = OrgMember.objects.filter(org=org).count()
-        pending_invitations = Invitation.objects.filter(
-            org=org, status=InvitationStatus.PENDING
-        ).count()
+    current_members = OrgMember.objects.filter(org=org).count()
+    pending_invitations = Invitation.objects.filter(
+        org=org, status=InvitationStatus.PENDING
+    ).count()
 
-        if current_members + pending_invitations >= sub.quantity:
-            raise DRFValidationError(
-                {
-                    "detail": "Org has reached its seat limit. "
-                    "Upgrade your plan to invite more members."
-                }
-            )
+    if current_members + pending_invitations >= sub.quantity:
+        raise DRFValidationError(
+            {"detail": "Org has reached its seat limit. Upgrade your plan to invite more members."}
+        )
 
 
 class InvitationCancelView(OrgsScopedView):
