@@ -837,6 +837,7 @@ class TestOAuthExchangeView:
             "access_token": "access-xyz",
             "refresh_token": "refresh-xyz",
             "token_type": "Bearer",
+            "expires_in": 15 * 60,
         }
 
     def test_unknown_code_returns_400(self, api, clear_cache):

@@ -171,8 +171,11 @@ class TestOAuthExchange:
             content_type="application/json",
         )
         assert resp.status_code == 200
-        assert "access_token" in resp.json()
-        assert "refresh_token" in resp.json()
+        body = resp.json()
+        assert "access_token" in body
+        assert "refresh_token" in body
+        assert body["token_type"] == "Bearer"
+        assert body["expires_in"] == 15 * 60
 
     def test_code_is_single_use(self, client):
         code = self._get_code(client)

@@ -34,6 +34,7 @@ from apps.users.auth_serializers import (
     LoginSerializer,
     LogoutSerializer,
     MessageResponseSerializer,
+    OAuthExchangeResponseSerializer,
     RefreshSerializer,
     RegisterSerializer,
     ResetPasswordSerializer,
@@ -41,6 +42,7 @@ from apps.users.auth_serializers import (
     VerifyEmailSerializer,
 )
 from apps.users.authentication import (
+    ACCESS_TOKEN_LIFETIME,
     create_access_token,
     create_email_verification_token,
     create_password_reset_token,
@@ -444,7 +446,7 @@ class OAuthExchangeView(AuthPublicView):
 
     @extend_schema(
         request=OAuthExchangeRequestSerializer,
-        responses={200: TokenResponseSerializer},
+        responses={200: OAuthExchangeResponseSerializer},
         tags=["auth"],
     )
     def post(self, request: Request) -> Response:
@@ -461,5 +463,6 @@ class OAuthExchangeView(AuthPublicView):
                 "access_token": data["access_token"],
                 "refresh_token": data["refresh_token"],
                 "token_type": "Bearer",
+                "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
             }
         )

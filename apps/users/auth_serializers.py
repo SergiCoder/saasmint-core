@@ -69,6 +69,13 @@ class TokenResponseSerializer(serializers.Serializer[User]):
     token_type = serializers.CharField(default="Bearer")
 
 
+class OAuthExchangeResponseSerializer(serializers.Serializer[User]):
+    access_token = serializers.CharField()
+    refresh_token = serializers.CharField()
+    token_type = serializers.CharField(default="Bearer")
+    expires_in = serializers.IntegerField(help_text="Access token lifetime in seconds.")
+
+
 class MessageResponseSerializer(serializers.Serializer[object]):
     """Schema-only serializer for ``{detail, code}`` envelope responses."""
 
