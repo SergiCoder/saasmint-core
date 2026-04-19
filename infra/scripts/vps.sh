@@ -4,28 +4,29 @@
 set -euo pipefail
 
 COMPOSE_FILE="$(dirname "$0")/../docker-compose.vps.yml"
+ENV_FILE="/opt/saasmint/.env.dev"
 
 cmd="${1:-help}"
 shift || true
 
 case "$cmd" in
     up)
-        docker compose -f "$COMPOSE_FILE" up -d --build "$@"
+        docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build "$@"
         ;;
     down)
-        docker compose -f "$COMPOSE_FILE" down "$@"
+        docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down "$@"
         ;;
     restart)
-        docker compose -f "$COMPOSE_FILE" restart "$@"
+        docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" restart "$@"
         ;;
     logs)
-        docker compose -f "$COMPOSE_FILE" logs -f "$@"
+        docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs -f "$@"
         ;;
     exec)
-        docker compose -f "$COMPOSE_FILE" exec "$@"
+        docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec "$@"
         ;;
     ps)
-        docker compose -f "$COMPOSE_FILE" ps "$@"
+        docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps "$@"
         ;;
     *)
         echo "Usage: vps.sh {up|down|restart|logs|exec|ps}"

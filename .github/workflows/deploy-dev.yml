@@ -36,8 +36,8 @@ jobs:
             cd /opt/saasmint/saasmint-core
             git fetch --tags
             git checkout "$REF"
-            docker compose -f infra/docker-compose.vps.yml build
-            docker compose -f infra/docker-compose.vps.yml up -d
+            docker compose --env-file /opt/saasmint/.env.dev -f infra/docker-compose.vps.yml build
+            docker compose --env-file /opt/saasmint/.env.dev -f infra/docker-compose.vps.yml up -d
             sleep 5
-            curl -sf http://127.0.0.1:8001/api/v1/health/ || { echo "Health check failed"; docker compose -f infra/docker-compose.vps.yml logs django --tail=50; exit 1; }
+            curl -sf http://127.0.0.1:8001/api/v1/health/ || { echo "Health check failed"; docker compose --env-file /opt/saasmint/.env.dev -f infra/docker-compose.vps.yml logs django --tail=50; exit 1; }
             echo "Deploy successful: $REF"
