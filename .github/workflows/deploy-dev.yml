@@ -34,7 +34,7 @@ jobs:
           script: |
             set -euo pipefail
             cd /opt/saasmint/saasmint-core
-            git fetch --tags
+            git fetch --tags --force
             git checkout "$REF"
             docker compose --env-file /opt/saasmint/.env.dev -f infra/docker-compose.vps.yml build
             docker compose --env-file /opt/saasmint/.env.dev -f infra/docker-compose.vps.yml up -d
