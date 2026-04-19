@@ -253,7 +253,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TokenResponse'
+                $ref: '#/components/schemas/OAuthExchangeResponse'
           description: ''
   /api/v1/auth/refresh/:
     post:
@@ -1349,6 +1349,23 @@ components:
           maxLength: 128
       required:
       - code
+    OAuthExchangeResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        token_type:
+          type: string
+          default: Bearer
+        expires_in:
+          type: integer
+          description: Access token lifetime in seconds.
+      required:
+      - access_token
+      - expires_in
+      - refresh_token
     Org:
       type: object
       properties:
