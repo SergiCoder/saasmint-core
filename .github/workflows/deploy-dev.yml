@@ -3,7 +3,7 @@ name: Deploy to dev VPS
 on:
   push:
     tags:
-      - "dev-v*"
+      - "v*"
 
 concurrency:
   group: deploy-dev
@@ -17,7 +17,7 @@ jobs:
         env:
           REF: ${{ github.ref_name }}
         run: |
-          if [[ ! "$REF" =~ ^dev-v[A-Za-z0-9._-]+$ ]]; then
+          if [[ ! "$REF" =~ ^v[A-Za-z0-9._-]+$ ]]; then
             echo "Refusing to deploy: unexpected ref_name '$REF'"
             exit 1
           fi
