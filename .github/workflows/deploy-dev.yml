@@ -38,6 +38,13 @@ jobs:
             git checkout "$REF"
             docker compose --env-file /opt/saasmint/.env.dev -f infra/docker-compose.vps.yml build
             docker compose --env-file /opt/saasmint/.env.dev -f infra/docker-compose.vps.yml up -d
-            sleep 5
-            curl -sf http://127.0.0.1:8001/api/v1/health/ || { echo "Health check failed"; docker compose --env-file /opt/saasmint/.env.dev -f infra/docker-compose.vps.yml logs django --tail=50; exit 1; }
-            echo "Deploy successful: $REF"
+            for i in $(seq 1 30); do
+              if curl -sf http://127.0.0.1:8001/api/v1/health/ >/dev/null; then
+                echo "Deploy successful: $REF"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "Health check failed after 60s"
+            docker compose --env-file /opt/saasmint/.env.dev -f infra/docker-compose.vps.yml logs django --tail=100
+            exit 1
