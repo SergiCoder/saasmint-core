@@ -111,6 +111,52 @@ class TestCreateOrgWithOwner:
         with pytest.raises(ValueError, match="account_type=org_member"):
             _create_org_with_owner(user, "Bad Org")
 
+    def test_rebinds_existing_user_scoped_stripe_customer(self) -> None:
+        """Team checkout init saves a user-scoped StripeCustomer; the webhook
+        handler must re-bind it to the new org rather than INSERTing a
+        duplicate (UNIQUE violation on stripe_id)."""
+        from apps.billing.models import StripeCustomer
+
+        user = User.objects.create_user(
+            email="rebind@example.com",
+            full_name="Rebind",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        StripeCustomer.objects.create(stripe_id="cus_rebind", user=user, livemode=False)
+
+        org, member = _create_org_with_owner(
+            user, "Rebind Org", stripe_customer_id="cus_rebind", livemode=True
+        )
+
+        customer = StripeCustomer.objects.get(stripe_id="cus_rebind")
+        assert customer.user_id is None
+        assert customer.org_id == org.id
+        assert customer.livemode is True
+        assert member.role == OrgRole.OWNER
+
+    def test_duplicate_webhook_is_idempotent(self) -> None:
+        """A second checkout.session.completed delivery must not raise — it
+        should return the org+membership already created on the first call."""
+        from apps.billing.models import StripeCustomer
+
+        user = User.objects.create_user(
+            email="dup@example.com",
+            full_name="Dup",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        StripeCustomer.objects.create(stripe_id="cus_dup", user=user, livemode=False)
+
+        org1, member1 = _create_org_with_owner(
+            user, "Dup Org", stripe_customer_id="cus_dup", livemode=False
+        )
+        org2, member2 = _create_org_with_owner(
+            user, "Dup Org", stripe_customer_id="cus_dup", livemode=False
+        )
+
+        assert org1.id == org2.id
+        assert member1.id == member2.id
+        assert Org.objects.filter(name="Dup Org").count() == 1
+
 
 # ---------------------------------------------------------------------------
 # deactivate_org
