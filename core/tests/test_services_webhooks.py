@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 import stripe
@@ -974,3 +975,232 @@ async def test_stripe_error_from_dispatch_propagates_as_transient(monkeypatch) -
         await process_stored_event(event, stripe_id, repos)
 
     assert event_repo._store["evt_stripe_down"].error == "api down"
+
+
+# ── checkout.session.completed: mode routing + product checkout ──────────────
+
+
+def _payment_checkout_event(
+    session_id: str = "cs_prod_001",
+    product_id: str = "c2faa000-0000-0000-0000-000000000001",
+    user_id: str = "a1111111-0000-0000-0000-000000000000",
+    org_id: str | None = None,
+) -> dict[str, Any]:
+    """Build a checkout.session.completed event with mode=payment."""
+    metadata: dict[str, str] = {"product_id": product_id}
+    if org_id is not None:
+        metadata["org_id"] = org_id
+    return {
+        "id": "evt_prod_checkout",
+        "type": "checkout.session.completed",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": session_id,
+                "mode": "payment",
+                "client_reference_id": user_id,
+                "metadata": metadata,
+            }
+        },
+    }
+
+
+@pytest.mark.anyio
+async def test_payment_mode_routes_to_product_callback() -> None:
+    """A mode=payment session must invoke on_product_checkout_completed
+    (not on_team_checkout_completed, which is for subscription mode only)."""
+    event_repo = InMemoryStripeEventRepository()
+    calls: list[tuple[str, UUID, UUID, UUID | None]] = []
+    team_calls: list[tuple[object, ...]] = []
+
+    async def _on_product(sid: str, pid: UUID, uid: UUID, oid: UUID | None) -> None:
+        calls.append((sid, pid, uid, oid))
+
+    async def _on_team(*args: object) -> None:
+        team_calls.append(args)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=InMemorySubscriptionRepository(),
+        customers=InMemoryStripeCustomerRepository(),
+        plans=InMemoryPlanRepository(),
+        on_product_checkout_completed=_on_product,
+        on_team_checkout_completed=_on_team,
+    )
+    event = _payment_checkout_event()
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert len(calls) == 1
+    session_id, product_id, user_id, org_id = calls[0]
+    assert session_id == "cs_prod_001"
+    assert str(product_id) == "c2faa000-0000-0000-0000-000000000001"
+    assert str(user_id) == "a1111111-0000-0000-0000-000000000000"
+    assert org_id is None
+    assert team_calls == []
+
+
+@pytest.mark.anyio
+async def test_payment_mode_passes_org_id_when_present() -> None:
+    event_repo = InMemoryStripeEventRepository()
+    calls: list[tuple[str, UUID, UUID, UUID | None]] = []
+
+    async def _on_product(sid: str, pid: UUID, uid: UUID, oid: UUID | None) -> None:
+        calls.append((sid, pid, uid, oid))
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=InMemorySubscriptionRepository(),
+        customers=InMemoryStripeCustomerRepository(),
+        plans=InMemoryPlanRepository(),
+        on_product_checkout_completed=_on_product,
+    )
+    event = _payment_checkout_event(org_id="b2222222-0000-0000-0000-000000000000")
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert len(calls) == 1
+    assert str(calls[0][3]) == "b2222222-0000-0000-0000-000000000000"
+
+
+@pytest.mark.anyio
+async def test_payment_mode_missing_product_id_is_noop() -> None:
+    """Missing product_id metadata logs and returns — no callback invoked,
+    event still marked processed (permanent parse failure, not transient)."""
+    event_repo = InMemoryStripeEventRepository()
+    calls: list[object] = []
+
+    async def _on_product(*_args: object) -> None:
+        calls.append(_args)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=InMemorySubscriptionRepository(),
+        customers=InMemoryStripeCustomerRepository(),
+        plans=InMemoryPlanRepository(),
+        on_product_checkout_completed=_on_product,
+    )
+    event: dict[str, Any] = {
+        "id": "evt_prod_missing_pid",
+        "type": "checkout.session.completed",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "cs_no_pid",
+                "mode": "payment",
+                "client_reference_id": "a1111111-0000-0000-0000-000000000000",
+                "metadata": {},
+            }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert calls == []
+    assert event_repo._store[stripe_id].processed_at is not None
+
+
+@pytest.mark.anyio
+async def test_payment_mode_malformed_uuid_is_noop() -> None:
+    """Malformed UUIDs are logged and swallowed — the event is marked
+    processed (no transient error)."""
+    event_repo = InMemoryStripeEventRepository()
+    calls: list[object] = []
+
+    async def _on_product(*_args: object) -> None:
+        calls.append(_args)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=InMemorySubscriptionRepository(),
+        customers=InMemoryStripeCustomerRepository(),
+        plans=InMemoryPlanRepository(),
+        on_product_checkout_completed=_on_product,
+    )
+    event: dict[str, Any] = {
+        "id": "evt_prod_bad_uuid",
+        "type": "checkout.session.completed",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "cs_bad_uuid",
+                "mode": "payment",
+                "client_reference_id": "not-a-uuid",
+                "metadata": {"product_id": "also-not-a-uuid"},
+            }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert calls == []
+
+
+@pytest.mark.anyio
+async def test_payment_mode_without_callback_is_noop() -> None:
+    """When repos.on_product_checkout_completed is None, a warning is logged
+    and the event is still marked processed (no callback = no-op, not error)."""
+    event_repo = InMemoryStripeEventRepository()
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=InMemorySubscriptionRepository(),
+        customers=InMemoryStripeCustomerRepository(),
+        plans=InMemoryPlanRepository(),
+        # on_product_checkout_completed defaults to None
+    )
+    event = _payment_checkout_event()
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert event_repo._store[stripe_id].processed_at is not None
+    assert event_repo._store[stripe_id].error is None
+
+
+@pytest.mark.anyio
+async def test_subscription_mode_still_routes_to_team_callback() -> None:
+    """Subscription-mode checkouts with org metadata still go to the team
+    callback — the new routing must not regress the existing path."""
+    event_repo = InMemoryStripeEventRepository()
+    team_calls: list[tuple[object, ...]] = []
+    product_calls: list[tuple[object, ...]] = []
+
+    async def _on_team(*args: object) -> None:
+        team_calls.append(args)
+
+    async def _on_product(*args: object) -> None:
+        product_calls.append(args)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=InMemorySubscriptionRepository(),
+        customers=InMemoryStripeCustomerRepository(),
+        plans=InMemoryPlanRepository(),
+        on_team_checkout_completed=_on_team,
+        on_product_checkout_completed=_on_product,
+    )
+    event: dict[str, Any] = {
+        "id": "evt_team_sub",
+        "type": "checkout.session.completed",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "cs_team_sub",
+                "mode": "subscription",
+                "client_reference_id": "a1111111-0000-0000-0000-000000000000",
+                "customer": "cus_team_sub_ref",
+                "subscription": "sub_team_ref",
+                "metadata": {"org_name": "Acme"},
+            }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert len(team_calls) == 1
+    assert product_calls == []

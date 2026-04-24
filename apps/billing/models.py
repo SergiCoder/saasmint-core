@@ -350,9 +350,7 @@ class CreditTransaction(models.Model):
     )
     amount = models.IntegerField(help_text="Positive = grant, negative = consume.")
     reason = models.CharField(max_length=64)
-    stripe_session_id = models.CharField(
-        max_length=255, unique=True, null=True, blank=True
-    )
+    stripe_session_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

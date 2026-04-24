@@ -12,6 +12,7 @@ from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
     create_checkout_session,
+    create_product_checkout_session,
     get_or_create_customer,
     resume_subscription,
 )
@@ -216,6 +217,74 @@ async def test_create_checkout_session_with_metadata_only() -> None:
     # Metadata is now at session level, not in subscription_data
     assert call_kwargs["metadata"] == {"plan": "pro"}
     assert "subscription_data" not in call_kwargs
+
+
+# ── create_product_checkout_session ───────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_create_product_checkout_session_uses_payment_mode() -> None:
+    """One-time product purchases must be mode=payment (not subscription), and
+    must not carry subscription_data/trial — that only applies to recurring."""
+    mock_session = MagicMock()
+    mock_session.url = "https://checkout.stripe.com/pay/cs_product"
+
+    with patch("stripe.checkout.Session.create", return_value=mock_session) as mock_create:
+        url = await create_product_checkout_session(
+            stripe_customer_id="cus_abc",
+            client_reference_id="user_123",
+            price_id="price_boost_50",
+            success_url="https://example.com/ok",
+            cancel_url="https://example.com/no",
+        )
+
+    assert url == "https://checkout.stripe.com/pay/cs_product"
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["mode"] == "payment"
+    assert call_kwargs["line_items"] == [{"price": "price_boost_50", "quantity": 1}]
+    assert call_kwargs["allow_promotion_codes"] is True
+    assert call_kwargs["adaptive_pricing"] == {"enabled": True}
+    assert "subscription_data" not in call_kwargs
+    assert "metadata" not in call_kwargs
+
+
+@pytest.mark.anyio
+async def test_create_product_checkout_session_forwards_metadata() -> None:
+    """metadata must be carried through — the webhook reads product_id/org_id
+    from it to route the credit grant to the right owner."""
+    mock_session = MagicMock()
+    mock_session.url = "https://checkout.stripe.com/pay/cs_meta"
+
+    with patch("stripe.checkout.Session.create", return_value=mock_session) as mock_create:
+        await create_product_checkout_session(
+            stripe_customer_id="cus_abc",
+            client_reference_id="user_123",
+            price_id="price_boost_50",
+            success_url="https://example.com/ok",
+            cancel_url="https://example.com/no",
+            metadata={"product_id": "p_123", "org_id": "o_456"},
+        )
+
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["metadata"] == {"product_id": "p_123", "org_id": "o_456"}
+
+
+@pytest.mark.anyio
+async def test_create_product_checkout_session_forwards_locale() -> None:
+    mock_session = MagicMock()
+    mock_session.url = "https://checkout.stripe.com/pay/cs_locale"
+
+    with patch("stripe.checkout.Session.create", return_value=mock_session) as mock_create:
+        await create_product_checkout_session(
+            stripe_customer_id="cus_abc",
+            client_reference_id="user_123",
+            price_id="price_boost_50",
+            locale="es",
+            success_url="https://example.com/ok",
+            cancel_url="https://example.com/no",
+        )
+
+    assert mock_create.call_args.kwargs["locale"] == "es"
 
 
 # ── create_billing_portal_session ─────────────────────────────────────────────

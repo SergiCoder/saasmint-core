@@ -152,12 +152,18 @@ class TestGrantCreditsForSession:
         from apps.billing.models import CreditBalance, CreditTransaction
         from apps.billing.services import grant_credits_for_session
 
-        assert grant_credits_for_session(
-            stripe_session_id="cs_dup", amount=50, reason="purchase:Test", user=user
-        ) is True
-        assert grant_credits_for_session(
-            stripe_session_id="cs_dup", amount=50, reason="purchase:Test", user=user
-        ) is False
+        assert (
+            grant_credits_for_session(
+                stripe_session_id="cs_dup", amount=50, reason="purchase:Test", user=user
+            )
+            is True
+        )
+        assert (
+            grant_credits_for_session(
+                stripe_session_id="cs_dup", amount=50, reason="purchase:Test", user=user
+            )
+            is False
+        )
 
         assert CreditBalance.objects.get(user=user).balance == 50
         assert CreditTransaction.objects.filter(stripe_session_id="cs_dup").count() == 1
@@ -188,9 +194,7 @@ class TestGrantCreditsForSession:
         from apps.billing.services import grant_credits_for_session
 
         with pytest.raises(ValueError, match="positive amount"):
-            grant_credits_for_session(
-                stripe_session_id="cs_zero", amount=0, reason="x", user=user
-            )
+            grant_credits_for_session(stripe_session_id="cs_zero", amount=0, reason="x", user=user)
 
 
 @pytest.mark.django_db
@@ -201,9 +205,7 @@ class TestOnProductCheckoutCompleted:
         from apps.billing.models import CreditBalance
         from apps.billing.services import on_product_checkout_completed
 
-        async_to_sync(on_product_checkout_completed)(
-            "cs_personal", boost_product.id, user.id, None
-        )
+        async_to_sync(on_product_checkout_completed)("cs_personal", boost_product.id, user.id, None)
         assert CreditBalance.objects.get(user=user).balance == boost_product.credits
 
     def test_team_purchase_credits_the_org(self, org_member, org, boost_product):

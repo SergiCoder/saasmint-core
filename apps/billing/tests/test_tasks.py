@@ -9,7 +9,11 @@ import pytest
 from stripe import StripeError
 
 from apps.billing.models import StripeEvent
-from apps.billing.tasks import process_stripe_webhook, sync_exchange_rates
+from apps.billing.tasks import (
+    process_stripe_webhook,
+    send_subscription_cancel_notice_task,
+    sync_exchange_rates,
+)
 
 
 def _seed_event(
@@ -221,3 +225,75 @@ class TestSyncExchangeRates:
 
         assert not ExchangeRate.objects.filter(currency="usd").exists()
         assert ExchangeRate.objects.filter(currency="eur").exists()
+
+
+# ---------------------------------------------------------------------------
+# send_subscription_cancel_notice_task — fanout of transactional emails
+# ---------------------------------------------------------------------------
+
+
+class TestSendSubscriptionCancelNoticeTask:
+    def test_scheduled_action_invokes_scheduled_sender_per_recipient(self):
+        """action='scheduled' must dispatch one send_subscription_cancel_scheduled
+        call per recipient (not the resumed variant)."""
+        with (
+            patch("apps.billing.email.send_subscription_cancel_scheduled") as mock_scheduled,
+            patch("apps.billing.email.send_subscription_cancel_resumed") as mock_resumed,
+        ):
+            send_subscription_cancel_notice_task.apply(
+                args=[["a@example.com", "b@example.com"], "Pro Monthly", "scheduled"]
+            ).get()
+
+        assert mock_scheduled.call_count == 2
+        assert mock_scheduled.call_args_list[0].args == ("a@example.com", "Pro Monthly")
+        assert mock_scheduled.call_args_list[1].args == ("b@example.com", "Pro Monthly")
+        mock_resumed.assert_not_called()
+
+    def test_resumed_action_invokes_resumed_sender(self):
+        """Any action != 'scheduled' routes to the resumed sender."""
+        with (
+            patch("apps.billing.email.send_subscription_cancel_resumed") as mock_resumed,
+            patch("apps.billing.email.send_subscription_cancel_scheduled") as mock_scheduled,
+        ):
+            send_subscription_cancel_notice_task.apply(
+                args=[["a@example.com"], "Pro Monthly", "resumed"]
+            ).get()
+
+        mock_resumed.assert_called_once_with("a@example.com", "Pro Monthly")
+        mock_scheduled.assert_not_called()
+
+    def test_failure_for_one_recipient_does_not_block_others(self):
+        """A sender raising for one address must not short-circuit the loop —
+        remaining recipients must still be attempted. The task swallows the
+        exception (per implementation) because Resend calls are idempotent and
+        the billing state change is authoritative."""
+
+        def _fail_on_bad(email: str, _label: str) -> None:
+            if email == "bad@example.com":
+                raise RuntimeError("resend boom")
+
+        with patch(
+            "apps.billing.email.send_subscription_cancel_scheduled",
+            side_effect=_fail_on_bad,
+        ) as mock_scheduled:
+            send_subscription_cancel_notice_task.apply(
+                args=[
+                    ["a@example.com", "bad@example.com", "c@example.com"],
+                    "Pro Monthly",
+                    "scheduled",
+                ]
+            ).get()
+
+        assert mock_scheduled.call_count == 3
+        sent = [c.args[0] for c in mock_scheduled.call_args_list]
+        assert sent == ["a@example.com", "bad@example.com", "c@example.com"]
+
+    def test_empty_recipient_list_is_noop(self):
+        with (
+            patch("apps.billing.email.send_subscription_cancel_scheduled") as mock_scheduled,
+            patch("apps.billing.email.send_subscription_cancel_resumed") as mock_resumed,
+        ):
+            send_subscription_cancel_notice_task.apply(args=[[], "Pro Monthly", "scheduled"]).get()
+
+        mock_scheduled.assert_not_called()
+        mock_resumed.assert_not_called()
