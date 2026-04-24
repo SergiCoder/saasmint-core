@@ -131,18 +131,25 @@ def _create_org_with_owner(
     if user.account_type != AccountType.ORG_MEMBER:
         raise ValueError(f"User {user.id} must have account_type=org_member to create an org")
 
-    if stripe_customer_id is not None:
-        already = (
-            StripeCustomer.objects.select_related("org")
-            .filter(stripe_id=stripe_customer_id, org__isnull=False)
-            .first()
-        )
-        if already is not None and already.org is not None:
-            member = OrgMember.objects.filter(org=already.org, user=user).first()
-            if member is not None:
-                return already.org, member
-
     with transaction.atomic():
+        # Duplicate-webhook short-circuit has to happen INSIDE the transaction
+        # with SELECT FOR UPDATE — otherwise two concurrent deliveries can
+        # both pass a pre-check, both create an Org, and the second wins the
+        # StripeCustomer reassignment, orphaning the first Org.
+        existing_customer = None
+        if stripe_customer_id is not None:
+            existing_customer = (
+                StripeCustomer.objects.select_for_update()
+                .filter(stripe_id=stripe_customer_id)
+                .first()
+            )
+            if existing_customer is not None and existing_customer.org_id is not None:
+                already_org = Org.objects.filter(id=existing_customer.org_id).first()
+                if already_org is not None:
+                    member = OrgMember.objects.filter(org=already_org, user=user).first()
+                    if member is not None:
+                        return already_org, member
+
         slug = generate_unique_slug(org_name)
         org = Org.objects.create(
             name=org_name,
@@ -156,22 +163,17 @@ def _create_org_with_owner(
             is_billing=True,
         )
         if stripe_customer_id is not None:
-            existing = (
-                StripeCustomer.objects.select_for_update()
-                .filter(stripe_id=stripe_customer_id)
-                .first()
-            )
-            if existing is None:
+            if existing_customer is None:
                 StripeCustomer.objects.create(
                     stripe_id=stripe_customer_id,
                     org=org,
                     livemode=livemode,
                 )
             else:
-                existing.user = None
-                existing.org = org
-                existing.livemode = livemode
-                existing.save(update_fields=["user", "org", "livemode"])
+                existing_customer.user = None
+                existing_customer.org = org
+                existing_customer.livemode = livemode
+                existing_customer.save(update_fields=["user", "org", "livemode"])
     return org, member
 
 
