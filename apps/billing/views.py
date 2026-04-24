@@ -16,7 +16,7 @@ from drf_spectacular.utils import (
 )
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import APIException, NotFound, ValidationError
+from rest_framework.exceptions import APIException, NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -160,8 +160,8 @@ def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
     return _validate_quantity_for_context(PlanContext(plan_price.plan.context), quantity)
 
 
-async def _resolve_billing_customer_id(user: User) -> UUID | None:
-    """Return the StripeCustomer id that owns billing for *user*, or None.
+async def _resolve_billing_customer(user: User) -> StripeCustomer | None:
+    """Return the StripeCustomer that owns billing for *user*, or None.
 
     PERSONAL users own their own customer; ORG_MEMBER users get the customer
     attached to the active org they belong to (the billing authority is
@@ -182,10 +182,8 @@ async def _resolve_billing_customer_id(user: User) -> UUID | None:
         )
         if membership is None:
             return None
-        customer = await repos.customers.get_by_org_id(membership.org_id)
-    else:
-        customer = await repos.customers.get_by_user_id(user.id)
-    return customer.id if customer is not None else None
+        return await repos.customers.get_by_org_id(membership.org_id)
+    return await repos.customers.get_by_user_id(user.id)
 
 
 async def _get_customer_and_paid_subscription(
@@ -200,10 +198,7 @@ async def _get_customer_and_paid_subscription(
     for ``None``. Raises NotFound when the customer or paid sub is missing.
     """
     repos = get_billing_repos()
-    customer_id = await _resolve_billing_customer_id(user)
-    if customer_id is None:
-        raise NotFound("No Stripe customer found.")
-    customer = await repos.customers.get_by_id(customer_id)
+    customer = await _resolve_billing_customer(user)
     if customer is None:
         raise NotFound("No Stripe customer found.")
     sub = await repos.subscriptions.get_active_for_customer(customer.id)
@@ -225,12 +220,16 @@ def _get_active_plan_price(plan_price_id: UUID) -> PlanPrice:
 
 
 def _get_active_product_price(product_price_id: UUID) -> ProductPrice:
-    """Validate a ProductPrice with *product_price_id* exists and is active."""
-    product_price = (
-        ProductPrice.objects.select_related("product")
-        .filter(id=product_price_id, product__is_active=True)
-        .first()
-    )
+    """Validate a ProductPrice with *product_price_id* exists and is active.
+
+    The view only reads ``product_id`` (the FK column, already on the row) and
+    ``stripe_price_id`` off the result, so ``select_related("product")`` would
+    hydrate a Product we never touch — ``product__is_active=True`` still uses
+    a JOIN in the WHERE clause, just without pulling the row into Python.
+    """
+    product_price = ProductPrice.objects.filter(
+        id=product_price_id, product__is_active=True
+    ).first()
     if product_price is None:
         raise NotFound("Invalid product price.")
     return product_price
@@ -420,8 +419,6 @@ def _require_owner_for_product_purchase(user: User) -> UUID | None:
     if user.account_type != AccountType.ORG_MEMBER:
         return None
 
-    from rest_framework.exceptions import PermissionDenied
-
     from apps.orgs.models import OrgMember, OrgRole
 
     owner = (
@@ -516,19 +513,20 @@ class CreditBalanceView(BillingScopedView):
         if user.account_type == AccountType.ORG_MEMBER:
             from apps.orgs.models import OrgMember
 
-            membership = (
+            # Fetch only the org_id — get_credit_balance filters by FK, so we
+            # don't need to hydrate the full Org row via select_related.
+            org_id = (
                 OrgMember.objects.filter(
                     user_id=user.id,
                     org__is_active=True,
                     org__deleted_at__isnull=True,
                 )
-                .select_related("org")
-                .only("org")
+                .values_list("org_id", flat=True)
                 .first()
             )
-            if membership is None:
+            if org_id is None:
                 raise NotFound("No active org found.")
-            balance = get_credit_balance(org=membership.org)
+            balance = get_credit_balance(org_id=org_id)
             scope = "org"
         else:
             balance = get_credit_balance(user=user)
@@ -595,8 +593,6 @@ def _require_billing_authority(user: User) -> UUID | None:
     """
     if user.account_type != AccountType.ORG_MEMBER:
         return None
-
-    from rest_framework.exceptions import PermissionDenied
 
     from apps.orgs.models import OrgMember
 
