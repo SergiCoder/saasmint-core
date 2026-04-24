@@ -12,7 +12,12 @@ from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
-from drf_spectacular.utils import OpenApiParameter, extend_schema, inline_serializer
+from drf_spectacular.utils import (
+    OpenApiParameter,
+    OpenApiResponse,
+    extend_schema,
+    inline_serializer,
+)
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.exceptions import APIException, NotFound, PermissionDenied
@@ -192,7 +197,29 @@ class OrgDetailView(OrgsScopedView):
         org.save(update_fields=list(ser.validated_data.keys()))
         return Response(OrgSerializer(org).data)
 
-    # Org deletion is admin-only (Django admin action). No API endpoint.
+    @extend_schema(
+        request=None,
+        responses={
+            204: OpenApiResponse(description="Org deleted."),
+            403: OpenApiResponse(description="Caller is not the org owner."),
+            404: OpenApiResponse(description="Org does not exist or is inaccessible."),
+        },
+        description=(
+            "Delete the organization (owner only). Cascades to memberships,"
+            " invitations, and single-org member user accounts, and immediately"
+            " cancels the Stripe subscription (no refund). If the caller's only"
+            " org is this one, their own user account is deleted too — any"
+            " existing auth tokens will fail on their next request."
+        ),
+        tags=["orgs"],
+    )
+    def delete(self, request: Request, org_id: UUID) -> Response:
+        from apps.orgs.services import delete_org
+
+        user = get_user(request)
+        org, _ = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
+        delete_org(org)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------

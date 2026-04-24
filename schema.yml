@@ -807,6 +807,32 @@ paths:
               schema:
                 $ref: '#/components/schemas/Org'
           description: ''
+    delete:
+      operationId: orgs_destroy
+      description: Delete the organization (owner only). Cascades to memberships,
+        invitations, and single-org member user accounts, and immediately cancels
+        the Stripe subscription (no refund). If the caller's only org is this one,
+        their own user account is deleted too — any existing auth tokens will fail
+        on their next request.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: Org deleted.
+        '403':
+          description: Caller is not the org owner.
+        '404':
+          description: Org does not exist or is inaccessible.
   /api/v1/orgs/{org_id}/invitations/:
     get:
       operationId: orgs_invitations_retrieve

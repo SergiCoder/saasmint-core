@@ -134,11 +134,73 @@ class TestOrgDetailViewPATCH:
 
 @pytest.mark.django_db
 class TestOrgDetailViewDELETE:
-    """Org deletion is admin-only — no API DELETE endpoint."""
+    """Org deletion is restricted to owners via DELETE /api/v1/orgs/{id}/."""
 
-    def test_delete_not_allowed(self, authed_client, org, owner_membership):
-        resp = authed_client.delete(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 405
+    @patch("apps.orgs.tasks.cancel_stripe_subs_task")
+    def test_owner_can_delete_org(self, _mock_cancel, authed_client, org, owner_membership):
+        org_id = org.id
+        resp = authed_client.delete(f"/api/v1/orgs/{org_id}/")
+        assert resp.status_code == 204
+        assert not Org.objects.filter(id=org_id).exists()
+
+    @patch("apps.orgs.tasks.cancel_stripe_subs_task")
+    def test_owner_delete_cancels_stripe_subscription(
+        self, mock_cancel, authed_client, org, owner_membership
+    ):
+        from django.test import TestCase
+
+        from apps.billing.models import Plan, StripeCustomer, Subscription
+
+        plan = Plan.objects.create(
+            name="Team Monthly", context="team", interval="month", is_active=True
+        )
+        customer = StripeCustomer.objects.create(stripe_id="cus_delete", org=org, livemode=False)
+        Subscription.objects.create(
+            stripe_id="sub_delete",
+            stripe_customer=customer,
+            status="active",
+            plan=plan,
+            quantity=2,
+            current_period_start=timezone.now(),
+            current_period_end=timezone.now() + timedelta(days=30),
+        )
+
+        # delete_org dispatches via transaction.on_commit, which is a no-op
+        # inside the rolled-back test transaction unless we capture it.
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            resp = authed_client.delete(f"/api/v1/orgs/{org.id}/")
+
+        assert resp.status_code == 204
+        mock_cancel.delay.assert_called_once()
+        assert mock_cancel.delay.call_args.args[0] == ["sub_delete"]
+
+    def test_admin_cannot_delete_org(self, admin_client, org, admin_membership):
+        resp = admin_client.delete(f"/api/v1/orgs/{org.id}/")
+        assert resp.status_code == 403
+        assert Org.objects.filter(id=org.id).exists()
+
+    def test_member_cannot_delete_org(self, member_client, org, member_membership):
+        resp = member_client.delete(f"/api/v1/orgs/{org.id}/")
+        assert resp.status_code == 403
+        assert Org.objects.filter(id=org.id).exists()
+
+    def test_non_member_gets_403(self, authed_client, other_user, db):
+        """Access helper returns 403 (not 404) for non-members to avoid leaking
+        org existence to an authenticated outsider."""
+        other_org = Org.objects.create(name="Other", slug="other", created_by=other_user)
+        OrgMember.objects.create(org=other_org, user=other_user, role=OrgRole.OWNER)
+        resp = authed_client.delete(f"/api/v1/orgs/{other_org.id}/")
+        assert resp.status_code == 403
+        assert Org.objects.filter(id=other_org.id).exists()
+
+    def test_nonexistent_org_gets_404(self, authed_client):
+        resp = authed_client.delete(f"/api/v1/orgs/{uuid4()}/")
+        assert resp.status_code == 404
+
+    def test_unauthenticated_rejected(self, org):
+        client = APIClient()
+        resp = client.delete(f"/api/v1/orgs/{org.id}/")
+        assert resp.status_code in (401, 403)
 
 
 # ---------------------------------------------------------------------------
@@ -720,9 +782,7 @@ class TestInvitationAcceptView:
             format="json",
         )
         assert resp.status_code == 201
-        assert OrgMember.objects.filter(
-            org=org, user__email="late-accept@example.com"
-        ).exists()
+        assert OrgMember.objects.filter(org=org, user__email="late-accept@example.com").exists()
 
 
 @pytest.mark.django_db
