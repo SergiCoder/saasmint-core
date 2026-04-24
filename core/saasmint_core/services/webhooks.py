@@ -32,6 +32,10 @@ OnTeamCheckoutCompleted = Callable[[UUID, str, str, bool, str | None], Awaitable
 # Args: org_id
 OnOrgSubscriptionCanceled = Callable[[UUID], Awaitable[None]]
 
+# Callback type for product (one-time) checkout completion.
+# Args: stripe_session_id, product_id, user_id, org_id (None for personal buys)
+OnProductCheckoutCompleted = Callable[[str, UUID, UUID, UUID | None], Awaitable[None]]
+
 
 @dataclass(frozen=True)
 class WebhookRepos:
@@ -41,6 +45,7 @@ class WebhookRepos:
     plans: PlanRepository
     on_team_checkout_completed: OnTeamCheckoutCompleted | None = field(default=None)
     on_org_subscription_canceled: OnOrgSubscriptionCanceled | None = field(default=None)
+    on_product_checkout_completed: OnProductCheckoutCompleted | None = field(default=None)
 
 
 async def process_stored_event(
@@ -99,7 +104,16 @@ def _ts_to_dt(value: int | float | None) -> datetime | None:
 
 
 async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRepos) -> None:
-    """Handle checkout.session.completed — create org for team plan checkouts."""
+    """Handle checkout.session.completed — route by mode to the right handler.
+
+    ``mode=payment`` sessions are one-time product purchases (credit packs);
+    ``mode=subscription`` sessions are plan checkouts, where the team-checkout
+    branch runs only when ``metadata.org_name`` is present.
+    """
+    if session_data.get("mode") == "payment":
+        await _on_product_checkout_completed(session_data, repos)
+        return
+
     metadata = session_data.get("metadata") or {}
     org_name = metadata.get("org_name")
 
@@ -130,6 +144,47 @@ async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRep
         logger.warning(
             "Team checkout completed for user %s but no callback registered",
             user_id,
+        )
+
+
+async def _on_product_checkout_completed(session_data: dict[str, Any], repos: WebhookRepos) -> None:
+    """Handle a mode=payment checkout session — grant credits for a product purchase."""
+    session_id = session_data.get("id")
+    if not session_id:
+        logger.warning("product checkout.session.completed missing session id")
+        return
+
+    metadata = session_data.get("metadata") or {}
+    product_ref = metadata.get("product_id")
+    if not product_ref:
+        logger.warning("product checkout session %s missing product_id metadata", session_id)
+        return
+
+    client_ref = session_data.get("client_reference_id")
+    if not client_ref:
+        logger.warning("product checkout session %s missing client_reference_id", session_id)
+        return
+
+    try:
+        product_id = UUID(product_ref)
+        user_id = UUID(client_ref)
+    except ValueError:
+        logger.warning("product checkout session %s has malformed id metadata", session_id)
+        return
+
+    org_ref = metadata.get("org_id")
+    try:
+        org_id = UUID(org_ref) if org_ref else None
+    except ValueError:
+        logger.warning("product checkout session %s has malformed org_id metadata", session_id)
+        return
+
+    if repos.on_product_checkout_completed is not None:
+        await repos.on_product_checkout_completed(str(session_id), product_id, user_id, org_id)
+    else:
+        logger.warning(
+            "Product checkout completed (session %s) but no callback registered",
+            session_id,
         )
 
 

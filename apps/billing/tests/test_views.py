@@ -1165,3 +1165,203 @@ class TestCancelNoticeEmail:
         assert resp.status_code == 202
         recipients = mock_task.delay.call_args.args[0]
         assert set(recipients) == {"orgowner@example.com", "finance@example.com"}
+
+
+# ---------------------------------------------------------------------------
+# Product checkout (POST /api/v1/billing/product-checkout-sessions/)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def boost_product(db):
+    from apps.billing.models import Product, ProductPrice, ProductType
+
+    product = Product.objects.create(
+        name="50 Credits", type=ProductType.ONE_TIME, credits=50, is_active=True
+    )
+    ProductPrice.objects.create(product=product, stripe_price_id="price_boost_50", amount=499)
+    return product
+
+
+@pytest.fixture
+def boost_product_price(boost_product):
+    return boost_product.price
+
+
+@pytest.mark.django_db
+class TestProductCheckoutPersonal:
+    @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_personal_user_can_purchase(
+        self,
+        mock_customer,
+        mock_session,
+        authed_client,
+        boost_product,
+        boost_product_price,
+        mock_stripe_customer,
+    ):
+        mock_customer.return_value = mock_stripe_customer
+        mock_session.return_value = "https://checkout.stripe.com/product"
+
+        resp = authed_client.post(
+            "/api/v1/billing/product-checkout-sessions/",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["url"] == "https://checkout.stripe.com/product"
+        metadata = mock_session.call_args.kwargs["metadata"]
+        assert metadata == {"product_id": str(boost_product.id)}
+        assert mock_session.call_args.kwargs["price_id"] == "price_boost_50"
+
+    def test_invalid_product_price_returns_404(self, authed_client):
+        resp = authed_client.post(
+            "/api/v1/billing/product-checkout-sessions/",
+            {
+                "product_price_id": str(uuid4()),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestProductCheckoutTeamOwnership:
+    def _setup_org(self, role, is_billing=False):
+        from apps.orgs.models import Org, OrgMember
+        from apps.users.models import AccountType, User
+
+        user = User.objects.create_user(
+            email=f"{role.value}@example.com",
+            full_name=f"{role.value} User",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        org = Org.objects.create(
+            name="Team Org", slug="team-org", created_by=user, is_active=True
+        )
+        OrgMember.objects.create(org=org, user=user, role=role, is_billing=is_billing)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return user, org, client
+
+    @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_org_owner_can_purchase_and_metadata_carries_org_id(
+        self, mock_customer, mock_session, boost_product, boost_product_price, mock_stripe_customer
+    ):
+        from apps.orgs.models import OrgRole
+
+        _, org, client = self._setup_org(OrgRole.OWNER, is_billing=True)
+        mock_customer.return_value = mock_stripe_customer
+        mock_session.return_value = "https://checkout.stripe.com/team-product"
+
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        metadata = mock_session.call_args.kwargs["metadata"]
+        assert metadata == {"product_id": str(boost_product.id), "org_id": str(org.id)}
+        # Customer resolution must use org_id, not user_id, so credits bill to the org customer.
+        assert mock_customer.call_args.kwargs.get("org_id") == org.id
+        assert "user_id" not in mock_customer.call_args.kwargs
+
+    def test_org_admin_cannot_purchase(self, boost_product_price):
+        from apps.orgs.models import OrgRole
+
+        _, _, client = self._setup_org(OrgRole.ADMIN)
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 403
+
+    def test_org_member_cannot_purchase(self, boost_product_price):
+        from apps.orgs.models import OrgRole
+
+        _, _, client = self._setup_org(OrgRole.MEMBER)
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/billing/credits/me/
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestCreditBalanceView:
+    def test_personal_user_gets_zero_by_default(self, authed_client, user):
+        resp = authed_client.get("/api/v1/billing/credits/me/")
+        assert resp.status_code == 200
+        assert resp.data == {"balance": 0, "scope": "user"}
+
+    def test_personal_user_sees_own_balance(self, authed_client, user):
+        from apps.billing.models import CreditBalance
+
+        CreditBalance.objects.create(user=user, balance=125)
+        resp = authed_client.get("/api/v1/billing/credits/me/")
+        assert resp.status_code == 200
+        assert resp.data == {"balance": 125, "scope": "user"}
+
+    def test_org_member_sees_org_balance(self, org_member_user, team_org_setup):
+        from apps.billing.models import CreditBalance
+
+        org, _, _ = team_org_setup
+        CreditBalance.objects.create(org=org, balance=500)
+        client = APIClient()
+        client.force_authenticate(user=org_member_user)
+        resp = client.get("/api/v1/billing/credits/me/")
+        assert resp.status_code == 200
+        assert resp.data == {"balance": 500, "scope": "org"}
+
+    def test_non_billing_member_still_sees_org_balance(self, team_org_setup):
+        """Read access to the org's credit balance is granted to any member,
+        consistent with /subscriptions/me/ read semantics."""
+        from apps.billing.models import CreditBalance
+        from apps.orgs.models import OrgMember, OrgRole
+        from apps.users.models import AccountType, User
+
+        org, _, _ = team_org_setup
+        CreditBalance.objects.create(org=org, balance=42)
+        member = User.objects.create_user(
+            email="plain-credits@example.com",
+            full_name="Plain",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
+        client = APIClient()
+        client.force_authenticate(user=member)
+
+        resp = client.get("/api/v1/billing/credits/me/")
+        assert resp.status_code == 200
+        assert resp.data == {"balance": 42, "scope": "org"}
+
+    def test_org_member_without_membership_returns_404(self, org_member_client):
+        resp = org_member_client.get("/api/v1/billing/credits/me/")
+        assert resp.status_code == 404

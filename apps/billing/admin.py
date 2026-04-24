@@ -4,6 +4,8 @@ from django.contrib import admin
 from django.http import HttpRequest
 
 from apps.billing.models import (
+    CreditBalance,
+    CreditTransaction,
     ExchangeRate,
     Plan,
     PlanPrice,
@@ -122,4 +124,47 @@ class StripeEventAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-st
     def has_delete_permission(self, request: HttpRequest, obj: object = None) -> bool:
         # StripeEvent rows are the idempotency ledger for webhook processing —
         # deleting them would allow Stripe to replay already-handled events.
+        return False
+
+
+@admin.register(CreditBalance)
+class CreditBalanceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
+    list_display = ("owner", "balance", "updated_at")
+    readonly_fields = ("id", "created_at", "updated_at")
+    list_select_related = ("user", "org")
+
+    @admin.display(description="Owner")
+    def owner(self, obj: CreditBalance) -> str:
+        return f"user: {obj.user}" if obj.user_id else f"org: {obj.org}"
+
+
+@admin.register(CreditTransaction)
+class CreditTransactionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
+    list_display = ("owner", "amount", "reason", "stripe_session_id", "created_at")
+    list_filter = ("reason",)
+    search_fields = ("stripe_session_id", "reason")
+    readonly_fields = (
+        "id",
+        "user",
+        "org",
+        "amount",
+        "reason",
+        "stripe_session_id",
+        "created_at",
+    )
+    list_select_related = ("user", "org")
+
+    @admin.display(description="Owner")
+    def owner(self, obj: CreditTransaction) -> str:
+        return f"user: {obj.user}" if obj.user_id else f"org: {obj.org}"
+
+    def has_add_permission(self, request: HttpRequest) -> bool:
+        return False
+
+    def has_change_permission(self, request: HttpRequest, obj: object = None) -> bool:
+        return False
+
+    def has_delete_permission(self, request: HttpRequest, obj: object = None) -> bool:
+        # CreditTransaction is an immutable audit log — deletion would
+        # break balance reconstruction and idempotency.
         return False

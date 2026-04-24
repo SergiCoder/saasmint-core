@@ -101,6 +101,41 @@ async def create_checkout_session(
     return session.url  # type: ignore[return-value]  # Stripe stub types url as str | None but hosted checkout always returns str
 
 
+async def create_product_checkout_session(
+    *,
+    stripe_customer_id: str,
+    price_id: str,
+    client_reference_id: str,
+    locale: str = "en",
+    success_url: str,
+    cancel_url: str,
+    metadata: dict[str, str] | None = None,
+) -> str:
+    """Create a Stripe Checkout Session for a one-time product purchase.
+
+    Uses ``mode=payment`` rather than ``mode=subscription``, so there's no
+    ``subscription_data``/trial applicable. ``metadata`` is carried through to
+    ``checkout.session.completed`` so the webhook can grant credits to the
+    right owner (user or org).
+    """
+    params: dict[str, object] = {
+        "customer": stripe_customer_id,
+        "client_reference_id": client_reference_id,
+        "mode": "payment",
+        "line_items": [{"price": price_id, "quantity": 1}],
+        "locale": locale,
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "allow_promotion_codes": True,
+        "adaptive_pricing": {"enabled": True},
+    }
+    if metadata is not None:
+        params["metadata"] = metadata
+
+    session = await asyncio.to_thread(stripe.checkout.Session.create, **params)  # type: ignore[arg-type]  # Stripe stub can't validate **kwargs shape
+    return session.url  # type: ignore[return-value]  # Stripe stub types url as str | None but hosted checkout always returns str
+
+
 async def create_billing_portal_session(
     *,
     stripe_customer_id: str,

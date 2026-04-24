@@ -27,6 +27,7 @@ from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
     create_checkout_session,
+    create_product_checkout_session,
     get_or_create_customer,
     resume_subscription,
 )
@@ -37,20 +38,28 @@ from saasmint_core.services.subscriptions import (
 )
 
 from apps.base_views import BillingScopedView
-from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES, ExchangeRate, PlanContext, PlanPrice
+from apps.billing.models import (
+    ACTIVE_SUBSCRIPTION_STATUSES,
+    ExchangeRate,
+    PlanContext,
+    PlanPrice,
+    ProductPrice,
+)
 from apps.billing.models import Plan as PlanModel
 from apps.billing.models import Product as ProductModel
 from apps.billing.models import Subscription as SubscriptionModel
 from apps.billing.repositories import get_billing_repos
 from apps.billing.serializers import (
     CheckoutRequestSerializer,
+    CreditBalanceSerializer,
     PlanSerializer,
     PortalRequestSerializer,
+    ProductCheckoutRequestSerializer,
     ProductSerializer,
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
-from apps.billing.services import plan_context_for
+from apps.billing.services import get_credit_balance, plan_context_for
 from apps.billing.tasks import send_subscription_cancel_notice_task
 from apps.users.models import AccountType, User
 from helpers import get_user
@@ -213,6 +222,18 @@ def _get_active_plan_price(plan_price_id: UUID) -> PlanPrice:
     if plan_price is None:
         raise NotFound("Invalid plan price.")
     return plan_price
+
+
+def _get_active_product_price(product_price_id: UUID) -> ProductPrice:
+    """Validate a ProductPrice with *product_price_id* exists and is active."""
+    product_price = (
+        ProductPrice.objects.select_related("product")
+        .filter(id=product_price_id, product__is_active=True)
+        .first()
+    )
+    if product_price is None:
+        raise NotFound("Invalid product price.")
+    return product_price
 
 
 def _catalog_envelope(results: list[dict[str, object]]) -> dict[str, object]:
@@ -385,6 +406,135 @@ class PortalSessionView(BillingScopedView):
 
         url = async_to_sync(_do)()
         return Response({"url": url})
+
+
+def _require_owner_for_product_purchase(user: User) -> UUID | None:
+    """Authorize a credit purchase. Returns ``org_id`` for team buys, ``None`` for personal.
+
+    PERSONAL: always allowed, credits go to the user's own balance.
+    ORG_MEMBER: must hold ``role=OWNER`` on an active org; admin/member → 403.
+    Unlike subscription mutations (which gate on ``is_billing``), credit
+    purchases are owner-only — the spend authority sits with the principal,
+    not the delegated billing contact.
+    """
+    if user.account_type != AccountType.ORG_MEMBER:
+        return None
+
+    from rest_framework.exceptions import PermissionDenied
+
+    from apps.orgs.models import OrgMember, OrgRole
+
+    owner = (
+        OrgMember.objects.filter(
+            user_id=user.id,
+            role=OrgRole.OWNER,
+            org__is_active=True,
+            org__deleted_at__isnull=True,
+        )
+        .only("org_id")
+        .first()
+    )
+    if owner is None:
+        raise PermissionDenied("Only the org owner can purchase credits for the team.")
+    return owner.org_id
+
+
+class ProductCheckoutSessionView(BillingScopedView):
+    """POST /api/v1/billing/product-checkout-sessions/ — one-time product purchase."""
+
+    @extend_schema(
+        request=ProductCheckoutRequestSerializer,
+        responses={
+            200: inline_serializer("ProductCheckoutResponse", {"url": drf_serializers.URLField()}),
+            403: OpenApiResponse(
+                description=("Caller is an ORG_MEMBER without ``role=OWNER`` on their active org.")
+            ),
+            404: OpenApiResponse(description="Invalid product price."),
+        },
+        description=(
+            "Create a Stripe Checkout Session (``mode=payment``) for a one-time"
+            " product purchase (credit pack). PERSONAL users buy for themselves;"
+            " ORG_MEMBER owners buy for the org. Admins and regular members are"
+            " rejected with 403."
+        ),
+        tags=["billing"],
+    )
+    def post(self, request: Request) -> Response:
+        user = get_user(request)
+        ser = ProductCheckoutRequestSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        product_price = _get_active_product_price(data["product_price_id"])
+        org_id = _require_owner_for_product_purchase(user)
+
+        metadata: dict[str, str] = {"product_id": str(product_price.product_id)}
+        if org_id is not None:
+            metadata["org_id"] = str(org_id)
+
+        async def _do() -> str:
+            customer_kwargs: dict[str, object] = {
+                "email": str(user.email),
+                "name": user.full_name,
+                "locale": user.preferred_locale,
+                "customer_repo": get_billing_repos().customers,
+            }
+            if org_id is not None:
+                customer_kwargs["org_id"] = org_id
+            else:
+                customer_kwargs["user_id"] = user.id
+            customer = await get_or_create_customer(**customer_kwargs)  # type: ignore[arg-type]  # dynamic kwargs: user_id or org_id set by branch above
+            return await create_product_checkout_session(
+                stripe_customer_id=customer.stripe_id,
+                client_reference_id=str(user.id),
+                price_id=product_price.stripe_price_id,
+                locale=user.preferred_locale,
+                success_url=data["success_url"],
+                cancel_url=data["cancel_url"],
+                metadata=metadata,
+            )
+
+        url = async_to_sync(_do)()
+        return Response({"url": url})
+
+
+class CreditBalanceView(BillingScopedView):
+    """GET /api/v1/billing/credits/me/ — read the caller's credit balance."""
+
+    @extend_schema(
+        responses={200: CreditBalanceSerializer},
+        description=(
+            "Return the caller's current credit balance. PERSONAL users see their"
+            " own balance; ORG_MEMBER users see their org's balance (readable by"
+            " any active member)."
+        ),
+        tags=["billing"],
+    )
+    def get(self, request: Request) -> Response:
+        user = get_user(request)
+
+        if user.account_type == AccountType.ORG_MEMBER:
+            from apps.orgs.models import OrgMember
+
+            membership = (
+                OrgMember.objects.filter(
+                    user_id=user.id,
+                    org__is_active=True,
+                    org__deleted_at__isnull=True,
+                )
+                .select_related("org")
+                .only("org")
+                .first()
+            )
+            if membership is None:
+                raise NotFound("No active org found.")
+            balance = get_credit_balance(org=membership.org)
+            scope = "org"
+        else:
+            balance = get_credit_balance(user=user)
+            scope = "user"
+
+        return Response(CreditBalanceSerializer({"balance": balance, "scope": scope}).data)
 
 
 def _get_active_subscription_for_user(user: User) -> SubscriptionModel:
