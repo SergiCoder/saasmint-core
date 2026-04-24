@@ -36,12 +36,14 @@ class SecurityHeadersMiddleware:
                     f"worker-src blob:; "
                     f"connect-src 'self' {cdn}"
                 )
-            elif path.startswith("/admin/") or path.startswith("/hijack/"):
-                # Django admin and DRF browsable API rely on inline styles.
-                # Explicit `frame-ancestors 'self'` blocks third-party sites
-                # from embedding the admin in an iframe (clickjacking defense)
-                # — the top-level API CSP sets this to 'none', but the admin
-                # CSP doesn't inherit from it.
+            elif path.startswith(("/admin/", "/hijack/", "/dashboard/")):
+                # Server-rendered HTML surfaces — Django admin, hijack acquire/
+                # release, and the /dashboard/ landing page used by the hijack
+                # flow — rely on the admin CSS bundle (inline styles + self
+                # scripts). Explicit `frame-ancestors 'self'` blocks third-party
+                # sites from embedding these in an iframe (clickjacking defense)
+                # — the top-level API CSP sets this to 'none', but the admin CSP
+                # doesn't inherit from it.
                 response["Content-Security-Policy"] = (
                     "default-src 'self'; script-src 'self'; "
                     "style-src 'self' 'unsafe-inline'; frame-ancestors 'self'"

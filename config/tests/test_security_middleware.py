@@ -93,6 +93,17 @@ class TestCSPOptIn:
         assert "frame-ancestors 'self'" in csp
         assert "default-src 'self'" in csp
 
+    def test_dashboard_path_gets_moderate_csp(self) -> None:
+        """Dashboard is the hijack landing page and renders server-side HTML —
+        must allow the admin/hijack CSS to load rather than the strict API CSP."""
+        factory = RequestFactory()
+        mw = SecurityHeadersMiddleware(_html_response)
+        resp = mw(factory.get("/dashboard/"))
+        csp = resp["Content-Security-Policy"]
+        assert "style-src 'self' 'unsafe-inline'" in csp
+        assert "frame-ancestors 'self'" in csp
+        assert "default-src 'self'" in csp
+
     def test_admin_csp_is_distinct_from_api_csp(self) -> None:
         factory = RequestFactory()
         mw = SecurityHeadersMiddleware(_html_response)
