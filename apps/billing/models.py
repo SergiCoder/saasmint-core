@@ -274,3 +274,105 @@ class StripeEvent(models.Model):
 
     def __str__(self) -> str:
         return f"{self.stripe_id} ({self.type})"
+
+
+class CreditBalance(models.Model):
+    """Current credit balance for a user or an org.
+
+    Exactly one of ``user``/``org`` is set — the XOR check mirrors
+    :class:`StripeCustomer` so credit operations route the same way as billing.
+    The row is a denormalised cache; :class:`CreditTransaction` is the audit log
+    and the source of idempotency (unique ``stripe_session_id``).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField(
+        "users.User",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="credit_balance",
+    )
+    org = models.OneToOneField(
+        "orgs.Org",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="credit_balance",
+    )
+    balance = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "credit_balances"
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.CheckConstraint(
+                condition=(
+                    models.Q(user_id__isnull=False, org_id__isnull=True)
+                    | models.Q(user_id__isnull=True, org_id__isnull=False)
+                ),
+                name="creditbalance_has_owner",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(balance__gte=0),
+                name="creditbalance_non_negative",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        owner = self.user if self.user_id else self.org
+        return f"{owner}: {self.balance} credits"
+
+
+class CreditTransaction(models.Model):
+    """Ledger row for every credit grant or consume event.
+
+    Unique on ``stripe_session_id`` (when set) so inserting twice for the same
+    Stripe Checkout session is a noop — gives free idempotency when a
+    ``checkout.session.completed`` webhook is retried.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="credit_transactions",
+    )
+    org = models.ForeignKey(
+        "orgs.Org",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="credit_transactions",
+    )
+    amount = models.IntegerField(help_text="Positive = grant, negative = consume.")
+    reason = models.CharField(max_length=64)
+    stripe_session_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "credit_transactions"
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.CheckConstraint(
+                condition=(
+                    models.Q(user_id__isnull=False, org_id__isnull=True)
+                    | models.Q(user_id__isnull=True, org_id__isnull=False)
+                ),
+                name="credittransaction_has_owner",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(amount=0),
+                name="credittransaction_nonzero_amount",
+            ),
+        ]
+        indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.Index(fields=["user", "-created_at"], name="idx_credit_tx_user_created"),
+            models.Index(fields=["org", "-created_at"], name="idx_credit_tx_org_created"),
+        ]
+
+    def __str__(self) -> str:
+        owner = self.user if self.user_id else self.org
+        return f"{owner}: {self.amount:+d} ({self.reason})"

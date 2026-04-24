@@ -163,14 +163,15 @@ class TestSecurityHeadersMiddleware:
         csp = resp["Content-Security-Policy"]
         assert "'unsafe-inline'" in csp
 
-    def test_csp_default_is_locked_down(self, html_middleware):
+    def test_csp_default_for_dashboard_html(self, html_middleware):
         rf = RequestFactory()
         resp = html_middleware(rf.get("/dashboard/"))
         csp = resp["Content-Security-Policy"]
-        # Non-admin, non-docs paths get default-src 'none' — no inline anywhere.
-        assert "default-src 'none'" in csp
-        assert "'unsafe-inline'" not in csp
-        assert "frame-ancestors 'none'" in csp
+        # Dashboard is server-rendered HTML; it shares the moderate policy
+        # with /admin/ and the DRF browsable API so its static CSS can load.
+        assert "default-src 'self'" in csp
+        assert "style-src 'self' 'unsafe-inline'" in csp
+        assert "frame-ancestors 'self'" in csp
 
     def test_csp_admin_allows_inline_styles(self, html_middleware):
         rf = RequestFactory()

@@ -5,8 +5,8 @@ if [ "${DJANGO_SETTINGS_MODULE:-}" = "config.settings.dev" ]; then
     echo "==> Running Django migrations..."
     uv run python manage.py migrate --no-input
 
-    echo "==> Seeding dev data (superuser + fixtures)..."
-    uv run python manage.py seed_dev_data
+    echo "==> Seeding dev data (superuser + fixtures) and syncing Stripe catalog..."
+    uv run python manage.py seed_dev_data --sync-stripe
 
     echo "==> Seeding exchange rates (public API, non-Stripe)..."
     uv run python manage.py seed_exchange_rates || echo "  (non-fatal: exchange rate seed failed)"

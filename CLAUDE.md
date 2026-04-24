@@ -18,9 +18,12 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
   - Paid: `stripe_id` + `stripe_customer_id` set, lifecycle synced via webhooks.
   - Free: `stripe_id IS NULL`, `user_id` set directly. Created on signup (`apps.billing.services.assign_free_plan`) and on personal subscription cancellation (auto-fallback in `_on_subscription_deleted`). `Subscription.is_free` distinguishes them.
 - `current_period_end` for free subs is the sentinel `FREE_SUBSCRIPTION_PERIOD_END` (year 9999) — they never renew.
-- `Product` / `ProductPrice` are one-time purchases (credit packs / Boost), separate from subscription plans.
+- `Product` / `ProductPrice` are one-time purchases (credit packs / Boost), separate from subscription plans. Purchases go through `POST /api/v1/billing/product-checkout-sessions/` (Stripe Checkout `mode=payment`); on `checkout.session.completed` the webhook routes to `_on_product_checkout_completed` which grants credits via `CreditTransaction` + `CreditBalance`. ORG_MEMBER owners buy for the org; PERSONAL users buy for themselves. Admins/members get 403.
+- Credit ledger: `CreditBalance` (denormalised per-user-or-org current balance, XOR `user`/`org`) + `CreditTransaction` (immutable audit log, unique on `stripe_session_id` for webhook-replay idempotency). Read via `GET /api/v1/billing/credits/me/`; any active org member can read the org balance.
+- Subscription mutations (`PATCH` / `DELETE /api/v1/billing/subscriptions/me/`) on team subs require `is_billing=True` on the caller's active org membership — non-billing members get 403. On `cancel_at_period_end` flips, `send_subscription_cancel_notice_task` emails every `is_billing=True` member so a rogue billing contact's action is visible.
+- Team checkout writes a user-scoped `StripeCustomer` at checkout-init time (the org doesn't exist yet). The webhook handler rebinds that same row to the new org inside `_create_org_with_owner` — duplicate webhook deliveries are idempotent (existing org + membership returned unchanged).
 - Stripe API version is pinned to `2026-03-25.dahlia`. Notable: `cancel_at_period_end=True` is replaced by `cancel_at="min_period_end"` (clear with `cancel_at=""`); `current_period_start/end` live on subscription items, not the subscription itself.
-- `manage.py seed_catalog` is the idempotent, USD-only seeder for Plans, PlanPrices, and Boost Products. It runs automatically from `infra/entrypoint.sh` after `migrate` on every deploy, using placeholder `stripe_price_id` values — followed immediately by `sync_stripe_catalog`, which replaces those placeholders with real Stripe price IDs.
+- `manage.py seed_catalog` is the idempotent, USD-only seeder for Plans, PlanPrices, and Boost Products. It updates existing `PlanPrice.amount` / `ProductPrice.amount` in place when the spec changes (so re-seeding adjusts prices without dropping rows). It runs automatically from `infra/entrypoint.sh` after `migrate` on every deploy, using placeholder `stripe_price_id` values — followed immediately by `sync_stripe_catalog`, which replaces those placeholders with real Stripe price IDs. The dev entrypoint (`infra/entrypoint.dev.sh`) also runs `sync_stripe_catalog` (via `seed_dev_data --sync-stripe`).
 - `make sync-stripe` (runs `manage.py sync_stripe_catalog`) is the source of truth for pushing local Plans/Products into Stripe. The deploy entrypoint already runs it after `migrate` + `seed_catalog`, so Stripe matches the DB on every boot; it is idempotent via Stripe `lookup_key`s.
 
 ## Prism commands
@@ -83,7 +86,7 @@ For bugs touching infra, proxy (Caddy/Nginx), OAuth, or deploy:
 **Settings & secrets**
 - Never set `ALLOWED_HOSTS=["*"]` when `USE_X_FORWARDED_HOST=True` — enumerate hosts.
 - Use separate env vars for secrets with different rotation lifecycles (e.g. `JWT_SIGNING_KEY` vs `SECRET_KEY`).
-- API paths default to CSP `default-src 'none'`; inline styles/scripts opt-in per path prefix.
+- CSP is applied only to HTML responses (JSON API responses never get a CSP header). HTML on `/api/docs/` + `/api/redoc/` gets the docs bucket (CDN allowances); every other HTML surface — `/admin/`, `/hijack/`, `/dashboard/`, and DRF's browsable API on `/api/…` — shares a moderate `default-src 'self'` + `style-src 'self' 'unsafe-inline'` + `frame-ancestors 'self'` policy.
 
 **CI/CD**
 - No `${{ github.* }}` interpolated into workflow shell — pass via `env:` and quote `"$VAR"`.

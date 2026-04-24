@@ -53,7 +53,7 @@ _MONTHLY_PLANS: list[_PlanSpec] = [
         "context": PlanContext.PERSONAL,
         "tier": PlanTier.BASIC,
         "interval": PlanInterval.MONTH,
-        "amount": 1900,
+        "amount": 1999,
     },
     {
         "name": "Personal Pro",
@@ -63,7 +63,7 @@ _MONTHLY_PLANS: list[_PlanSpec] = [
         "context": PlanContext.PERSONAL,
         "tier": PlanTier.PRO,
         "interval": PlanInterval.MONTH,
-        "amount": 4900,
+        "amount": 4999,
     },
     {
         "name": "Team Basic",
@@ -73,7 +73,7 @@ _MONTHLY_PLANS: list[_PlanSpec] = [
         "context": PlanContext.TEAM,
         "tier": PlanTier.BASIC,
         "interval": PlanInterval.MONTH,
-        "amount": 1700,
+        "amount": 1799,
     },
     {
         "name": "Team Pro",
@@ -83,7 +83,7 @@ _MONTHLY_PLANS: list[_PlanSpec] = [
         "context": PlanContext.TEAM,
         "tier": PlanTier.PRO,
         "interval": PlanInterval.MONTH,
-        "amount": 4500,
+        "amount": 4599,
     },
 ]
 
@@ -140,12 +140,15 @@ class Command(BaseCommand):
                 self.stdout.write(f"  + Plan: {plan.name}")
 
             price_id = f"price_placeholder_{spec['context']}_{spec['tier']}_{spec['interval']}"
-            _, price_created = PlanPrice.objects.get_or_create(
-                plan=plan,
-                defaults={"amount": spec["amount"], "stripe_price_id": price_id},
-            )
-            if price_created:
+            existing = PlanPrice.objects.filter(plan=plan).first()
+            if existing is None:
+                PlanPrice.objects.create(plan=plan, amount=spec["amount"], stripe_price_id=price_id)
                 self.stdout.write(f"  + PlanPrice: {plan.name} = {spec['amount']}c")
+            elif existing.amount != spec["amount"]:
+                old = existing.amount
+                existing.amount = spec["amount"]
+                existing.save(update_fields=["amount"])
+                self.stdout.write(f"  ✓ PlanPrice: {plan.name} {old}c → {spec['amount']}c")
 
     def _seed_products(self) -> None:
         for name, credit_count, amount in BOOST_PRODUCTS:
@@ -161,12 +164,14 @@ class Command(BaseCommand):
                 self.stdout.write(f"  + Product: {name}")
 
             price_id = f"price_placeholder_boost_{credit_count}"
-            _, price_created = ProductPrice.objects.get_or_create(
-                product=product,
-                defaults={
-                    "amount": amount,
-                    "stripe_price_id": price_id,
-                },
-            )
-            if price_created:
+            existing = ProductPrice.objects.filter(product=product).first()
+            if existing is None:
+                ProductPrice.objects.create(
+                    product=product, amount=amount, stripe_price_id=price_id
+                )
                 self.stdout.write(f"  + ProductPrice: {name} = {amount}c")
+            elif existing.amount != amount:
+                old = existing.amount
+                existing.amount = amount
+                existing.save(update_fields=["amount"])
+                self.stdout.write(f"  ✓ ProductPrice: {name} {old}c → {amount}c")

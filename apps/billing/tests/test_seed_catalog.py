@@ -76,7 +76,7 @@ class TestSeedCatalogPrices:
             tier=PlanTier.PRO,
             interval=PlanInterval.MONTH,
         )
-        assert plan.price.amount == 4900
+        assert plan.price.amount == 4999
 
     def test_team_basic_yearly_amount(self):
         call_command("seed_catalog", stdout=StringIO())
@@ -85,7 +85,7 @@ class TestSeedCatalogPrices:
             tier=PlanTier.BASIC,
             interval=PlanInterval.YEAR,
         )
-        assert plan.price.amount == 17000
+        assert plan.price.amount == 17990
 
     def test_price_has_placeholder_stripe_id(self):
         call_command("seed_catalog", stdout=StringIO())
@@ -156,3 +156,39 @@ class TestSeedCatalogIdempotency:
         out = StringIO()
         call_command("seed_catalog", stdout=out)
         assert "Catalog seeded" in out.getvalue()
+
+    def test_updates_existing_plan_price_amount(self):
+        """Re-seeding picks up catalog price changes without recreating rows,
+        and preserves the existing stripe_price_id (owned by sync_stripe_catalog)."""
+        call_command("seed_catalog", stdout=StringIO())
+        plan = Plan.objects.get(
+            context=PlanContext.PERSONAL,
+            tier=PlanTier.BASIC,
+            interval=PlanInterval.MONTH,
+        )
+        plan.price.amount = 1234
+        plan.price.stripe_price_id = "price_live_123"
+        plan.price.save(update_fields=["amount", "stripe_price_id"])
+        price_id_before = plan.price.id
+
+        call_command("seed_catalog", stdout=StringIO())
+
+        plan.price.refresh_from_db()
+        assert plan.price.id == price_id_before
+        assert plan.price.amount == 1999
+        assert plan.price.stripe_price_id == "price_live_123"
+
+    def test_updates_existing_product_price_amount(self):
+        call_command("seed_catalog", stdout=StringIO())
+        product = Product.objects.get(name="50 Credits")
+        product.price.amount = 100
+        product.price.stripe_price_id = "price_live_boost"
+        product.price.save(update_fields=["amount", "stripe_price_id"])
+        price_id_before = product.price.id
+
+        call_command("seed_catalog", stdout=StringIO())
+
+        product.price.refresh_from_db()
+        assert product.price.id == price_id_before
+        assert product.price.amount == 499
+        assert product.price.stripe_price_id == "price_live_boost"

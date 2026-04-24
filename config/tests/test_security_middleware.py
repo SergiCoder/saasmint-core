@@ -51,11 +51,17 @@ class TestCSPOptIn:
         resp = mw(factory.get("/api/v1/health/"))
         assert "Content-Security-Policy" not in resp
 
-    def test_api_html_gets_strict_csp(self) -> None:
+    def test_api_html_gets_browsable_api_csp(self) -> None:
+        """HTML on an ``/api/`` path is DRF's browsable API — not a JSON
+        response. It needs inline styles for its own CSS, so the same moderate
+        CSP as /admin/ applies. JSON API responses never hit this branch."""
         factory = RequestFactory()
         mw = SecurityHeadersMiddleware(_html_response)
         resp = mw(factory.get("/api/v1/users/"))
-        assert resp["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'"
+        csp = resp["Content-Security-Policy"]
+        assert "style-src 'self' 'unsafe-inline'" in csp
+        assert "default-src 'self'" in csp
+        assert "frame-ancestors 'self'" in csp
 
     def test_docs_path_gets_loose_csp_with_cdn(self) -> None:
         factory = RequestFactory()
@@ -93,18 +99,34 @@ class TestCSPOptIn:
         assert "frame-ancestors 'self'" in csp
         assert "default-src 'self'" in csp
 
-    def test_admin_csp_is_distinct_from_api_csp(self) -> None:
+    def test_dashboard_path_gets_moderate_csp(self) -> None:
+        """Dashboard is the hijack landing page and renders server-side HTML —
+        must allow the admin/hijack CSS to load rather than the strict API CSP."""
+        factory = RequestFactory()
+        mw = SecurityHeadersMiddleware(_html_response)
+        resp = mw(factory.get("/dashboard/"))
+        csp = resp["Content-Security-Policy"]
+        assert "style-src 'self' 'unsafe-inline'" in csp
+        assert "frame-ancestors 'self'" in csp
+        assert "default-src 'self'" in csp
+
+    def test_admin_and_api_html_share_csp(self) -> None:
+        """/admin/ and DRF's browsable API at /api/ share the same moderate CSP
+        — both are server-rendered HTML surfaces needing inline styles. The
+        docs bucket (/api/docs/, /api/redoc/) remains distinct for its CDN allowances."""
         factory = RequestFactory()
         mw = SecurityHeadersMiddleware(_html_response)
         admin = mw(factory.get("/admin/"))
         api = mw(factory.get("/api/v1/users/"))
-        assert admin["Content-Security-Policy"] != api["Content-Security-Policy"]
+        docs = mw(factory.get("/api/docs/"))
+        assert admin["Content-Security-Policy"] == api["Content-Security-Policy"]
+        assert admin["Content-Security-Policy"] != docs["Content-Security-Policy"]
 
-    def test_root_path_gets_strict_api_csp(self) -> None:
+    def test_root_html_gets_moderate_csp(self) -> None:
         factory = RequestFactory()
         mw = SecurityHeadersMiddleware(_html_response)
         resp = mw(factory.get("/"))
-        assert resp["Content-Security-Policy"] == "default-src 'none'; frame-ancestors 'none'"
+        assert "style-src 'self' 'unsafe-inline'" in resp["Content-Security-Policy"]
 
     def test_docs_without_html_content_type_has_no_csp(self) -> None:
         factory = RequestFactory()

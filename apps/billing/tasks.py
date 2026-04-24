@@ -56,6 +56,34 @@ def sync_exchange_rates() -> None:
     logger.info("Exchange rates synced: %d currencies updated", len(rows))
 
 
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def send_subscription_cancel_notice_task(
+    emails: list[str], subscription_label: str, action: str
+) -> None:
+    """Fan out a subscription-state email to every recipient.
+
+    ``action`` is one of ``"scheduled"`` (cancellation queued for period end)
+    or ``"resumed"`` (previously scheduled cancellation cleared). Iteration is
+    sequential — one email per recipient — so a single bad address doesn't
+    block the others; Resend calls are idempotent from our side.
+    """
+    from apps.billing.email import (
+        send_subscription_cancel_resumed,
+        send_subscription_cancel_scheduled,
+    )
+
+    sender = (
+        send_subscription_cancel_scheduled
+        if action == "scheduled"
+        else send_subscription_cancel_resumed
+    )
+    for email in emails:
+        try:
+            sender(email, subscription_label)
+        except Exception:
+            logger.exception("Failed to send billing notice to %s (action=%s)", email, action)
+
+
 @app.task(bind=True, max_retries=3)  # type: ignore[untyped-decorator]  # celery has no stubs
 def process_stripe_webhook(self: object, stripe_event_id: str) -> None:
     """Dispatch a Stripe webhook event that was verified and persisted by the view.

@@ -21,3 +21,10 @@ USE_X_FORWARDED_HOST = True
 USE_X_FORWARDED_PORT = True
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
+
+# Dev static-files strategy: WhiteNoise serves directly from the staticfiles
+# finders (i.e. ``STATICFILES_DIRS`` + each app's ``static/`` dir) and re-reads
+# the filesystem on every request. That way new or edited assets appear
+# without running ``collectstatic`` or rebuilding the container.
+WHITENOISE_USE_FINDERS = True
+WHITENOISE_AUTOREFRESH = True

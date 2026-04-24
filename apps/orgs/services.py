@@ -119,6 +119,12 @@ def _create_org_with_owner(
     The user must already have account_type=ORG_MEMBER (set at registration).
     Passing `stripe_customer_id` links the org to its Stripe customer in the same
     transaction, preventing orgs without billing linkage on partial failure.
+
+    Handles the user→org transition: ``CheckoutSessionView`` saves a user-scoped
+    ``StripeCustomer`` when starting team checkout (the org does not exist yet).
+    On ``checkout.session.completed``, that same row is re-bound here to the new
+    org. A ``StripeCustomer`` already linked to an org is treated as a duplicate
+    webhook delivery — the existing org and membership are returned unchanged.
     """
     from apps.billing.models import StripeCustomer
 
@@ -126,6 +132,24 @@ def _create_org_with_owner(
         raise ValueError(f"User {user.id} must have account_type=org_member to create an org")
 
     with transaction.atomic():
+        # Duplicate-webhook short-circuit has to happen INSIDE the transaction
+        # with SELECT FOR UPDATE — otherwise two concurrent deliveries can
+        # both pass a pre-check, both create an Org, and the second wins the
+        # StripeCustomer reassignment, orphaning the first Org.
+        existing_customer = None
+        if stripe_customer_id is not None:
+            existing_customer = (
+                StripeCustomer.objects.select_for_update()
+                .filter(stripe_id=stripe_customer_id)
+                .first()
+            )
+            if existing_customer is not None and existing_customer.org_id is not None:
+                already_org = Org.objects.filter(id=existing_customer.org_id).first()
+                if already_org is not None:
+                    member = OrgMember.objects.filter(org=already_org, user=user).first()
+                    if member is not None:
+                        return already_org, member
+
         slug = generate_unique_slug(org_name)
         org = Org.objects.create(
             name=org_name,
@@ -139,11 +163,17 @@ def _create_org_with_owner(
             is_billing=True,
         )
         if stripe_customer_id is not None:
-            StripeCustomer.objects.create(
-                stripe_id=stripe_customer_id,
-                org=org,
-                livemode=livemode,
-            )
+            if existing_customer is None:
+                StripeCustomer.objects.create(
+                    stripe_id=stripe_customer_id,
+                    org=org,
+                    livemode=livemode,
+                )
+            else:
+                existing_customer.user = None
+                existing_customer.org = org
+                existing_customer.livemode = livemode
+                existing_customer.save(update_fields=["user", "org", "livemode"])
     return org, member
 
 
@@ -271,9 +301,7 @@ def delete_org(org: Org) -> None:
     # Offload Stripe cancellation to Celery so the request returns
     # immediately instead of blocking on the Stripe round-trip.
     if stripe_sub_id is not None:
-        transaction.on_commit(
-            lambda: cancel_stripe_subs_task.delay([stripe_sub_id], str(org_id))
-        )
+        transaction.on_commit(lambda: cancel_stripe_subs_task.delay([stripe_sub_id], str(org_id)))
 
 
 def delete_orgs_created_by_user(user_id: UUID) -> None:
@@ -302,9 +330,7 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
         # No single org_id owns the batch — pass the caller's user_id instead
         # so failures can still be traced back to the originating delete.
         transaction.on_commit(
-            lambda: cancel_stripe_subs_task.delay(
-                pending_stripe_sub_ids, f"user:{user_id}"
-            )
+            lambda: cancel_stripe_subs_task.delay(pending_stripe_sub_ids, f"user:{user_id}")
         )
 
 

@@ -179,6 +179,23 @@ class PortalRequestSerializer(serializers.Serializer[object]):
         return _validate_redirect_url(value)
 
 
+class ProductCheckoutRequestSerializer(serializers.Serializer[object]):
+    product_price_id = serializers.UUIDField()
+    success_url = serializers.URLField()
+    cancel_url = serializers.URLField()
+
+    def validate_success_url(self, value: str) -> str:
+        return _validate_redirect_url(value)
+
+    def validate_cancel_url(self, value: str) -> str:
+        return _validate_redirect_url(value)
+
+
+class CreditBalanceSerializer(serializers.Serializer[object]):
+    balance = serializers.IntegerField(read_only=True)
+    scope = serializers.CharField(read_only=True)
+
+
 class UpdateSubscriptionSerializer(serializers.Serializer[object]):
     plan_price_id = serializers.UUIDField(required=False)
     prorate = serializers.BooleanField(default=True)

@@ -433,6 +433,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/CheckoutResponse'
           description: ''
+  /api/v1/billing/credits/me/:
+    get:
+      operationId: billing_credits_me_retrieve
+      description: Return the caller's current credit balance. PERSONAL users see
+        their own balance; ORG_MEMBER users see their org's balance (readable by any
+        active member).
+      tags:
+      - billing
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditBalance'
+          description: ''
   /api/v1/billing/plans/:
     get:
       operationId: billing_plans_retrieve
@@ -483,6 +501,41 @@ paths:
               schema:
                 $ref: '#/components/schemas/PortalResponse'
           description: ''
+  /api/v1/billing/product-checkout-sessions/:
+    post:
+      operationId: billing_product_checkout_sessions_create
+      description: Create a Stripe Checkout Session (``mode=payment``) for a one-time
+        product purchase (credit pack). PERSONAL users buy for themselves; ORG_MEMBER
+        owners buy for the org. Admins and regular members are rejected with 403.
+      tags:
+      - billing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductCheckoutRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProductCheckoutRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProductCheckoutRequestRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductCheckoutResponse'
+          description: ''
+        '403':
+          description: Caller is an ORG_MEMBER without ``role=OWNER`` on their active
+            org.
+        '404':
+          description: Invalid product price.
   /api/v1/billing/products/:
     get:
       operationId: billing_products_retrieve
@@ -563,6 +616,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '403':
+          description: Caller is an ORG_MEMBER without `is_billing=True` on their
+            active org membership — only billing members may modify the team subscription.
+        '404':
+          description: No Stripe customer or active paid subscription for the caller.
     delete:
       operationId: billing_subscriptions_me_destroy
       description: Schedule subscription cancellation at the end of the current billing
@@ -586,6 +644,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '403':
+          description: Caller is an ORG_MEMBER without `is_billing=True` on their
+            active org membership — only billing members may cancel the team subscription.
+        '404':
+          description: No Stripe customer or active paid subscription for the caller.
   /api/v1/currencies/:
     get:
       operationId: currencies_retrieve
@@ -797,6 +860,32 @@ paths:
               schema:
                 $ref: '#/components/schemas/Org'
           description: ''
+    delete:
+      operationId: orgs_destroy
+      description: Delete the organization (owner only). Cascades to memberships,
+        invitations, and single-org member user accounts, and immediately cancels
+        the Stripe subscription (no refund). If the caller's only org is this one,
+        their own user account is deleted too — any existing auth tokens will fail
+        on their next request.
+      parameters:
+      - in: path
+        name: org_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - orgs
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: Org deleted.
+        '403':
+          description: Caller is not the org owner.
+        '404':
+          description: Org does not exist or is inaccessible.
   /api/v1/orgs/{org_id}/invitations/:
     get:
       operationId: orgs_invitations_retrieve
@@ -1175,6 +1264,18 @@ components:
           default: member
       required:
       - email
+    CreditBalance:
+      type: object
+      properties:
+        balance:
+          type: integer
+          readOnly: true
+        scope:
+          type: string
+          readOnly: true
+      required:
+      - balance
+      - scope
     ForgotPasswordRequest:
       type: object
       properties:
@@ -1705,6 +1806,32 @@ components:
       - name
       - price
       - type
+    ProductCheckoutRequestRequest:
+      type: object
+      properties:
+        product_price_id:
+          type: string
+          format: uuid
+        success_url:
+          type: string
+          format: uri
+          minLength: 1
+        cancel_url:
+          type: string
+          format: uri
+          minLength: 1
+      required:
+      - cancel_url
+      - product_price_id
+      - success_url
+    ProductCheckoutResponse:
+      type: object
+      properties:
+        url:
+          type: string
+          format: uri
+      required:
+      - url
     ProductListResponse:
       type: object
       properties:
