@@ -227,9 +227,40 @@ class TestHijackAcquireView:
 
 @pytest.mark.django_db
 class TestHijackReleaseView:
-    def test_release_redirects_to_admin_user_changelist(self, staff_client, user):
+    def test_release_post_redirects_to_admin_index(self, staff_client, user):
         # First acquire the user so there is a session to release
         staff_client.post("/hijack/acquire/", {"user_pk": str(user.pk)})
         resp = staff_client.post("/hijack/release/")
         assert resp.status_code == 302
-        assert "/admin/" in resp["Location"]
+        # Admin index, not the users changelist.
+        assert resp["Location"] == "/admin/"
+
+    def test_release_get_redirects_to_admin_index_instead_of_405(self, staff_client):
+        """GETting /hijack/release/ used to return 405 from @require_POST,
+        which broke the admin re-login flow when a stale next= pointed at
+        this URL. The view now redirects GETs to admin home as a no-op."""
+        resp = staff_client.get("/hijack/release/")
+        assert resp.status_code == 302
+        assert resp["Location"] == "/admin/"
+
+    def test_release_get_unauthenticated_still_redirects_to_admin_index(self):
+        """GET /hijack/release/ must short-circuit to /admin/ even for
+        unauthenticated callers — this is the exact path the original bug
+        took (admin login → next=/hijack/release/ → GET). The previous
+        staff_member_required + require_POST stack would 302 to login →
+        loop / 405; the override returns 302 /admin/ unconditionally for
+        GETs and lets the admin handle any further auth bounce."""
+        client = Client()
+        resp = client.get("/hijack/release/")
+        assert resp.status_code == 302
+        assert resp["Location"] == "/admin/"
+
+    def test_release_post_without_active_hijack_returns_403(self, staff_client):
+        """The parent's UserPassesTestMixin gates POST on a non-empty
+        ``session["hijack_history"]``. With ``raise_exception=True`` set
+        upstream, a staff caller who isn't currently impersonating gets
+        403 (not a redirect). This is the invariant that replaced the
+        removed ``staff_member_required`` decorator: 'we are currently
+        impersonating someone' is the right gate for release."""
+        resp = staff_client.post("/hijack/release/")
+        assert resp.status_code == 403

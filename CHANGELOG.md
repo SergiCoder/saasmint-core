@@ -8,6 +8,21 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.7.1] - 2026-04-25
+
+### Fixed
+
+- **Hijack release no longer 405s on the admin re-login bounce.**
+  `HijackReleaseView` is no longer wrapped in `staff_member_required`
+  (during impersonation `request.user` is the impersonated non-staff
+  user, so the gate would 302 the release POST to the admin login page
+  with a stale `next=/hijack/release/`, which then returned 405 on the
+  follow-up GET). The parent `UserPassesTestMixin.test_func` already
+  gates POST on `session["hijack_history"]`, which is the correct
+  invariant. GETs to `/hijack/release/` now 302 to the admin home as a
+  no-op instead of 405. Stop-impersonating from the admin toolbar now
+  lands on `/admin/` (admin index) rather than the users changelist.
+
 ## [0.7.0] - 2026-04-25
 
 ### Changed (breaking)
