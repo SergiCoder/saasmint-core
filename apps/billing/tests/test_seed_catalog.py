@@ -23,19 +23,12 @@ from apps.billing.models import (
 class TestSeedCatalogPlans:
     def test_creates_all_plans(self):
         call_command("seed_catalog", stdout=StringIO())
-        # 5 monthly (personal free/basic/pro + team basic/pro)
-        # + 4 yearly (paid only, no free yearly)
-        assert Plan.objects.count() == 9
+        # 4 monthly (personal basic/pro + team basic/pro) + 4 yearly variants.
+        assert Plan.objects.count() == 8
 
-    def test_creates_personal_free_monthly_plan(self):
+    def test_does_not_create_free_plan(self):
         call_command("seed_catalog", stdout=StringIO())
-        plan = Plan.objects.get(
-            context=PlanContext.PERSONAL,
-            tier=PlanTier.FREE,
-            interval=PlanInterval.MONTH,
-        )
-        assert plan.is_active
-        assert plan.name == "Personal Free"
+        assert not Plan.objects.filter(tier=PlanTier.FREE).exists()
 
     def test_creates_team_pro_yearly_plan(self):
         call_command("seed_catalog", stdout=StringIO())
@@ -46,28 +39,12 @@ class TestSeedCatalogPlans:
         )
         assert plan.is_active
 
-    def test_no_free_yearly_plan(self):
-        call_command("seed_catalog", stdout=StringIO())
-        assert not Plan.objects.filter(
-            tier=PlanTier.FREE,
-            interval=PlanInterval.YEAR,
-        ).exists()
-
 
 @pytest.mark.django_db
 class TestSeedCatalogPrices:
     def test_creates_price_per_plan(self):
         call_command("seed_catalog", stdout=StringIO())
-        assert PlanPrice.objects.count() == 9
-
-    def test_free_plan_has_zero_amount(self):
-        call_command("seed_catalog", stdout=StringIO())
-        plan = Plan.objects.get(
-            context=PlanContext.PERSONAL,
-            tier=PlanTier.FREE,
-            interval=PlanInterval.MONTH,
-        )
-        assert plan.price.amount == 0
+        assert PlanPrice.objects.count() == 8
 
     def test_personal_pro_monthly_amount(self):
         call_command("seed_catalog", stdout=StringIO())

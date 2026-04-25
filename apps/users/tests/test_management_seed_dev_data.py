@@ -42,7 +42,7 @@ class TestSeedDevDataCreatesCatalog:
         settings.DEBUG = True
         call_command("seed_dev_data", stdout=StringIO())
         names = set(Plan.objects.values_list("name", flat=True))
-        assert "Personal Free" in names
+        assert "Personal Basic" in names
         assert "Personal Pro" in names
         assert "Team Basic" in names
         assert "Team Pro" in names
@@ -52,8 +52,8 @@ class TestSeedDevDataCreatesCatalog:
 
         settings.DEBUG = True
         call_command("seed_dev_data", stdout=StringIO())
-        # 5 monthly (free + basic/pro for personal/team) + 4 yearly (paid only)
-        assert PlanPrice.objects.count() == 9
+        # 4 monthly (basic/pro for personal/team) + 4 yearly variants.
+        assert PlanPrice.objects.count() == 8
 
     def test_does_not_create_users(self, settings):
         from apps.users.models import User

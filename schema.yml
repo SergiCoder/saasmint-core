@@ -319,8 +319,8 @@ paths:
       description: |-
         POST /api/v1/auth/register/org-owner — register as an org owner.
 
-        Creates a user with account_type=ORG_MEMBER. No free plan is assigned;
-        the user must complete team checkout to create an org and subscription.
+        Creates a user with account_type=ORG_MEMBER; the user must complete team
+        checkout to create an org and subscription.
       tags:
       - auth
       requestBody:

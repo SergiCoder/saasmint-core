@@ -72,13 +72,6 @@ class Plan(models.Model):
     def __str__(self) -> str:
         return f"{self.name} ({self.interval})"
 
-    @classmethod
-    def free_plans(cls) -> models.QuerySet[Plan]:
-        """Queryset of active personal plans on the free tier."""
-        return cls.objects.filter(
-            is_active=True, context=PlanContext.PERSONAL, tier=PlanTier.FREE
-        ).select_related("price")
-
 
 class PlanPrice(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

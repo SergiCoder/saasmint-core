@@ -103,47 +103,6 @@ class TestStripeEvent:
 
 
 @pytest.mark.django_db
-class TestPlanFreePlans:
-    def test_returns_active_personal_free_plans(self, free_plan):
-        from apps.billing.models import Plan
-
-        qs = Plan.free_plans()
-        assert qs.count() == 1
-        assert qs.first().id == free_plan.id
-
-    def test_excludes_inactive_plans(self, db):
-        from apps.billing.models import Plan
-
-        inactive = Plan.objects.create(
-            name="Personal Free",
-            context="personal",
-            tier=PlanTier.FREE,
-            interval="month",
-            is_active=False,
-        )
-        PlanPrice.objects.create(plan=inactive, stripe_price_id="price_inactive_free", amount=0)
-        assert Plan.free_plans().count() == 0
-
-    def test_excludes_team_context(self, db):
-        from apps.billing.models import Plan
-
-        team_free = Plan.objects.create(
-            name="Team Free",
-            context="team",
-            tier=PlanTier.FREE,
-            interval="month",
-            is_active=True,
-        )
-        PlanPrice.objects.create(plan=team_free, stripe_price_id="price_team_free", amount=0)
-        assert Plan.free_plans().count() == 0
-
-    def test_excludes_non_free_tier(self, plan, plan_price):
-        from apps.billing.models import Plan
-
-        assert Plan.free_plans().count() == 0
-
-
-@pytest.mark.django_db
 class TestPlanUniqueConstraint:
     def test_duplicate_active_context_tier_interval_rejected(self, db):
         from apps.billing.models import Plan

@@ -10,7 +10,7 @@ import pytest
 import stripe
 
 from saasmint_core.domain.stripe_event import StripeEvent
-from saasmint_core.domain.subscription import Plan, PlanTier, SubscriptionStatus
+from saasmint_core.domain.subscription import SubscriptionStatus
 from saasmint_core.exceptions import WebhookDataError
 from saasmint_core.services.webhooks import WebhookRepos, process_stored_event
 from tests.conftest import (
@@ -502,185 +502,7 @@ async def test_subscription_deleted_marks_canceled() -> None:
     assert updated.stripe_customer_id == sub.stripe_customer_id
 
 
-# ── upgrade-from-free + auto-fallback-to-free ────────────────────────────────
-
-
-def _seed_free_plan(plan_repo: InMemoryPlanRepository) -> Plan:
-    """Insert an active personal free plan + $0 price into *plan_repo*."""
-    free_plan = make_plan(name="Personal Free", tier=PlanTier.FREE)
-    plan_repo._plans[free_plan.id] = free_plan
-    free_price = make_plan_price(plan_id=free_plan.id, stripe_price_id="price_free", amount=0)
-    plan_repo._prices[free_price.id] = free_price
-    return free_plan
-
-
-@pytest.mark.anyio
-async def test_upgrade_from_free_removes_orphan_free_subscription() -> None:
-    """When a free user upgrades, the free placeholder Subscription is deleted."""
-    event_repo = InMemoryStripeEventRepository()
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    user_id = uuid4()
-
-    free_plan = _seed_free_plan(plan_repo)
-    free_sub = make_subscription(
-        stripe_id=None,
-        stripe_customer_id=None,
-        user_id=user_id,
-        plan_id=free_plan.id,
-    )
-    await subscription_repo.save(free_sub)
-
-    customer = make_stripe_customer(user_id=user_id, stripe_id="cus_upgrade")
-    await customer_repo.save(customer)
-
-    paid_plan = make_plan(name="Personal Pro")
-    plan_repo._plans[paid_plan.id] = paid_plan
-    paid_price = make_plan_price(plan_id=paid_plan.id, stripe_price_id="price_paid", amount=1900)
-    plan_repo._prices[paid_price.id] = paid_price
-
-    repos = _make_repos(
-        event_repo=event_repo,
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_sub_id="sub_paid_new",
-        stripe_customer_id="cus_upgrade",
-        price_id="price_paid",
-    )
-    stripe_id = await _persist(event_repo, event)
-
-    await process_stored_event(event, stripe_id, repos)
-
-    subs = list(subscription_repo._store.values())
-    assert len(subs) == 1
-    paid = subs[0]
-    assert paid.stripe_id == "sub_paid_new"
-    assert paid.user_id == user_id  # mirrored from customer
-    assert paid.stripe_customer_id == customer.id
-    assert paid.plan_id == paid_plan.id
-    # The free placeholder is gone
-    assert free_sub.id not in subscription_repo._store
-
-
-@pytest.mark.anyio
-async def test_org_upgrade_does_not_touch_user_free_subs() -> None:
-    """Org subscriptions have user_id=None and must not delete unrelated free rows."""
-    event_repo = InMemoryStripeEventRepository()
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    other_user_id = uuid4()
-    free_plan = _seed_free_plan(plan_repo)
-    other_free_sub = make_subscription(
-        stripe_id=None,
-        stripe_customer_id=None,
-        user_id=other_user_id,
-        plan_id=free_plan.id,
-    )
-    await subscription_repo.save(other_free_sub)
-
-    org_customer = make_stripe_customer(org_id=uuid4(), stripe_id="cus_org")
-    await customer_repo.save(org_customer)
-
-    team_plan = make_plan(name="Team Pro")
-    plan_repo._plans[team_plan.id] = team_plan
-    team_price = make_plan_price(plan_id=team_plan.id, stripe_price_id="price_team", amount=2900)
-    plan_repo._prices[team_price.id] = team_price
-
-    repos = _make_repos(
-        event_repo=event_repo,
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_sub_id="sub_team_new",
-        stripe_customer_id="cus_org",
-        price_id="price_team",
-    )
-    stripe_id = await _persist(event_repo, event)
-
-    await process_stored_event(event, stripe_id, repos)
-
-    # Other user's free sub is untouched
-    assert other_free_sub.id in subscription_repo._store
-    new_team = next(s for s in subscription_repo._store.values() if s.stripe_id == "sub_team_new")
-    assert new_team.user_id is None  # org sub
-
-
-@pytest.mark.anyio
-async def test_retry_after_crash_still_prunes_free_subscription() -> None:
-    """Regression: if a prior run saved the paid sub but crashed before pruning
-    the free row, a retried created/updated event must still prune it.
-
-    Previously the cleanup was guarded by `existing is None`, so a retry would
-    see the paid sub already saved and skip the cleanup forever, leaving the
-    user with two active subscriptions.
-    """
-    event_repo = InMemoryStripeEventRepository()
-    customer_repo = InMemoryStripeCustomerRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    user_id = uuid4()
-
-    # Seed: the free placeholder survived from a previous crashed run
-    free_plan = _seed_free_plan(plan_repo)
-    free_sub = make_subscription(
-        stripe_id=None,
-        stripe_customer_id=None,
-        user_id=user_id,
-        plan_id=free_plan.id,
-    )
-    await subscription_repo.save(free_sub)
-
-    customer = make_stripe_customer(user_id=user_id, stripe_id="cus_retry")
-    await customer_repo.save(customer)
-
-    paid_plan = make_plan(name="Personal Pro")
-    plan_repo._plans[paid_plan.id] = paid_plan
-    paid_price = make_plan_price(
-        plan_id=paid_plan.id, stripe_price_id="price_paid_retry", amount=1900
-    )
-    plan_repo._prices[paid_price.id] = paid_price
-
-    # Seed: the paid sub from the previous (crashed) run is already persisted
-    already_saved_paid = make_subscription(
-        stripe_id="sub_retry",
-        stripe_customer_id=customer.id,
-        user_id=user_id,
-        plan_id=paid_plan.id,
-    )
-    await subscription_repo.save(already_saved_paid)
-
-    repos = _make_repos(
-        event_repo=event_repo,
-        customer_repo=customer_repo,
-        plan_repo=plan_repo,
-        subscription_repo=subscription_repo,
-    )
-    event = _sub_event(
-        "customer.subscription.created",
-        stripe_sub_id="sub_retry",
-        stripe_customer_id="cus_retry",
-        price_id="price_paid_retry",
-    )
-    stripe_id = await _persist(event_repo, event)
-
-    await process_stored_event(event, stripe_id, repos)
-
-    subs = list(subscription_repo._store.values())
-    assert len(subs) == 1
-    assert subs[0].stripe_id == "sub_retry"
-    assert free_sub.id not in subscription_repo._store
+# ── cancellation has no fallback (Subscription is a pure Stripe mirror) ─────
 
 
 @pytest.mark.anyio
@@ -741,31 +563,6 @@ async def test_org_cancellation_marks_canceled_only() -> None:
     assert len(subscription_repo._store) == 1
 
 
-@pytest.mark.anyio
-async def test_cancellation_logs_when_no_free_plan_configured() -> None:
-    """Without a configured free plan, cancellation just marks canceled and warns."""
-    event_repo = InMemoryStripeEventRepository()
-    plan_repo = InMemoryPlanRepository()
-    subscription_repo = InMemorySubscriptionRepository()
-
-    paid_sub = make_subscription(stripe_id="sub_no_free", user_id=uuid4())
-    await subscription_repo.save(paid_sub)
-
-    repos = _make_repos(
-        event_repo=event_repo, plan_repo=plan_repo, subscription_repo=subscription_repo
-    )
-    event = {
-        "id": "evt_no_free",
-        "type": "customer.subscription.deleted",
-        "livemode": False,
-        "data": {"object": {"id": "sub_no_free"}},
-    }
-    stripe_id = await _persist(event_repo, event)
-
-    await process_stored_event(event, stripe_id, repos)
-
-    assert subscription_repo._store[paid_sub.id].status == SubscriptionStatus.CANCELED
-    assert len(subscription_repo._store) == 1  # no fallback created
 
 
 # ── Basil API: period fields on items ────────────────────────────────────────

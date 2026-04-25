@@ -176,28 +176,6 @@ class TestUserAdminExtendedQueryset:
         annotated = qs.get(pk=user.pk)
         assert getattr(annotated, "_subscription_status", None) is None
 
-    def test_user_with_free_subscription_annotated(self, db, admin_instance):
-        """Free subs have null stripe_customer but a direct user FK; must still annotate."""
-        mock_request = MagicMock()
-        user = _make_user(db, "free@example.com")
-        plan = Plan.objects.create(
-            name="Personal Free", context="personal", interval="month", is_active=True
-        )
-        Subscription.objects.create(
-            stripe_id=None,
-            stripe_customer=None,
-            user=user,
-            status="active",
-            plan=plan,
-            quantity=1,
-            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-            current_period_end=datetime(9999, 12, 31, tzinfo=UTC),
-        )
-
-        qs = admin_instance.get_queryset(mock_request)
-        annotated = qs.get(pk=user.pk)
-        assert annotated._subscription_status == "active"
-
     def test_most_recent_active_subscription_status_used(self, db, admin_instance):
         mock_request = MagicMock()
         user = _make_user(db, "multi@example.com")

@@ -184,8 +184,9 @@ class TestRegisterOrgOwnerView:
         assert resp.status_code == 400
 
     @patch("apps.users.tasks.send_verification_email_task.delay")
-    def test_no_free_plan_assigned(self, mock_email, api):
-        """Org owner registration does not assign a free plan subscription."""
+    def test_no_subscription_created(self, mock_email, api):
+        """Registration creates a User but no Subscription — Subscription is a
+        pure Stripe mirror, so it only exists once the user pays."""
         from apps.billing.models import Subscription
 
         api.post(

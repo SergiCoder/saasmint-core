@@ -284,26 +284,6 @@ class TestSyncPlans:
         mock_pcreate.assert_not_called()
         assert "no PlanPrice row" in out
 
-    def test_skips_free_plan_with_zero_amount(self):
-        plan = Plan.objects.create(
-            name="Personal Free",
-            context="personal",
-            tier=PlanTier.FREE,
-            interval="month",
-            is_active=True,
-        )
-        PlanPrice.objects.create(plan=plan, stripe_price_id="local_free", amount=0)
-        with (
-            patch("stripe.Price.list") as mock_list,
-            patch("stripe.Price.create") as mock_create,
-            patch("stripe.Product.create") as mock_pcreate,
-        ):
-            out = _run()
-        mock_list.assert_not_called()
-        mock_create.assert_not_called()
-        mock_pcreate.assert_not_called()
-        assert "free plan" in out.lower()
-
     def test_inactive_plan_skipped(self):
         plan = Plan.objects.create(
             name="Retired",

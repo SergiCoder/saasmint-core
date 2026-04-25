@@ -423,12 +423,6 @@ class TestSubscriptionView:
         assert resp.status_code == 200
         assert resp.data["status"] == "active"
 
-    def test_returns_free_subscription(self, authed_client, free_subscription, free_plan):
-        resp = authed_client.get("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 200
-        assert resp.data["status"] == "active"
-        assert str(resp.data["plan"]["id"]) == str(free_plan.id)
-
     def test_no_subscription_returns_404(self, authed_client, user):
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 404
@@ -452,11 +446,6 @@ class TestCancelSubscription:
         assert resp.status_code == 202
         mock_cancel.assert_called_once()
         assert mock_cancel.call_args.kwargs["at_period_end"] is True
-
-    def test_free_subscription_returns_404(self, authed_client, free_subscription):
-        """Cannot cancel a free-plan subscription via the API."""
-        resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 404
 
     def test_no_customer_returns_404(self, authed_client, user):
         resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
@@ -498,15 +487,6 @@ class TestUpdateSubscription:
             )
             mock_seats.assert_not_called()
         mock_change.assert_called_once()
-
-    def test_free_subscription_returns_404(self, authed_client, free_subscription, plan_price):
-        """Cannot change plan on a free subscription — must go through checkout."""
-        resp = authed_client.patch(
-            "/api/v1/billing/subscriptions/me/",
-            {"plan_price_id": str(plan_price.id)},
-            format="json",
-        )
-        assert resp.status_code == 404
 
     def test_invalid_plan_returns_404(self, authed_client, subscription):
         resp = authed_client.patch(
@@ -681,16 +661,6 @@ class TestUpdateSubscription:
             format="json",
         )
         assert resp.status_code == 400
-
-    def test_cancel_at_period_end_free_subscription_returns_404(
-        self, authed_client, free_subscription
-    ):
-        resp = authed_client.patch(
-            "/api/v1/billing/subscriptions/me/",
-            {"cancel_at_period_end": False},
-            format="json",
-        )
-        assert resp.status_code == 404
 
     def test_unauthenticated_rejected(self):
         client = APIClient()

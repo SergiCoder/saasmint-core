@@ -1,11 +1,8 @@
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import IntEnum, StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
-
-# Sentinel current_period_end used for free subscriptions, which never renew.
-FREE_SUBSCRIPTION_PERIOD_END = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
 
 
 class SubscriptionStatus(StrEnum):
@@ -66,6 +63,16 @@ class PlanPrice(BaseModel):
 
 
 class Subscription(BaseModel):
+    """Local mirror of a Stripe subscription.
+
+    The free tier is the *absence* of a Subscription — there are no rows
+    without a stripe_id. ``stripe_id``, ``stripe_customer_id``, and
+    ``user_id`` are still typed as nullable to keep the domain model
+    permissive for in-flight construction (webhook handlers build the
+    object incrementally), but a persisted row always has at least one
+    owner reference and a stripe_id.
+    """
+
     model_config = ConfigDict(frozen=True)
 
     id: UUID
@@ -80,8 +87,3 @@ class Subscription(BaseModel):
     current_period_end: datetime
     canceled_at: datetime | None = None
     created_at: datetime
-
-    @property
-    def is_free(self) -> bool:
-        """True when this subscription has no Stripe backing (free plan)."""
-        return self.stripe_id is None

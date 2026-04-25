@@ -152,16 +152,14 @@ async def test_delete_account_stripe_already_gone() -> None:
 
 
 @pytest.mark.anyio
-async def test_delete_account_with_free_subscription_skips_stripe_cancel() -> None:
-    """Free subs have no Stripe id; delete_account must not call Stripe.cancel."""
+async def test_delete_account_with_no_subscription_skips_stripe_cancel() -> None:
+    """A user without any Subscription row triggers no Stripe.cancel call."""
     user_repo = InMemoryUserRepository()
     customer_repo = InMemoryStripeCustomerRepository()
     subscription_repo = InMemorySubscriptionRepository()
 
     user = make_user()
     await user_repo.save(user)
-    free_sub = make_subscription(user_id=user.id, stripe_id=None, stripe_customer_id=None)
-    await subscription_repo.save(free_sub)
 
     with patch("stripe.Subscription.cancel") as mock_cancel:
         await delete_account(

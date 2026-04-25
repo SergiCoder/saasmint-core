@@ -242,20 +242,6 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
 
     await repos.subscriptions.save(subscription)
 
-    # Prune the placeholder free subscription for personal users whenever they
-    # have a paid sub synced. Runs on every created/updated event (not just the
-    # first) so that retries after a crash between save() and cleanup still
-    # converge — delete_free_for_user is a filtered DELETE and idempotent.
-    if customer.user_id is not None and subscription.stripe_id is not None:
-        deleted = await repos.subscriptions.delete_free_for_user(customer.user_id)
-        if deleted:
-            logger.info(
-                "Removed %d free subscription(s) for user %s after sync of %s",
-                deleted,
-                customer.user_id,
-                stripe_sub_id,
-            )
-
 
 async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
     """Mark a subscription as canceled.

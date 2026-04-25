@@ -55,9 +55,6 @@ class Command(BaseCommand):
             if price_row is None:
                 self.stdout.write(f"  · Skipping plan {plan.name}: no PlanPrice row")
                 continue
-            if price_row.amount == 0:
-                self.stdout.write(f"  · Skipping free plan {plan.name} (no Stripe price needed)")
-                continue
 
             new_price_id = self._upsert_price(
                 lookup_key=_plan_lookup_key(plan),

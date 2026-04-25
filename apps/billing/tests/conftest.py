@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from django.core.cache import cache
 
-from apps.billing.models import Plan, PlanPrice, PlanTier, StripeCustomer, Subscription
+from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
 from apps.users.models import AccountType, User
 
 
@@ -96,31 +96,6 @@ def team_subscription(stripe_customer, team_plan, team_plan_price):
         quantity=2,
         current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
         current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
-    )
-
-
-@pytest.fixture
-def free_plan(db):
-    plan = Plan.objects.create(
-        name="Personal Free",
-        context="personal",
-        tier=PlanTier.FREE,
-        interval="month",
-        is_active=True,
-    )
-    PlanPrice.objects.create(plan=plan, stripe_price_id="price_free_usd", amount=0)
-    return plan
-
-
-@pytest.fixture
-def free_subscription(free_plan, user):
-    return Subscription.objects.create(
-        user=user,
-        status="active",
-        plan=free_plan,
-        quantity=1,
-        current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-        current_period_end=datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC),
     )
 
 

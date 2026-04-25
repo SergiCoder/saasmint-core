@@ -36,16 +36,6 @@ _YEARLY_DESCRIPTION_SUFFIX = " Billed annually \u2014 two months free."
 
 _MONTHLY_PLANS: list[_PlanSpec] = [
     {
-        "name": "Personal Free",
-        "description": (
-            "For individuals getting started. Includes basic analytics and community support."
-        ),
-        "context": PlanContext.PERSONAL,
-        "tier": PlanTier.FREE,
-        "interval": PlanInterval.MONTH,
-        "amount": 0,
-    },
-    {
         "name": "Personal Basic",
         "description": (
             "For power users. Advanced analytics, priority email support, and API access."
@@ -89,7 +79,7 @@ _MONTHLY_PLANS: list[_PlanSpec] = [
 
 
 def _build_plans() -> list[_PlanSpec]:
-    """Return monthly plans + a yearly variant for every paid monthly plan."""
+    """Return monthly plans + a yearly variant for every monthly plan."""
     yearly: list[_PlanSpec] = [
         {
             "name": spec["name"],
@@ -100,7 +90,6 @@ def _build_plans() -> list[_PlanSpec]:
             "amount": spec["amount"] * _YEARLY_DISCOUNT_MONTHS,
         }
         for spec in _MONTHLY_PLANS
-        if spec["tier"] != PlanTier.FREE
     ]
     return [*_MONTHLY_PLANS, *yearly]
 
