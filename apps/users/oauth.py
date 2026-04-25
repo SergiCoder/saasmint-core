@@ -248,10 +248,15 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
             # auto-link in resolve_oauth_user would enable account takeover.
             id_token = token_data.get("id_token")
             claims = _verify_microsoft_id_token(id_token) if id_token else None
-            if claims and claims.get("xms_edov") is True:
-                verified_email = claims.get("email") or claims.get("preferred_username")
-                if not verified_email:
-                    raise OAuthError("Microsoft id_token missing email claim")
+            # Only the `email` claim is covered by xms_edov's domain-ownership
+            # attestation. `preferred_username` is human-readable, mutable, and
+            # explicitly documented as unsafe for authorization decisions
+            # (Microsoft can return e.g. a tenant admin-controlled UPN that
+            # doesn't match the verified mailbox), so we do NOT fall back to
+            # it on the verified path — without an `email` claim we drop to
+            # the unverified branch.
+            verified_email = claims.get("email") if claims else None
+            if claims and claims.get("xms_edov") is True and verified_email:
                 return OAuthUserInfo(
                     email=verified_email,
                     full_name=claims.get("name") or ms.get("displayName", ""),
