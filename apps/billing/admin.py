@@ -80,7 +80,8 @@ class SubscriptionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-s
 
     @admin.display(description="Owner")
     def owner(self, obj: Subscription) -> str:
-        # Free subs link the user directly; paid subs go through stripe_customer.
+        # Personal subs mirror user_id directly for fast user-scoped queries;
+        # team subs only carry stripe_customer (which links to the org).
         if obj.user_id is not None:
             return f"user: {obj.user}"
         customer = obj.stripe_customer

@@ -583,6 +583,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '404':
+          description: Caller has no active subscription. Returned for users on the
+            free tier (no Stripe-backed subscription) and for ORG_MEMBER users without
+            an active org membership.
     patch:
       operationId: billing_subscriptions_me_partial_update
       description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current

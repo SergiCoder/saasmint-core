@@ -189,13 +189,13 @@ async def _resolve_billing_customer(user: User) -> StripeCustomer | None:
 async def _get_customer_and_paid_subscription(
     user: User,
 ) -> tuple[StripeCustomer, Subscription, str]:
-    """Fetch the Stripe customer, active *paid* subscription, and its stripe_id.
+    """Fetch the Stripe customer, active subscription, and its stripe_id.
 
     Resolves via the user for PERSONAL, via the user's active org membership
-    for ORG_MEMBER. Free-plan (local) subscriptions are excluded because
-    PATCH/DELETE operations require a real Stripe subscription. Returning
-    ``stripe_sub_id`` as a non-optional ``str`` lets callers avoid re-checking
-    for ``None``. Raises NotFound when the customer or paid sub is missing.
+    for ORG_MEMBER. Returning ``stripe_sub_id`` as a non-optional ``str`` lets
+    callers avoid re-checking for ``None`` — every persisted Subscription is a
+    Stripe mirror with a non-null stripe_id. Raises NotFound when the customer
+    or subscription is missing.
     """
     repos = get_billing_repos()
     customer = await _resolve_billing_customer(user)
@@ -536,12 +536,13 @@ class CreditBalanceView(BillingScopedView):
 
 
 def _get_active_subscription_for_user(user: User) -> SubscriptionModel:
-    """Fetch the latest active subscription for a user (paid or free).
+    """Fetch the latest active subscription for a user.
 
-    PERSONAL users resolve to their own subscription (paid or free fallback).
-    ORG_MEMBER users resolve to the active subscription of the org they belong
-    to — any member of an active org can see it; the is_billing gate applies
-    to mutations, not reads.
+    PERSONAL users resolve to their own subscription (mirrored on
+    ``Subscription.user_id``). ORG_MEMBER users resolve to the active
+    subscription of the org they belong to — any member of an active org can
+    see it; the is_billing gate applies to mutations, not reads. Raises
+    NotFound when no active subscription exists (the new free state).
     """
     base = SubscriptionModel.objects.select_related("plan__price").filter(
         status__in=ACTIVE_SUBSCRIPTION_STATUSES
@@ -637,7 +638,16 @@ class SubscriptionView(BillingScopedView):
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
-        responses={200: SubscriptionSerializer},
+        responses={
+            200: SubscriptionSerializer,
+            404: OpenApiResponse(
+                description=(
+                    "Caller has no active subscription. Returned for users on the"
+                    " free tier (no Stripe-backed subscription) and for ORG_MEMBER"
+                    " users without an active org membership."
+                )
+            ),
+        },
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
