@@ -227,9 +227,18 @@ class TestHijackAcquireView:
 
 @pytest.mark.django_db
 class TestHijackReleaseView:
-    def test_release_redirects_to_admin_user_changelist(self, staff_client, user):
+    def test_release_post_redirects_to_admin_index(self, staff_client, user):
         # First acquire the user so there is a session to release
         staff_client.post("/hijack/acquire/", {"user_pk": str(user.pk)})
         resp = staff_client.post("/hijack/release/")
         assert resp.status_code == 302
-        assert "/admin/" in resp["Location"]
+        # Admin index, not the users changelist.
+        assert resp["Location"] == "/admin/"
+
+    def test_release_get_redirects_to_admin_index_instead_of_405(self, staff_client):
+        """GETting /hijack/release/ used to return 405 from @require_POST,
+        which broke the admin re-login flow when a stale next= pointed at
+        this URL. The view now redirects GETs to admin home as a no-op."""
+        resp = staff_client.get("/hijack/release/")
+        assert resp.status_code == 302
+        assert resp["Location"] == "/admin/"

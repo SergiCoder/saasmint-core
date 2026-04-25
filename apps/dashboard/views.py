@@ -47,13 +47,33 @@ class HijackAcquireView(AcquireUserView):
         return reverse("dashboard:dashboard")
 
 
-@method_decorator(staff_member_required, name="dispatch")
-@method_decorator(require_POST, name="dispatch")
 class HijackReleaseView(ReleaseUserView):
-    """Override hijack release to redirect to admin users list."""
+    """Override hijack release to land back on the admin home as admin.
+
+    Notably this view is **not** wrapped in ``staff_member_required`` —
+    during impersonation, ``request.user`` is the impersonated (non-staff)
+    user. A staff-member gate would bounce the release POST to the admin
+    login page (with a stale ``next=/hijack/release/``), which is exactly
+    how a stop-impersonating click would 302→login→GET→405. The parent's
+    ``UserPassesTestMixin.test_func`` already gates POST on
+    ``session["hijack_history"]`` — i.e. "we are currently impersonating
+    someone" — which is the correct invariant for release.
+
+    A GET here isn't a valid release (release requires a CSRF-checked POST)
+    but is reachable via the browser back-button and via a login redirect
+    where ``next=/hijack/release/`` is stale. Bounce GETs to the admin home
+    instead of returning 405.
+    """
+
+    def dispatch(
+        self, request: HttpRequest, *args: object, **kwargs: object
+    ) -> HttpResponse:
+        if request.method == "GET":
+            return HttpResponseRedirect(reverse("admin:index"))
+        return super().dispatch(request, *args, **kwargs)
 
     def get_success_url(self) -> str:
-        return reverse("admin:users_user_changelist")
+        return reverse("admin:index")
 
 
 class DashboardView(TemplateView):
