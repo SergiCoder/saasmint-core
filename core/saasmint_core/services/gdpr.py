@@ -67,7 +67,7 @@ async def delete_account(
 
     # Cancel any paid Stripe subscription
     active_sub = await subscription_repo.get_active_for_user(user_id)
-    if active_sub and not active_sub.is_free:
+    if active_sub is not None and active_sub.stripe_id is not None:
         await _stripe_request(stripe.Subscription.cancel, active_sub.stripe_id)
 
     if customer:
