@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import httpx
+import jwt
 import pytest
 
 from apps.users.oauth import (
     OAuthError,
     _fetch_github_primary_email,
+    _verify_microsoft_id_token,
     exchange_code,
 )
 
@@ -158,7 +161,8 @@ class TestExchangeCodeGitHub:
 
 
 class TestExchangeCodeMicrosoft:
-    def test_returns_verified_user_info_from_mail(self):
+    def test_unverified_when_id_token_missing(self):
+        # No id_token in the token response → caller cannot trust email.
         token_resp = _mock_response(json_data={"access_token": "tok"})
         user_resp = _mock_response(
             json_data={"id": "ms-1", "mail": "dan@example.com", "displayName": "Dan"}
@@ -171,12 +175,109 @@ class TestExchangeCodeMicrosoft:
 
         assert info.email == "dan@example.com"
         assert info.full_name == "Dan"
+        assert info.email_verified is False
+
+    def test_unverified_when_id_token_verification_fails(self):
+        # id_token present but signature/audience verification fails →
+        # we have no proof of email ownership, so fall back to unverified.
+        token_resp = _mock_response(json_data={"access_token": "tok", "id_token": "bogus"})
+        user_resp = _mock_response(
+            json_data={"id": "ms-2", "mail": "dan@example.com", "displayName": "Dan"}
+        )
+        with (
+            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._verify_microsoft_id_token", return_value=None),
+        ):
+            info = exchange_code("microsoft", "c", "https://host/cb")
+
+        assert info.email == "dan@example.com"
+        assert info.email_verified is False
+
+    def test_unverified_when_xms_edov_missing(self):
+        # id_token verifies but Microsoft did not assert domain ownership
+        # (consumer MSA, or work account in a tenant where domain isn't
+        # verified) → still unverified.
+        token_resp = _mock_response(json_data={"access_token": "tok", "id_token": "real"})
+        user_resp = _mock_response(
+            json_data={"id": "ms-3", "mail": "dan@example.com", "displayName": "Dan"}
+        )
+        claims = {"email": "dan@example.com", "oid": "ms-3", "name": "Dan"}
+        with (
+            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
+        ):
+            info = exchange_code("microsoft", "c", "https://host/cb")
+
+        assert info.email_verified is False
+
+    def test_verified_when_xms_edov_true(self):
+        # Happy path: tenant-verified domain. Trust id_token claims as
+        # the source of truth for email/name/oid.
+        token_resp = _mock_response(json_data={"access_token": "tok", "id_token": "real"})
+        user_resp = _mock_response(
+            json_data={"id": "ms-graph-id", "mail": "ignored@example.com", "displayName": "Ignored"}
+        )
+        claims = {
+            "email": "alice@verified-tenant.com",
+            "oid": "ms-oid-4",
+            "name": "Alice",
+            "xms_edov": True,
+        }
+        with (
+            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
+        ):
+            info = exchange_code("microsoft", "c", "https://host/cb")
+
+        # id_token claims win over Graph /me when verified.
+        assert info.email == "alice@verified-tenant.com"
+        assert info.full_name == "Alice"
+        assert info.provider_user_id == "ms-oid-4"
         assert info.email_verified is True
 
-    def test_falls_back_to_user_principal_name(self):
+    def test_verified_falls_back_to_preferred_username_when_email_claim_missing(self):
+        token_resp = _mock_response(json_data={"access_token": "tok", "id_token": "real"})
+        user_resp = _mock_response(
+            json_data={"id": "ms-5", "displayName": "Bob"}
+        )
+        claims = {
+            "preferred_username": "bob@verified-tenant.com",
+            "oid": "ms-oid-5",
+            "name": "Bob",
+            "xms_edov": True,
+        }
+        with (
+            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
+        ):
+            info = exchange_code("microsoft", "c", "https://host/cb")
+
+        assert info.email == "bob@verified-tenant.com"
+        assert info.email_verified is True
+
+    def test_verified_raises_when_id_token_has_no_email_claim(self):
+        token_resp = _mock_response(json_data={"access_token": "tok", "id_token": "real"})
+        user_resp = _mock_response(
+            json_data={"id": "ms-6", "mail": "dan@example.com", "displayName": "Dan"}
+        )
+        claims = {"oid": "ms-oid-6", "xms_edov": True}
+        with (
+            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
+            pytest.raises(OAuthError),
+        ):
+            exchange_code("microsoft", "c", "https://host/cb")
+
+    def test_falls_back_to_user_principal_name_unverified(self):
+        # Unverified path: no id_token, Graph /me gives only userPrincipalName.
         token_resp = _mock_response(json_data={"access_token": "tok"})
         user_resp = _mock_response(
-            json_data={"id": "ms-2", "userPrincipalName": "eve@example.com", "displayName": "Eve"}
+            json_data={"id": "ms-7", "userPrincipalName": "eve@example.com", "displayName": "Eve"}
         )
         with (
             patch("apps.users.oauth.httpx.post", return_value=token_resp),
@@ -185,11 +286,12 @@ class TestExchangeCodeMicrosoft:
             info = exchange_code("microsoft", "c", "https://host/cb")
 
         assert info.email == "eve@example.com"
-        assert info.email_verified is True
+        assert info.email_verified is False
 
     def test_raises_when_email_missing(self):
+        # No id_token AND Graph /me has no mail/UPN → cannot proceed.
         token_resp = _mock_response(json_data={"access_token": "tok"})
-        user_resp = _mock_response(json_data={"id": "ms-3", "displayName": "No Email"})
+        user_resp = _mock_response(json_data={"id": "ms-8", "displayName": "No Email"})
         with (
             patch("apps.users.oauth.httpx.post", return_value=token_resp),
             patch("apps.users.oauth.httpx.get", return_value=user_resp),
@@ -246,3 +348,83 @@ class TestFetchGitHubPrimaryEmail:
             pytest.raises(httpx.HTTPStatusError),
         ):
             _fetch_github_primary_email("tok")
+
+
+# ---------------------------------------------------------------------------
+# _verify_microsoft_id_token
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyMicrosoftIdToken:
+    """Direct unit tests for the JWKS-backed id_token verifier."""
+
+    _GOOD_CLAIMS: ClassVar[dict[str, object]] = {
+        "iss": "https://login.microsoftonline.com/abc-tenant-id/v2.0",
+        "aud": "test-client-id",
+        "email": "alice@verified-tenant.com",
+        "oid": "ms-oid-1",
+        "xms_edov": True,
+    }
+
+    def _patch_decode(self, return_value=None, side_effect=None):
+        signing_key = MagicMock()
+        signing_key.key = "fake-public-key"
+        client = MagicMock()
+        client.get_signing_key_from_jwt.return_value = signing_key
+        return (
+            patch("apps.users.oauth._ms_jwks_client", return_value=client),
+            patch(
+                "apps.users.oauth.jwt.decode",
+                return_value=return_value,
+                side_effect=side_effect,
+            ),
+        )
+
+    def test_returns_claims_on_success(self):
+        jwks_patch, decode_patch = self._patch_decode(return_value=self._GOOD_CLAIMS)
+        with jwks_patch, decode_patch:
+            claims = _verify_microsoft_id_token("good-jwt")
+        assert claims == self._GOOD_CLAIMS
+
+    def test_returns_none_on_invalid_signature(self):
+        jwks_patch, decode_patch = self._patch_decode(
+            side_effect=jwt.InvalidSignatureError("bad sig")
+        )
+        with jwks_patch, decode_patch:
+            assert _verify_microsoft_id_token("bad-jwt") is None
+
+    def test_returns_none_on_expired_token(self):
+        jwks_patch, decode_patch = self._patch_decode(
+            side_effect=jwt.ExpiredSignatureError("expired")
+        )
+        with jwks_patch, decode_patch:
+            assert _verify_microsoft_id_token("expired-jwt") is None
+
+    def test_returns_none_on_audience_mismatch(self):
+        jwks_patch, decode_patch = self._patch_decode(
+            side_effect=jwt.InvalidAudienceError("wrong aud")
+        )
+        with jwks_patch, decode_patch:
+            assert _verify_microsoft_id_token("foreign-jwt") is None
+
+    def test_returns_none_on_jwks_fetch_failure(self):
+        signing_key = MagicMock()
+        signing_key.key = "fake"
+        client = MagicMock()
+        client.get_signing_key_from_jwt.side_effect = jwt.PyJWKClientError("network down")
+        with patch("apps.users.oauth._ms_jwks_client", return_value=client):
+            assert _verify_microsoft_id_token("any-jwt") is None
+
+    def test_returns_none_when_issuer_is_not_microsoft(self):
+        # Signature OK but issuer is some other identity provider — reject.
+        forged = {**self._GOOD_CLAIMS, "iss": "https://attacker.example.com/abc/v2.0"}
+        jwks_patch, decode_patch = self._patch_decode(return_value=forged)
+        with jwks_patch, decode_patch:
+            assert _verify_microsoft_id_token("forged-jwt") is None
+
+    def test_returns_none_when_issuer_missing(self):
+        no_iss = {**self._GOOD_CLAIMS}
+        del no_iss["iss"]
+        jwks_patch, decode_patch = self._patch_decode(return_value=no_iss)
+        with jwks_patch, decode_patch:
+            assert _verify_microsoft_id_token("no-iss-jwt") is None
