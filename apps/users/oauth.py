@@ -185,8 +185,9 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
             )
         case Provider.MICROSOFT:
             ms: _MicrosoftUserInfo = info
-            # Microsoft Graph does not expose a reliable email_verified flag for
-            # consumer accounts, so treat these emails as unverified.
+            # Microsoft Graph /me returns the email of the authenticated identity
+            # (work/school tenant or consumer MSA). The OAuth handshake itself
+            # establishes ownership, on par with Google's `email_verified: true`.
             email = ms.get("mail") or ms.get("userPrincipalName")
             if not email:
                 raise OAuthError("Microsoft OAuth response missing email")
@@ -194,7 +195,7 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
                 email=email,
                 full_name=ms.get("displayName", ""),
                 provider_user_id=str(ms["id"]),
-                email_verified=False,
+                email_verified=True,
             )
         case _ as unreachable:
             assert_never(unreachable)
