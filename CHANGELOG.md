@@ -8,6 +8,30 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.8.0] - 2026-04-26
+
+### Added
+
+- **Marketing inquiries endpoint.** New `POST /api/v1/marketing/inquiries/`
+  (unauthenticated) accepts landing-page CTA and Contact-form submissions
+  from the frontend and forwards them as a plain-text email to the inbox
+  configured by `MARKETING_INQUIRIES_TO`. Returns `204 No Content` on
+  acceptance and on honeypot-triggered silent drops, `400` for validation
+  failures, `429` when the per-IP rate limit is exceeded, and `500` if
+  the inbox env var is missing. Email payloads are dispatched via the
+  existing Resend transport on a Celery task; logs include the source
+  and a redacted sender (`j***@example.com`) but never the message body.
+- **Dedicated throttle scope `marketing_inquiries` at `3/10minute`.** The
+  endpoint does *not* share the `auth` scope — failure modes differ
+  (admin inbox flood vs outbound spam), traffic shape differs (one
+  submission per visitor vs bursty auth retries), and tuning the
+  contact-form rate would otherwise also throttle login / OAuth /
+  invitation accept. A small custom throttle class
+  (`apps.marketing.throttling.MarketingInquiryThrottle`) extends DRF's
+  rate parser to support multi-unit periods (`N/<count><unit>`).
+- New required env var `MARKETING_INQUIRIES_TO` (documented in `.env.base`
+  and `README.md`).
+
 ## [0.7.2] - 2026-04-25
 
 ### Fixed
