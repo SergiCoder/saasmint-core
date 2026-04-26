@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from apps.marketing.email import _redact_email, send_marketing_inquiry_email
+from apps.marketing.email import redact_email, send_marketing_inquiry_email
 
 
 @pytest.fixture
@@ -18,18 +18,18 @@ def email_settings(settings):
 
 class TestRedactEmail:
     def test_redacts_local_part(self):
-        assert _redact_email("jane@example.com") == "j***@example.com"
+        assert redact_email("jane@example.com") == "j***@example.com"
 
     def test_short_local_part(self):
-        assert _redact_email("a@example.com") == "a***@example.com"
+        assert redact_email("a@example.com") == "a***@example.com"
 
     def test_handles_missing_at_sign(self):
-        assert _redact_email("not-an-email") == "***"
+        assert redact_email("not-an-email") == "***"
 
 
 class TestSendMarketingInquiryEmail:
     def test_calls_resend_with_text_body_not_html(self, email_settings):
-        with patch("apps.marketing.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_marketing_inquiry_email(
                 to="ops@saasmint.test",
                 source="landing-cta",
@@ -44,7 +44,7 @@ class TestSendMarketingInquiryEmail:
         assert "html" not in payload
 
     def test_subject_includes_source_and_sender(self, email_settings):
-        with patch("apps.marketing.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_marketing_inquiry_email(
                 to="ops@saasmint.test",
                 source="contact-page",
@@ -58,7 +58,7 @@ class TestSendMarketingInquiryEmail:
         )
 
     def test_body_includes_source_sender_and_message(self, email_settings):
-        with patch("apps.marketing.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_marketing_inquiry_email(
                 to="ops@saasmint.test",
                 source="contact-page",
@@ -72,7 +72,7 @@ class TestSendMarketingInquiryEmail:
         assert "please call me back" in text
 
     def test_body_renders_no_message_placeholder(self, email_settings):
-        with patch("apps.marketing.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_marketing_inquiry_email(
                 to="ops@saasmint.test",
                 source="landing-cta",

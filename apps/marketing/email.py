@@ -5,13 +5,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-import resend
-from django.conf import settings
+from apps.email_transport import send_email
 
 logger = logging.getLogger(__name__)
 
 
-def _redact_email(email: str) -> str:
+def redact_email(email: str) -> str:
     """Mask the local-part for PII-safe logging: ``jane@example.com`` → ``j***@example.com``."""
     local, _, domain = email.partition("@")
     if not domain:
@@ -21,9 +20,6 @@ def _redact_email(email: str) -> str:
 
 def send_marketing_inquiry_email(*, to: str, source: str, sender: str, message: str) -> None:
     """Send a marketing-inquiry notification as plain text via Resend."""
-    if not resend.api_key:
-        resend.api_key = settings.RESEND_API_KEY
-
     timestamp = datetime.now(UTC).isoformat()
     subject = f"[SaaSmint] {source}: {sender}"
     body = (
@@ -34,12 +30,5 @@ def send_marketing_inquiry_email(*, to: str, source: str, sender: str, message: 
         f"{message if message else '(no message)'}\n"
     )
 
-    resend.Emails.send(
-        {
-            "from": settings.EMAIL_FROM_ADDRESS,
-            "to": [to],
-            "subject": subject,
-            "text": body,
-        }
-    )
-    logger.info("Marketing inquiry forwarded (source=%s, from=%s)", source, _redact_email(sender))
+    send_email(to=to, subject=subject, text=body)
+    logger.info("Marketing inquiry forwarded (source=%s, from=%s)", source, redact_email(sender))

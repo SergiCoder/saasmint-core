@@ -31,8 +31,8 @@ def _disable_throttle(settings):
 
 
 @pytest.fixture(autouse=True)
-def _set_inbox(monkeypatch):
-    monkeypatch.setenv("MARKETING_INQUIRIES_TO", MOCK_INBOX)
+def _set_inbox(settings):
+    settings.MARKETING_INQUIRIES_TO = MOCK_INBOX
 
 
 @pytest.fixture
@@ -163,8 +163,8 @@ class TestMarketingInquiryHoneypot:
 
 class TestMarketingInquiryMisconfiguration:
     @patch("apps.marketing.views.send_marketing_inquiry_email_task.delay")
-    def test_missing_inbox_env_returns_500(self, mock_delay, api, monkeypatch):
-        monkeypatch.delenv("MARKETING_INQUIRIES_TO", raising=False)
+    def test_missing_inbox_setting_returns_500(self, mock_delay, api, settings):
+        settings.MARKETING_INQUIRIES_TO = ""
         resp = api.post(
             URL,
             {"email": "visitor@example.com", "source": "landing-cta"},
@@ -175,8 +175,8 @@ class TestMarketingInquiryMisconfiguration:
         mock_delay.assert_not_called()
 
     @patch("apps.marketing.views.send_marketing_inquiry_email_task.delay")
-    def test_blank_inbox_env_returns_500(self, mock_delay, api, monkeypatch):
-        monkeypatch.setenv("MARKETING_INQUIRIES_TO", "   ")
+    def test_blank_inbox_setting_returns_500(self, mock_delay, api, settings):
+        settings.MARKETING_INQUIRIES_TO = "   "
         resp = api.post(
             URL,
             {"email": "visitor@example.com", "source": "landing-cta"},
