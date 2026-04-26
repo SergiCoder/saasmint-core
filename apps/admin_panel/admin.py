@@ -3,6 +3,7 @@
 Re-registers User with subscription status column and sets site_url to /dashboard/.
 """
 
+from importlib.metadata import version
 from typing import ClassVar
 
 from django.contrib import admin
@@ -17,6 +18,7 @@ from apps.users.admin import UserAdmin
 from apps.users.models import User
 
 admin.site.site_url = "/dashboard/"
+admin.site.site_header = f"SaasMint Core v{version('saasmint-core')} administration"
 
 # Re-register User admin to show subscription status
 admin.site.unregister(User)
