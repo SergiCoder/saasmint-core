@@ -781,6 +781,36 @@ paths:
                 items:
                   type: string
           description: ''
+  /api/v1/marketing/inquiries/:
+    post:
+      operationId: marketing_inquiries_create
+      description: |-
+        POST /api/v1/marketing/inquiries/ — forward landing-page CTA / Contact form to admin inbox.
+
+        Throttled on its own ``marketing_inquiries`` scope rather than the shared ``auth`` scope: the
+        failure mode here (admin inbox filled by one IP) is more direct than auth's (outbound spam),
+        and the traffic shape is one submission per visitor rather than bursty.
+      tags:
+      - marketing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarketingInquiryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/MarketingInquiryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/MarketingInquiryRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '204':
+          description: No response body
   /api/v1/orgs/:
     get:
       operationId: orgs_retrieve
@@ -1432,6 +1462,26 @@ components:
           minLength: 1
       required:
       - refresh_token
+    MarketingInquiryRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          maxLength: 254
+        message:
+          type: string
+          default: ''
+          maxLength: 5000
+        source:
+          $ref: '#/components/schemas/SourceEnum'
+        honeypot:
+          type: string
+          default: ''
+      required:
+      - email
+      - source
     MessageResponse:
       type: object
       description: Schema-only serializer for ``{detail, code}`` envelope responses.
@@ -1967,6 +2017,14 @@ components:
         * `owner` - Owner
         * `admin` - Admin
         * `member` - Member
+    SourceEnum:
+      enum:
+      - landing-cta
+      - contact-page
+      type: string
+      description: |-
+        * `landing-cta` - landing-cta
+        * `contact-page` - contact-page
     Subscription:
       type: object
       properties:

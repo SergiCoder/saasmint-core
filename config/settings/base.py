@@ -96,6 +96,7 @@ INSTALLED_APPS = [
     "apps.orgs",
     "apps.admin_panel",
     "apps.dashboard",
+    "apps.marketing",
 ]
 
 MIDDLEWARE = [
@@ -186,6 +187,11 @@ REST_FRAMEWORK = {
         "auth_login": "5/minute",
         "auth_register": "5/minute",
         "auth_refresh": "60/minute",
+        # Marketing inquiries get a dedicated, much tighter scope: the failure
+        # mode (admin inbox flooded by a single IP) is more direct than auth's
+        # (outbound spam, contained by Resend reputation), and the traffic
+        # shape is one-and-done rather than bursty.
+        "marketing_inquiries": "3/10minute",
         "billing": "100/hour",
         "account": "120/hour",
         "account_export": "3/hour",

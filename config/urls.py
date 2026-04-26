@@ -35,6 +35,7 @@ urlpatterns = [
     path("api/v1/timezones/", TimezoneListView.as_view(), name="timezone-list"),
     path("api/v1/billing/", include("apps.billing.urls")),
     path("api/v1/orgs/", include("apps.orgs.urls")),
+    path("api/v1/marketing/", include("apps.marketing.urls")),
     path("api/v1/", include(("apps.orgs.invitation_urls", "orgs-invitations"))),
     path("api/v1/webhooks/", include("apps.billing.webhook_urls")),
 ]
