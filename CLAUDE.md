@@ -5,7 +5,7 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 ## Architecture
 
 - `core/saasmint_core/` — framework-agnostic domain layer (domain models, services, repositories interfaces).
-- `apps/` — Django apps (`users`, `billing`, `orgs`, `dashboard`, `admin_panel`). Each has models, views, serializers, urls, tests/.
+- `apps/` — Django apps (`users`, `billing`, `orgs`, `dashboard`, `admin_panel`, `marketing`). Each has models, views, serializers, urls, tests/.
 - `config/` — Django settings (base/dev/test/prod), root urls, celery.
 - `middleware/` — custom middleware: `security.py` (CSP / security headers) and `exceptions.py` (DRF error-envelope normalisation).
 - Django apps implement repository interfaces from core and wire them to DRF views/serializers.
