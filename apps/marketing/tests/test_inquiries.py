@@ -213,6 +213,29 @@ class TestMarketingInquiryRateLimit:
         assert t.parse_rate("3/m") == (3, 60)
         assert t.parse_rate(None) == (None, None)
 
+    def test_throttle_init_tolerates_missing_scope_rate(self, monkeypatch):
+        """When ``marketing_inquiries`` is absent from ``THROTTLE_RATES``,
+        the throttle must instantiate with ``rate=None`` rather than raising
+        ``ImproperlyConfigured`` — otherwise tests that swap REST_FRAMEWORK
+        (clearing the scope) cannot even build the view.
+        """
+        from apps.marketing.throttling import MarketingInquiryThrottle
+
+        # SimpleRateThrottle reads from the class-level THROTTLE_RATES dict
+        # (snapshot of api_settings.DEFAULT_THROTTLE_RATES at import time).
+        # Patch it to one without our scope so get_rate() raises
+        # ImproperlyConfigured and the fallback kicks in.
+        monkeypatch.setattr(
+            MarketingInquiryThrottle,
+            "THROTTLE_RATES",
+            {"auth": "1000/hour"},
+        )
+
+        t = MarketingInquiryThrottle()
+        assert t.rate is None
+        assert t.num_requests is None
+        assert t.duration is None
+
 
 class TestMarketingInquiryResponseShape:
     @patch("apps.marketing.views.send_marketing_inquiry_email_task.delay")
