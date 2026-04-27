@@ -87,6 +87,17 @@ class OAuthEmailNotVerifiedError(Exception):
     """Raised when the OAuth provider did not confirm email ownership."""
 
 
+class OAuthEmailUnverifiedCollisionError(Exception):
+    """Raised when an OAuth-provided email matches an existing local account
+    but the provider is not trusted for auto-link (either ``email_verified``
+    is false/absent, or the provider is not on
+    ``apps.users.services.TRUSTED_FOR_AUTO_LINK``).
+
+    The user must sign in with their password and link the provider
+    explicitly — auto-linking on an unverified or untrusted source would
+    enable account takeover."""
+
+
 @dataclass(frozen=True)
 class OAuthUserInfo:
     email: str

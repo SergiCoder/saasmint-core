@@ -321,6 +321,10 @@ class TestOAuthCallbackUnverifiedEmail:
         assert not User.objects.filter(email="unverified@example.com").exists()
 
     def test_unverified_email_blocks_linking_to_existing_account(self, client, _oauth_state):
+        """Unverified email + existing local account → ``oauth_email_unverified_collision``
+        (NOT generic ``email_not_verified``). Frontend uses the collision
+        code to guide the user to log in with their password and link
+        the provider explicitly."""
         User.objects.create_user(
             email="victim@example.com",
             password="testpass123",  # noqa: S106
@@ -337,7 +341,7 @@ class TestOAuthCallbackUnverifiedEmail:
                 {"code": "auth-code", "state": "test-state"},
             )
         assert resp.status_code == 302
-        assert "email_not_verified" in resp["Location"]
+        assert "oauth_email_unverified_collision" in resp["Location"]
         assert not SocialAccount.objects.filter(
             provider="microsoft", provider_user_id="ms-attacker"
         ).exists()

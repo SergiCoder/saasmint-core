@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from apps.users.models import SocialAccount, User
-from apps.users.oauth import OAuthEmailNotVerifiedError, OAuthUserInfo
+from apps.users.oauth import (
+    OAuthEmailNotVerifiedError,
+    OAuthEmailUnverifiedCollisionError,
+    OAuthUserInfo,
+)
 from apps.users.services import resolve_oauth_user
 
 
@@ -98,6 +102,10 @@ class TestResolveOAuthUserUnverifiedEmail:
         assert not User.objects.filter(email="unverified@example.com").exists()
 
     def test_unverified_email_refuses_to_link_existing_user(self):
+        """Unverified email + existing local account → collision error
+        (specifically, NOT the generic email-not-verified error). Frontend
+        uses the collision code to guide the user to log in with their
+        password and link the provider explicitly."""
         User.objects.create_user(
             email="victim@example.com",
             password="testpass123",  # noqa: S106
@@ -108,7 +116,7 @@ class TestResolveOAuthUserUnverifiedEmail:
             provider_user_id="ms-attacker",
             email_verified=False,
         )
-        with pytest.raises(OAuthEmailNotVerifiedError):
+        with pytest.raises(OAuthEmailUnverifiedCollisionError):
             resolve_oauth_user("microsoft", info)
         assert not SocialAccount.objects.filter(
             provider="microsoft", provider_user_id="ms-attacker"
@@ -130,3 +138,63 @@ class TestResolveOAuthUserUnverifiedEmail:
         )
         result = resolve_oauth_user("microsoft", info)
         assert result.pk == user.pk
+
+
+@pytest.mark.django_db
+class TestResolveOAuthUserTrustList:
+    """The auto-link trust list is defense-in-depth. Today every supported
+    provider (google, github, microsoft) is on the list, so the untrusted-
+    provider branch is exercised via a hypothetical/future provider name.
+    See ``apps.users.services.TRUSTED_FOR_AUTO_LINK``."""
+
+    def test_github_auto_links_existing_user(self):
+        """GitHub's ``verified`` flag from /user/emails primary is
+        comparable strength to Google's email verification — the user
+        clicked a link the provider sent. Both are trusted."""
+        existing = User.objects.create_user(
+            email="gh-existing@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Existing",
+        )
+        info = _info(
+            email="gh-existing@example.com",
+            provider_user_id="gh-link-1",
+            email_verified=True,
+        )
+        user = resolve_oauth_user("github", info)
+        assert user.pk == existing.pk
+        assert SocialAccount.objects.filter(
+            user=user, provider="github", provider_user_id="gh-link-1"
+        ).exists()
+
+    def test_untrusted_provider_collides_on_existing_user(self):
+        """A provider not on the trust list cannot auto-link onto an
+        existing local account, even when ``email_verified`` is True."""
+        User.objects.create_user(
+            email="trusted@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Trusted",
+        )
+        info = _info(
+            email="trusted@example.com",
+            provider_user_id="future-1",
+            email_verified=True,
+        )
+        with pytest.raises(OAuthEmailUnverifiedCollisionError):
+            resolve_oauth_user("future_provider", info)
+        assert not SocialAccount.objects.filter(provider="future_provider").exists()
+
+    def test_untrusted_provider_creates_new_user_when_no_collision(self):
+        """An untrusted provider can still create a brand-new account on
+        first login — the trust list only gates the existing-user
+        auto-link path."""
+        info = _info(
+            email="brand-new@example.com",
+            provider_user_id="future-new",
+            email_verified=True,
+        )
+        user = resolve_oauth_user("future_provider", info)
+        assert user.email == "brand-new@example.com"
+        assert SocialAccount.objects.filter(
+            user=user, provider="future_provider", provider_user_id="future-new"
+        ).exists()
