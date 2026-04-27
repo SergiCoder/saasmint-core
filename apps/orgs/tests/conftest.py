@@ -111,13 +111,6 @@ def member_client(member_user):
 
 
 @pytest.fixture
-def inactive_org(org):
-    org.is_active = False
-    org.save(update_fields=["is_active"])
-    return org
-
-
-@pytest.fixture
 def second_admin_user(db):
     return User.objects.create_user(
         email="admin2@example.com",

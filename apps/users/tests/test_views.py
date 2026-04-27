@@ -309,9 +309,7 @@ class TestAccountViewDELETE:
             Subscription,
         )
 
-        cust = StripeCustomer.objects.create(
-            stripe_id="cus_gdpr_del", user=user, livemode=False
-        )
+        cust = StripeCustomer.objects.create(stripe_id="cus_gdpr_del", user=user, livemode=False)
         plan = Plan.objects.create(
             name="Personal Basic",
             context=PlanContext.PERSONAL,
@@ -348,9 +346,7 @@ class TestAccountViewDELETE:
         mock_cust_del.assert_not_called()
 
     @patch("saasmint_core.services.gdpr.stripe.Customer.delete")
-    def test_delete_non_owner_membership_decrements_seats(
-        self, mock_cust_del, authed_client, user
-    ):
+    def test_delete_non_owner_membership_decrements_seats(self, mock_cust_del, authed_client, user):
         """Deleting a non-owner member cascades through pre_delete_hook:
         the membership is removed and the team sub quantity is decremented."""
         from datetime import UTC, datetime
@@ -376,9 +372,7 @@ class TestAccountViewDELETE:
         OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.MEMBER)
 
-        team_cust = StripeCustomer.objects.create(
-            stripe_id="cus_seatdec", org=org, livemode=False
-        )
+        team_cust = StripeCustomer.objects.create(stripe_id="cus_seatdec", org=org, livemode=False)
         team_plan = Plan.objects.create(
             name="Team",
             context=PlanContext.TEAM,
@@ -397,9 +391,7 @@ class TestAccountViewDELETE:
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
 
-        with patch(
-            "apps.orgs.tasks.decrement_subscription_seats_task.delay"
-        ) as mock_dispatch:
+        with patch("apps.orgs.tasks.decrement_subscription_seats_task.delay") as mock_dispatch:
             resp = authed_client.delete("/api/v1/account/")
 
         assert resp.status_code == 204
@@ -441,9 +433,7 @@ class TestAccountExportView:
             Subscription,
         )
 
-        cust = StripeCustomer.objects.create(
-            stripe_id="cus_export", user=user, livemode=False
-        )
+        cust = StripeCustomer.objects.create(stripe_id="cus_export", user=user, livemode=False)
         plan = Plan.objects.create(
             name="Personal Basic",
             context=PlanContext.PERSONAL,

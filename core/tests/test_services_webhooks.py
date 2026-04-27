@@ -563,6 +563,128 @@ async def test_org_cancellation_marks_canceled_only() -> None:
     assert len(subscription_repo._store) == 1
 
 
+@pytest.mark.anyio
+async def test_org_cancellation_invokes_delete_callback() -> None:
+    """When an org-scoped sub (user_id=None, customer.org_id set) is canceled,
+    the on_org_subscription_canceled callback fires with the org id so the
+    Django side can hard-delete the org. Mirrors the wiring of
+    apps.orgs.services.delete_org_on_subscription_cancel."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    org_id = uuid4()
+    customer = make_stripe_customer(org_id=org_id, stripe_id="cus_org_cb")
+    await customer_repo.save(customer)
+    org_sub = make_subscription(
+        stripe_id="sub_org_cb", user_id=None, stripe_customer_id=customer.id
+    )
+    await subscription_repo.save(org_sub)
+
+    received: list[UUID] = []
+
+    async def _on_org_canceled(arg_org_id: UUID) -> None:
+        received.append(arg_org_id)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=subscription_repo,
+        customers=customer_repo,
+        plans=InMemoryPlanRepository(),
+        on_org_subscription_canceled=_on_org_canceled,
+    )
+    event = {
+        "id": "evt_org_cb",
+        "type": "customer.subscription.deleted",
+        "livemode": False,
+        "data": {"object": {"id": "sub_org_cb"}},
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert received == [org_id]
+    assert subscription_repo._store[org_sub.id].status == SubscriptionStatus.CANCELED
+
+
+@pytest.mark.anyio
+async def test_personal_team_customer_does_not_invoke_org_delete_callback() -> None:
+    """When the StripeCustomer has user_id but no org_id (e.g. team checkout
+    that hasn't yet rebound to an org, or a personal sub), the org-delete
+    callback must not fire."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_no_org")
+    await customer_repo.save(customer)
+    org_sub = make_subscription(
+        stripe_id="sub_no_org", user_id=None, stripe_customer_id=customer.id
+    )
+    await subscription_repo.save(org_sub)
+
+    received: list[UUID] = []
+
+    async def _on_org_canceled(arg_org_id: UUID) -> None:
+        received.append(arg_org_id)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=subscription_repo,
+        customers=customer_repo,
+        plans=InMemoryPlanRepository(),
+        on_org_subscription_canceled=_on_org_canceled,
+    )
+    event = {
+        "id": "evt_no_org_cb",
+        "type": "customer.subscription.deleted",
+        "livemode": False,
+        "data": {"object": {"id": "sub_no_org"}},
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert received == []
+
+
+@pytest.mark.anyio
+async def test_org_cancellation_without_callback_logs_and_succeeds() -> None:
+    """If on_org_subscription_canceled is not registered, the event is still
+    processed (sub flipped to CANCELED) and the missing-callback warning path
+    runs without raising."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    org_id = uuid4()
+    customer = make_stripe_customer(org_id=org_id, stripe_id="cus_no_cb")
+    await customer_repo.save(customer)
+    org_sub = make_subscription(
+        stripe_id="sub_no_cb", user_id=None, stripe_customer_id=customer.id
+    )
+    await subscription_repo.save(org_sub)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=subscription_repo,
+        customers=customer_repo,
+        plans=InMemoryPlanRepository(),
+        # on_org_subscription_canceled intentionally omitted
+    )
+    event = {
+        "id": "evt_no_cb",
+        "type": "customer.subscription.deleted",
+        "livemode": False,
+        "data": {"object": {"id": "sub_no_cb"}},
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert subscription_repo._store[org_sub.id].status == SubscriptionStatus.CANCELED
+    assert event_repo._store[stripe_id].processed_at is not None
+    assert event_repo._store[stripe_id].error is None
 
 
 # ── Basil API: period fields on items ────────────────────────────────────────

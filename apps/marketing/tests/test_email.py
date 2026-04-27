@@ -53,8 +53,7 @@ class TestSendMarketingInquiryEmail:
             )
 
         assert (
-            mock_send.call_args[0][0]["subject"]
-            == "[SaaSmint] contact-page: visitor@example.com"
+            mock_send.call_args[0][0]["subject"] == "[SaaSmint] contact-page: visitor@example.com"
         )
 
     def test_body_includes_source_sender_and_message(self, email_settings):

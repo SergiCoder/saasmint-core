@@ -9,14 +9,13 @@ from uuid import uuid4
 import pytest
 from asgiref.sync import async_to_sync
 
-from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
+from apps.orgs.models import Org, OrgMember, OrgRole
 from apps.orgs.services import (
     _cancel_team_subscription,
     _create_org_with_owner,
-    cancel_pending_invitations_for_org,
-    deactivate_org,
     decrement_subscription_seats,
     delete_org,
+    delete_org_on_subscription_cancel,
     delete_orgs_created_by_user,
     generate_unique_slug,
 )
@@ -158,93 +157,20 @@ class TestCreateOrgWithOwner:
 
 
 # ---------------------------------------------------------------------------
-# deactivate_org
+# delete_org_on_subscription_cancel
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestDeactivateOrg:
-    def test_sets_is_active_false(self):
-        user = User.objects.create_user(
-            email="deact@example.com",
-            full_name="Deact",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="Active", slug="active", created_by=user, is_active=True)
-        async_to_sync(deactivate_org)(org.id)
-        org.refresh_from_db()
-        assert org.is_active is False
+class TestDeleteOrgOnSubscriptionCancel:
+    """The webhook callback is dispatch-only — the cascade body lives in the
+    Celery task and is tested in ``apps.orgs.tests.test_tasks``."""
 
-    def test_cancels_pending_invitations(self):
-        user = User.objects.create_user(
-            email="deactinv@example.com",
-            full_name="Deact Inv",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="InvOrg", slug="invorg", created_by=user, is_active=True)
-        Invitation.objects.create(
-            org=org,
-            email="pending@example.com",
-            role=OrgRole.MEMBER,
-            token="token-deact",  # noqa: S106
-            invited_by=user,
-            expires_at=datetime(2030, 1, 1, tzinfo=UTC),
-        )
-        async_to_sync(deactivate_org)(org.id)
-        inv = Invitation.objects.get(token="token-deact")  # noqa: S106
-        assert inv.status == InvitationStatus.CANCELLED
-
-    def test_already_inactive_is_noop(self):
-        user = User.objects.create_user(
-            email="inactive@example.com",
-            full_name="Inactive",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="Inactive", slug="inactive", created_by=user, is_active=False)
-        async_to_sync(deactivate_org)(org.id)
-        org.refresh_from_db()
-        assert org.is_active is False
-
-    def test_missing_org_is_noop(self):
-        """DELETE-then-webhook race: org was hard-deleted before
-        ``customer.subscription.deleted`` fired. The handler must not raise."""
-        async_to_sync(deactivate_org)(uuid4())
-
-
-# ---------------------------------------------------------------------------
-# cancel_pending_invitations_for_org
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestCancelPendingInvitations:
-    def test_cancels_pending_only(self):
-        user = User.objects.create_user(
-            email="cancelinv@example.com",
-            full_name="Cancel Inv",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="CancelOrg", slug="cancelorg", created_by=user)
-        Invitation.objects.create(
-            org=org,
-            email="p1@example.com",
-            token="t-pending",  # noqa: S106
-            invited_by=user,
-            expires_at=datetime(2030, 1, 1, tzinfo=UTC),
-            status=InvitationStatus.PENDING,
-        )
-        Invitation.objects.create(
-            org=org,
-            email="p2@example.com",
-            token="t-accepted",  # noqa: S106
-            invited_by=user,
-            expires_at=datetime(2030, 1, 1, tzinfo=UTC),
-            status=InvitationStatus.ACCEPTED,
-        )
-        count = async_to_sync(cancel_pending_invitations_for_org)(org.id)
-        assert count == 1
-        assert Invitation.objects.get(token="t-pending").status == InvitationStatus.CANCELLED  # noqa: S106
-        assert Invitation.objects.get(token="t-accepted").status == InvitationStatus.ACCEPTED  # noqa: S106
+    @patch("apps.orgs.tasks.delete_org_on_subscription_cancel_task.delay")
+    def test_dispatches_task_with_stringified_org_id(self, mock_delay):
+        org_id = uuid4()
+        async_to_sync(delete_org_on_subscription_cancel)(org_id)
+        mock_delay.assert_called_once_with(str(org_id))
 
 
 # ---------------------------------------------------------------------------

@@ -1263,7 +1263,7 @@ class TestProductCheckoutTeamOwnership:
             full_name=f"{role.value} User",
             account_type=AccountType.ORG_MEMBER,
         )
-        org = Org.objects.create(name="Team Org", slug="team-org", created_by=user, is_active=True)
+        org = Org.objects.create(name="Team Org", slug="team-org", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=role, is_billing=is_billing)
         client = APIClient()
         client.force_authenticate(user=user)

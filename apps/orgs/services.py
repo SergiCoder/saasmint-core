@@ -175,26 +175,18 @@ def _create_org_with_owner(
     return org, member
 
 
-async def deactivate_org(org_id: UUID) -> None:
-    """Deactivate an org after its subscription is canceled.
+async def delete_org_on_subscription_cancel(org_id: UUID) -> None:
+    """Schedule hard-delete of an org after its team subscription is canceled.
 
-    Sets is_active=False and cancels pending invitations.
-    Called from the customer.subscription.deleted webhook handler.
+    Dispatch-only: the cascade itself runs in
+    :func:`apps.orgs.tasks.delete_org_on_subscription_cancel_task` so the
+    Stripe webhook handler returns within the retry window. See that task
+    for the cascade semantics, idempotency contract, and the rule-9 note on
+    why we don't branch on ``cancellation_details.reason``.
     """
-    updated = await Org.objects.filter(id=org_id, is_active=True).aupdate(is_active=False)
-    if updated:
-        await cancel_pending_invitations_for_org(org_id)
-        logger.info("Deactivated org %s after subscription cancellation", org_id)
-    else:
-        logger.warning("Org %s already inactive or not found", org_id)
+    from apps.orgs.tasks import delete_org_on_subscription_cancel_task
 
-
-async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
-    """Cancel all pending invitations for an org. Returns count cancelled."""
-    count = await Invitation.objects.filter(org_id=org_id, status=InvitationStatus.PENDING).aupdate(
-        status=InvitationStatus.CANCELLED
-    )
-    return count
+    delete_org_on_subscription_cancel_task.delay(str(org_id))
 
 
 def accept_invitation(

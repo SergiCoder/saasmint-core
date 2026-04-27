@@ -321,7 +321,7 @@ def get_webhook_repos() -> WebhookRepos:
     from saasmint_core.services.webhooks import WebhookRepos
 
     from apps.billing.services import on_product_checkout_completed
-    from apps.orgs.services import deactivate_org, on_team_checkout_completed
+    from apps.orgs.services import delete_org_on_subscription_cancel, on_team_checkout_completed
 
     return WebhookRepos(
         events=DjangoStripeEventRepository(),
@@ -329,7 +329,7 @@ def get_webhook_repos() -> WebhookRepos:
         customers=DjangoStripeCustomerRepository(),
         plans=DjangoPlanRepository(),
         on_team_checkout_completed=on_team_checkout_completed,
-        on_org_subscription_canceled=deactivate_org,
+        on_org_subscription_canceled=delete_org_on_subscription_cancel,
         on_product_checkout_completed=on_product_checkout_completed,
     )
 
