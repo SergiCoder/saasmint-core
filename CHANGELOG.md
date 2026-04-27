@@ -8,6 +8,44 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.8.2] - 2026-04-27
+
+### Changed
+
+- **Team-subscription cancellation now hard-deletes the org.** When the
+  `customer.subscription.deleted` Stripe webhook fires for a team sub,
+  the org and everything cascading from it (`OrgMember` rows, pending
+  `Invitation` rows, single-org-member `User` accounts) are now hard-
+  deleted. Previously the org was left in a `is_active=False` zombie
+  state, which produced a confusing post-cancellation experience and
+  was inconsistent with the no-soft-delete philosophy. Owners cannot
+  recover the org after cancellation; they must subscribe again to a
+  fresh org.
+- **The cascade is unconditional.** Voluntary (owner-initiated) and
+  involuntary (failed-payment retries exhausted, fraud, Stripe-side
+  termination) cancellation collapse to the same code path. The
+  webhook handler does NOT branch on `cancellation_details.reason`.
+
+### Removed
+
+- **`Org.is_active` column.** The flag was only ever written by the
+  pre-PR-2 `deactivate_org` soft-state path; with hard-delete on
+  cancel, no production code sets it. Migration
+  `apps/orgs/migrations/0010_remove_org_is_active.py` drops the
+  column. All `is_active=True` filters in `apps.orgs.views`,
+  `apps.orgs.services`, and `apps.billing.views` are gone, as is the
+  field on `core.saasmint_core.domain.org.Org`.
+- **`apps.orgs.services.deactivate_org`** — replaced by
+  `delete_org_on_subscription_cancel`. Same webhook trigger, hard-
+  delete cascade instead of soft `is_active=False` flip.
+- **`apps.orgs.services.cancel_pending_invitations_for_org`** — the
+  helper had no production callers post-rewrite (the cascade goes
+  through `_delete_org_db_only`, which inlines the same UPDATE).
+- **`_InvitationOrgGone` exception class and the `if not org.is_active`
+  guard in `InvitationAcceptView`.** Unreachable now that
+  `Invitation.org` is `on_delete=CASCADE`: a deleted org has no
+  invitations, so an `Invitation` row implies a live `Org`.
+
 ## [0.8.1] - 2026-04-27
 
 ### Changed
