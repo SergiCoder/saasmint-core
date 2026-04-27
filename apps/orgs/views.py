@@ -130,11 +130,9 @@ def _get_org_and_member(
     Raises OrgNotFoundError or InsufficientPermissionError as appropriate.
     """
     try:
-        member = OrgMember.objects.select_related("org").get(
-            org_id=org_id, org__is_active=True, user_id=user_id
-        )
+        member = OrgMember.objects.select_related("org").get(org_id=org_id, user_id=user_id)
     except OrgMember.DoesNotExist:
-        if not Org.objects.filter(id=org_id, is_active=True).exists():
+        if not Org.objects.filter(id=org_id).exists():
             raise OrgNotFoundError(org_id) from None
         raise InsufficientPermissionError("Access denied.") from None
     if allowed_roles is not None and OrgRole(member.role) not in allowed_roles:
@@ -162,7 +160,6 @@ class OrgListView(OrgsScopedView):
         user = get_user(request)
         orgs = Org.objects.filter(
             id__in=OrgMember.objects.filter(user=user).values("org_id"),
-            is_active=True,
         ).order_by("name")
         paginator = _default_paginator()
         page = paginator.paginate_queryset(orgs, request)

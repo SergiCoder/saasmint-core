@@ -33,10 +33,6 @@ class Org(models.Model):
         blank=True,
         related_name="created_orgs",
     )
-    # `is_active` is the live/paused flag set by the subscription-cancelled
-    # webhook and cleared on resubscribe. Hard delete is the only termination
-    # path, so there is no soft-delete column.
-    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

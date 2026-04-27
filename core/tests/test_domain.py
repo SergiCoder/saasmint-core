@@ -93,7 +93,6 @@ def test_org_creation() -> None:
     assert org.name == "Acme Corp"
     assert org.slug == "acme-corp"
     assert org.logo_url is None
-    assert org.is_active is True
 
 
 def test_org_with_optional_fields() -> None:
@@ -426,7 +425,6 @@ def test_stripe_event_model_copy_processed() -> None:
     processed = event.model_copy(update={"processed_at": NOW})
     assert processed.processed_at == NOW
     assert event.processed_at is None
-
 
 
 # ── Product / ProductPrice domain models ────────────────────────────────────

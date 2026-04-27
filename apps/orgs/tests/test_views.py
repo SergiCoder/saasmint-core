@@ -33,11 +33,6 @@ class TestOrgListViewGET:
         assert resp.status_code == 200
         assert resp.data["count"] == 0
 
-    def test_excludes_inactive_orgs(self, authed_client, inactive_org, owner_membership):
-        resp = authed_client.get("/api/v1/orgs/")
-        assert resp.status_code == 200
-        assert resp.data["count"] == 0
-
     def test_unauthenticated_rejected(self):
         client = APIClient()
         resp = client.get("/api/v1/orgs/")
@@ -81,10 +76,6 @@ class TestOrgDetailViewGET:
 
     def test_not_found(self, authed_client):
         resp = authed_client.get(f"/api/v1/orgs/{uuid4()}/")
-        assert resp.status_code == 404
-
-    def test_inactive_org_returns_404(self, authed_client, inactive_org, owner_membership):
-        resp = authed_client.get(f"/api/v1/orgs/{inactive_org.id}/")
         assert resp.status_code == 404
 
 
@@ -692,26 +683,6 @@ class TestInvitationAcceptView:
         assert resp.status_code == 400
         assert "password" in resp.data
 
-    def test_accept_against_inactive_org_returns_404(self, org, owner_membership, user):
-        Invitation.objects.create(
-            org=org,
-            email="inactive-org@example.com",
-            role=OrgRole.MEMBER,
-            token="inactive-org-token",  # noqa: S106
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=7),
-        )
-        org.is_active = False
-        org.save(update_fields=["is_active"])
-
-        client = APIClient()
-        resp = client.post(
-            "/api/v1/invitations/inactive-org-token/accept/",
-            {"full_name": "Ghost", "password": "securepass123"},
-            format="json",
-        )
-        assert resp.status_code == 404
-
     def test_accept_succeeds_even_when_seats_exhausted(self, org, owner_membership, user):
         """Accept-time has no seat check — seat enforcement is invite-time only.
 
@@ -815,30 +786,6 @@ class TestInvitationDeclineView:
 
 
 # ---------------------------------------------------------------------------
-# Inactive org operations
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestInactiveOrgOperations:
-    def test_patch_member_on_inactive_org_returns_404(
-        self, authed_client, inactive_org, owner_membership, member_user, member_membership
-    ):
-        resp = authed_client.patch(
-            f"/api/v1/orgs/{inactive_org.id}/members/{member_user.id}/",
-            {"role": "admin"},
-            format="json",
-        )
-        assert resp.status_code == 404
-
-    def test_list_members_on_inactive_org_returns_404(
-        self, authed_client, inactive_org, owner_membership
-    ):
-        resp = authed_client.get(f"/api/v1/orgs/{inactive_org.id}/members/")
-        assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
 # Unauthenticated access
 # ---------------------------------------------------------------------------
 
@@ -929,32 +876,6 @@ class TestInvitationThrottleScope:
         from apps.orgs.views import InvitationDeclineView
 
         assert InvitationDeclineView.throttle_scope == "auth"
-
-
-# ---------------------------------------------------------------------------
-# Inactive org filtering
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestInactiveOrgFiltering:
-    def test_inactive_org_excluded_from_list(self, authed_client, org, owner_membership):
-        org.is_active = False
-        org.save(update_fields=["is_active"])
-        resp = authed_client.get("/api/v1/orgs/")
-        assert resp.data["count"] == 0
-
-    def test_inactive_org_returns_404_on_detail(self, authed_client, org, owner_membership):
-        org.is_active = False
-        org.save(update_fields=["is_active"])
-        resp = authed_client.get(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 404
-
-    def test_inactive_org_returns_404_on_members(self, authed_client, org, owner_membership):
-        org.is_active = False
-        org.save(update_fields=["is_active"])
-        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/")
-        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

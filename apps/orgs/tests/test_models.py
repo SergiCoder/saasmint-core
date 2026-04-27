@@ -15,7 +15,6 @@ class TestOrg:
 
     def test_defaults(self, org):
         assert org.logo_url is None
-        assert org.is_active is True
 
     def test_slug_unique(self, user):
         Org.objects.create(name="First", slug="unique-slug", created_by=user)
@@ -156,6 +155,3 @@ class TestInvitation:
         org_id = org.id
         org.delete()
         assert not Invitation.objects.filter(org_id=org_id).exists()
-
-    def test_is_active_default_true(self, org):
-        assert org.is_active is True
