@@ -176,27 +176,17 @@ def _create_org_with_owner(
 
 
 async def delete_org_on_subscription_cancel(org_id: UUID) -> None:
-    """Hard-delete an org after its team subscription is canceled.
+    """Schedule hard-delete of an org after its team subscription is canceled.
 
-    Cascades to memberships, pending invitations, and single-org-member user
-    accounts. Called from the ``customer.subscription.deleted`` webhook
-    handler. Idempotent: a missing org row is a no-op (DELETE-then-webhook
-    race or a duplicate webhook delivery).
-
-    All cancel causes cascade — voluntary (owner clicked cancel) and
-    involuntary (failed-payment retries exhausted, fraud, Stripe-side
-    termination) collapse to the same code path. The voluntary/involuntary
-    distinction was deliberately removed; do not reinstate a check on
-    ``cancellation_details.reason``. See
-    .claude/shared/saasmint/signup-subscription-flow.md (rule 9, discussion
-    2026-04-27).
+    Dispatch-only: the cascade itself runs in
+    :func:`apps.orgs.tasks.delete_org_on_subscription_cancel_task` so the
+    Stripe webhook handler returns within the retry window. See that task
+    for the cascade semantics, idempotency contract, and the rule-9 note on
+    why we don't branch on ``cancellation_details.reason``.
     """
-    org = await Org.objects.filter(id=org_id).afirst()
-    if org is None:
-        logger.info("Org %s already gone; subscription cancel is a no-op", org_id)
-        return
-    await sync_to_async(_delete_org_db_only)(org)
-    logger.info("Deleted org %s after subscription cancellation", org_id)
+    from apps.orgs.tasks import delete_org_on_subscription_cancel_task
+
+    delete_org_on_subscription_cancel_task.delay(str(org_id))
 
 
 def accept_invitation(

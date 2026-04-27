@@ -20,7 +20,10 @@ only valid if all three repos already match `<X.Y.Z>` on `main`.
   state, which produced a confusing post-cancellation experience and
   was inconsistent with the no-soft-delete philosophy. Owners cannot
   recover the org after cancellation; they must subscribe again to a
-  fresh org.
+  fresh org. The cascade itself runs in a Celery task
+  (`apps.orgs.tasks.delete_org_on_subscription_cancel_task`) so the
+  webhook returns within Stripe's retry window even for orgs with
+  many members.
 - **The cascade is unconditional.** Voluntary (owner-initiated) and
   involuntary (failed-payment retries exhausted, fraud, Stripe-side
   termination) cancellation collapse to the same code path. The

@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from asgiref.sync import async_to_sync
 
-from apps.orgs.models import Invitation, Org, OrgMember, OrgRole
+from apps.orgs.models import Org, OrgMember, OrgRole
 from apps.orgs.services import (
     _cancel_team_subscription,
     _create_org_with_owner,
@@ -163,104 +163,14 @@ class TestCreateOrgWithOwner:
 
 @pytest.mark.django_db
 class TestDeleteOrgOnSubscriptionCancel:
-    def test_hard_deletes_org(self):
-        user = User.objects.create_user(
-            email="cancel-delete@example.com",
-            full_name="Cancel Delete",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="Active", slug="active", created_by=user)
-        OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER)
-        org_id = org.id
+    """The webhook callback is dispatch-only — the cascade body lives in the
+    Celery task and is tested in ``apps.orgs.tests.test_tasks``."""
 
+    @patch("apps.orgs.tasks.delete_org_on_subscription_cancel_task.delay")
+    def test_dispatches_task_with_stringified_org_id(self, mock_delay):
+        org_id = uuid4()
         async_to_sync(delete_org_on_subscription_cancel)(org_id)
-
-        assert not Org.objects.filter(id=org_id).exists()
-        assert not OrgMember.objects.filter(org_id=org_id).exists()
-
-    def test_cascades_pending_invitations(self):
-        user = User.objects.create_user(
-            email="cascadeinv@example.com",
-            full_name="Cascade Inv",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="InvOrg", slug="invorg", created_by=user)
-        OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER)
-        Invitation.objects.create(
-            org=org,
-            email="pending@example.com",
-            role=OrgRole.MEMBER,
-            token="token-cascade",  # noqa: S106
-            invited_by=user,
-            expires_at=datetime(2030, 1, 1, tzinfo=UTC),
-        )
-
-        async_to_sync(delete_org_on_subscription_cancel)(org.id)
-
-        assert not Invitation.objects.filter(token="token-cascade").exists()  # noqa: S106
-
-    def test_deletes_single_org_member_users(self):
-        owner = User.objects.create_user(
-            email="cascade-owner@example.com",
-            full_name="Owner",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        single_org_member = User.objects.create_user(
-            email="single@example.com",
-            full_name="Single",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="SingleOrg", slug="singleorg", created_by=owner)
-        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)
-        OrgMember.objects.create(org=org, user=single_org_member, role=OrgRole.MEMBER)
-
-        async_to_sync(delete_org_on_subscription_cancel)(org.id)
-
-        assert not User.objects.filter(id=owner.id).exists()
-        assert not User.objects.filter(id=single_org_member.id).exists()
-
-    def test_preserves_users_with_other_memberships(self):
-        owner = User.objects.create_user(
-            email="multi-owner@example.com",
-            full_name="Owner",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        multi_member = User.objects.create_user(
-            email="multi@example.com",
-            full_name="Multi",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org_a = Org.objects.create(name="OrgA", slug="orga", created_by=owner)
-        org_b = Org.objects.create(name="OrgB", slug="orgb", created_by=multi_member)
-        OrgMember.objects.create(org=org_a, user=owner, role=OrgRole.OWNER)
-        OrgMember.objects.create(org=org_a, user=multi_member, role=OrgRole.MEMBER)
-        OrgMember.objects.create(org=org_b, user=multi_member, role=OrgRole.OWNER)
-
-        async_to_sync(delete_org_on_subscription_cancel)(org_a.id)
-
-        assert User.objects.filter(id=multi_member.id).exists()
-        assert OrgMember.objects.filter(user=multi_member, org=org_b).exists()
-
-    def test_missing_org_is_noop(self):
-        """DELETE-then-webhook race or duplicate webhook delivery."""
-        async_to_sync(delete_org_on_subscription_cancel)(uuid4())
-
-    def test_double_invocation_is_idempotent(self):
-        """A duplicate webhook delivery (Stripe retry) must not raise on the
-        second call after the first has hard-deleted the row."""
-        user = User.objects.create_user(
-            email="idem@example.com",
-            full_name="Idem",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="Idem", slug="idem", created_by=user)
-        OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER)
-        org_id = org.id
-
-        async_to_sync(delete_org_on_subscription_cancel)(org_id)
-        async_to_sync(delete_org_on_subscription_cancel)(org_id)
-
-        assert not Org.objects.filter(id=org_id).exists()
+        mock_delay.assert_called_once_with(str(org_id))
 
 
 # ---------------------------------------------------------------------------
