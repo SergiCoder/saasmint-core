@@ -33,20 +33,17 @@ class Org(models.Model):
         blank=True,
         related_name="created_orgs",
     )
-    # `deleted_at` is the canonical soft-delete marker (IS NULL = live).
-    # `is_active` is an orthogonal flag used to pause/disable an org (e.g. after
-    # the team subscription is cancelled) without deleting it, so both columns
-    # are intentional and should be filtered together: deleted_at__isnull=True, is_active=True.
+    # `is_active` is the live/paused flag set by the subscription-cancelled
+    # webhook and cleared on resubscribe. Hard delete is the only termination
+    # path, so there is no soft-delete column.
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     class Meta:
         db_table = "orgs"
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(
                 fields=["slug"],
-                condition=models.Q(deleted_at__isnull=True),
                 name="idx_orgs_slug_active",
             ),
         ]

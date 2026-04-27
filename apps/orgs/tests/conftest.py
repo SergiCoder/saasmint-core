@@ -111,11 +111,9 @@ def member_client(member_user):
 
 
 @pytest.fixture
-def soft_deleted_org(org):
-    from django.utils import timezone
-
-    org.deleted_at = timezone.now()
-    org.save(update_fields=["deleted_at"])
+def inactive_org(org):
+    org.is_active = False
+    org.save(update_fields=["is_active"])
     return org
 
 

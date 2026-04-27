@@ -136,10 +136,10 @@ def _get_org_and_member(
     """
     try:
         member = OrgMember.objects.select_related("org").get(
-            org_id=org_id, org__deleted_at__isnull=True, org__is_active=True, user_id=user_id
+            org_id=org_id, org__is_active=True, user_id=user_id
         )
     except OrgMember.DoesNotExist:
-        if not Org.objects.filter(id=org_id, deleted_at__isnull=True, is_active=True).exists():
+        if not Org.objects.filter(id=org_id, is_active=True).exists():
             raise OrgNotFoundError(org_id) from None
         raise InsufficientPermissionError("Access denied.") from None
     if allowed_roles is not None and OrgRole(member.role) not in allowed_roles:
@@ -167,7 +167,6 @@ class OrgListView(OrgsScopedView):
         user = get_user(request)
         orgs = Org.objects.filter(
             id__in=OrgMember.objects.filter(user=user).values("org_id"),
-            deleted_at__isnull=True,
             is_active=True,
         ).order_by("name")
         paginator = _default_paginator()
@@ -257,7 +256,7 @@ class OrgMemberDetailView(OrgsScopedView):
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
         target = get_object_or_404(
-            OrgMember, org_id=org_id, user_id=member_user_id, org__deleted_at__isnull=True
+            OrgMember, org_id=org_id, user_id=member_user_id
         )
 
         check_can_manage_member(
@@ -303,7 +302,6 @@ class OrgMemberDetailView(OrgsScopedView):
             OrgMember.objects.select_related("user"),
             org_id=org_id,
             user_id=member_user_id,
-            org__deleted_at__isnull=True,
         )
 
         # Cannot remove the owner
@@ -354,7 +352,7 @@ class OrgOwnerView(OrgsScopedView):
         target_user_id = ser.validated_data["user_id"]
 
         target = get_object_or_404(
-            OrgMember, org_id=org_id, user_id=target_user_id, org__deleted_at__isnull=True
+            OrgMember, org_id=org_id, user_id=target_user_id
         )
 
         if target.role != OrgRole.ADMIN:
@@ -587,7 +585,7 @@ class InvitationAcceptView(OrgsScopedView):
             raise _InvitationExpired
 
         org = invitation.org
-        if org.deleted_at is not None or not org.is_active:
+        if not org.is_active:
             raise _InvitationOrgGone
 
         # Email must not already be registered

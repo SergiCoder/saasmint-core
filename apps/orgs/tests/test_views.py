@@ -33,7 +33,7 @@ class TestOrgListViewGET:
         assert resp.status_code == 200
         assert resp.data["count"] == 0
 
-    def test_excludes_soft_deleted_orgs(self, authed_client, soft_deleted_org, owner_membership):
+    def test_excludes_inactive_orgs(self, authed_client, inactive_org, owner_membership):
         resp = authed_client.get("/api/v1/orgs/")
         assert resp.status_code == 200
         assert resp.data["count"] == 0
@@ -83,8 +83,8 @@ class TestOrgDetailViewGET:
         resp = authed_client.get(f"/api/v1/orgs/{uuid4()}/")
         assert resp.status_code == 404
 
-    def test_soft_deleted_org_returns_404(self, authed_client, soft_deleted_org, owner_membership):
-        resp = authed_client.get(f"/api/v1/orgs/{soft_deleted_org.id}/")
+    def test_inactive_org_returns_404(self, authed_client, inactive_org, owner_membership):
+        resp = authed_client.get(f"/api/v1/orgs/{inactive_org.id}/")
         assert resp.status_code == 404
 
 
@@ -683,30 +683,6 @@ class TestInvitationAcceptView:
         assert resp.status_code == 400
         assert "password" in resp.data
 
-    def test_accept_against_soft_deleted_org_returns_404(self, org, owner_membership, user):
-        """Accepting an invite for a soft-deleted org returns 404 via _InvitationOrgGone."""
-        Invitation.objects.create(
-            org=org,
-            email="deleted-org@example.com",
-            role=OrgRole.MEMBER,
-            token="deleted-org-token",  # noqa: S106
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=7),
-        )
-        org.deleted_at = timezone.now()
-        org.save(update_fields=["deleted_at"])
-
-        client = APIClient()
-        resp = client.post(
-            "/api/v1/invitations/deleted-org-token/accept/",
-            {"full_name": "Ghost", "password": "securepass123"},
-            format="json",
-        )
-        assert resp.status_code == 404
-        # Invitation itself was not marked accepted.
-        inv = Invitation.objects.get(token="deleted-org-token")  # noqa: S106
-        assert inv.status == InvitationStatus.PENDING
-
     def test_accept_against_inactive_org_returns_404(self, org, owner_membership, user):
         Invitation.objects.create(
             org=org,
@@ -830,26 +806,26 @@ class TestInvitationDeclineView:
 
 
 # ---------------------------------------------------------------------------
-# Soft-deleted org operations
+# Inactive org operations
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.django_db
-class TestSoftDeletedOrgOperations:
-    def test_patch_member_on_soft_deleted_org_returns_404(
-        self, authed_client, soft_deleted_org, owner_membership, member_user, member_membership
+class TestInactiveOrgOperations:
+    def test_patch_member_on_inactive_org_returns_404(
+        self, authed_client, inactive_org, owner_membership, member_user, member_membership
     ):
         resp = authed_client.patch(
-            f"/api/v1/orgs/{soft_deleted_org.id}/members/{member_user.id}/",
+            f"/api/v1/orgs/{inactive_org.id}/members/{member_user.id}/",
             {"role": "admin"},
             format="json",
         )
         assert resp.status_code == 404
 
-    def test_list_members_on_soft_deleted_org_returns_404(
-        self, authed_client, soft_deleted_org, owner_membership
+    def test_list_members_on_inactive_org_returns_404(
+        self, authed_client, inactive_org, owner_membership
     ):
-        resp = authed_client.get(f"/api/v1/orgs/{soft_deleted_org.id}/members/")
+        resp = authed_client.get(f"/api/v1/orgs/{inactive_org.id}/members/")
         assert resp.status_code == 404
 
 

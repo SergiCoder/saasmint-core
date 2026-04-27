@@ -93,7 +93,7 @@ def test_org_creation() -> None:
     assert org.name == "Acme Corp"
     assert org.slug == "acme-corp"
     assert org.logo_url is None
-    assert org.deleted_at is None
+    assert org.is_active is True
 
 
 def test_org_with_optional_fields() -> None:
@@ -104,10 +104,8 @@ def test_org_with_optional_fields() -> None:
         logo_url="https://example.com/logo.png",
         created_by=uuid4(),
         created_at=NOW,
-        deleted_at=NOW,
     )
     assert org.logo_url == "https://example.com/logo.png"
-    assert org.deleted_at == NOW
 
 
 def test_org_is_frozen() -> None:

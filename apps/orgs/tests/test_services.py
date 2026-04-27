@@ -59,15 +59,14 @@ class TestGenerateUniqueSlug:
         slug = generate_unique_slug("Taken")
         assert slug == "taken-2"
 
-    def test_ignores_soft_deleted_org_slug(self):
+    def test_reuses_slug_after_hard_delete(self):
         user = User.objects.create_user(
             email="slug-del@example.com",
             full_name="Slug Del",
             account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="Deleted", slug="deleted", created_by=user)
-        org.deleted_at = datetime.now(UTC)
-        org.save(update_fields=["deleted_at"])
+        org.delete()
         slug = generate_unique_slug("Deleted")
         assert slug == "deleted"
 

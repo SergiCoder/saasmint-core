@@ -175,7 +175,6 @@ async def _resolve_billing_customer(user: User) -> StripeCustomer | None:
             await OrgMember.objects.filter(
                 user_id=user.id,
                 org__is_active=True,
-                org__deleted_at__isnull=True,
             )
             .only("org_id")
             .afirst()
@@ -426,7 +425,6 @@ def _require_owner_for_product_purchase(user: User) -> UUID | None:
             user_id=user.id,
             role=OrgRole.OWNER,
             org__is_active=True,
-            org__deleted_at__isnull=True,
         )
         .only("org_id")
         .first()
@@ -519,7 +517,6 @@ class CreditBalanceView(BillingScopedView):
                 OrgMember.objects.filter(
                     user_id=user.id,
                     org__is_active=True,
-                    org__deleted_at__isnull=True,
                 )
                 .values_list("org_id", flat=True)
                 .first()
@@ -555,7 +552,6 @@ def _get_active_subscription_for_user(user: User) -> SubscriptionModel:
             OrgMember.objects.filter(
                 user_id=user.id,
                 org__is_active=True,
-                org__deleted_at__isnull=True,
             )
             .only("org_id")
             .first()
@@ -602,7 +598,6 @@ def _require_billing_authority(user: User) -> UUID | None:
             user_id=user.id,
             is_billing=True,
             org__is_active=True,
-            org__deleted_at__isnull=True,
         )
         .only("org_id")
         .first()
@@ -628,7 +623,6 @@ def _billing_notice_recipients(user: User, org_id: UUID | None) -> list[str]:
             org_id=org_id,
             is_billing=True,
             org__is_active=True,
-            org__deleted_at__isnull=True,
         ).values_list("user__email", flat=True)
     )
 
