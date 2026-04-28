@@ -636,6 +636,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '400':
+          description: Request body failed validation, or the ``?context=`` query
+            param is set to a value other than ``personal``/``team``.
         '403':
           description: '``?context=team``: caller is missing ``is_billing=True`` on
             their active org membership — only billing members may modify the team
@@ -678,6 +681,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '400':
+          description: The ``?context=`` query param is set to a value other than
+            ``personal``/``team``.
         '403':
           description: '``?context=team``: caller is missing ``is_billing=True`` on
             their active org membership — only billing members may cancel the team

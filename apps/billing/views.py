@@ -620,10 +620,14 @@ def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
         (PERSONAL users always have at most this one; ORG_MEMBER users may
         also retain one when they keep personal running concurrently).
 
-    Returns 0, 1, or 2 subs ordered newest-first. An empty list is the new
-    free-tier shape (replaces the old NotFound 404 on ``GET /me/``).
+    Returns 0, 1, or 2 subs (team first when present, then personal). An
+    empty list is the new free-tier shape (replaces the old NotFound 404 on
+    ``GET /me/``).
     """
-    base = SubscriptionModel.objects.select_related("plan__price").filter(
+    # ``stripe_customer`` is select_related so ``_refetch_subscription_after_mutation``
+    # can discriminate team vs personal subs via ``sub.stripe_customer.org_id``
+    # without firing an FK lookup per sub.
+    base = SubscriptionModel.objects.select_related("plan__price", "stripe_customer").filter(
         status__in=ACTIVE_SUBSCRIPTION_STATUSES
     )
     subs: list[SubscriptionModel] = []
@@ -760,6 +764,12 @@ class SubscriptionView(BillingScopedView):
         request=UpdateSubscriptionSerializer,
         responses={
             200: SubscriptionSerializer,
+            400: OpenApiResponse(
+                description=(
+                    "Request body failed validation, or the ``?context=`` query param"
+                    " is set to a value other than ``personal``/``team``."
+                )
+            ),
             403: OpenApiResponse(
                 description=(
                     "``?context=team``: caller is missing ``is_billing=True`` on their"
@@ -843,6 +853,12 @@ class SubscriptionView(BillingScopedView):
         request=None,
         responses={
             202: SubscriptionSerializer,
+            400: OpenApiResponse(
+                description=(
+                    "The ``?context=`` query param is set to a value other than"
+                    " ``personal``/``team``."
+                )
+            ),
             403: OpenApiResponse(
                 description=(
                     "``?context=team``: caller is missing ``is_billing=True`` on their"

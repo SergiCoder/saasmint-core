@@ -1295,6 +1295,143 @@ class TestConcurrentSubscriptions:
             resp_personal = client.delete("/api/v1/billing/subscriptions/me/?context=personal")
         assert resp_personal.status_code == 202
 
+    def test_get_orders_team_before_personal(self, plan, plan_price, team_plan, team_plan_price):
+        """``GET /me/`` orders the team sub first, then the personal sub —
+        the contract callers rely on when displaying both side-by-side. The
+        builder code appends team first, then personal, regardless of
+        ``created_at`` (the personal sub here is intentionally older to
+        prove the order is by context, not by timestamp)."""
+        _user, team_sub, personal_sub = self._setup_concurrent(team_plan, plan)
+        client = APIClient()
+        client.force_authenticate(user=_user)
+
+        resp = client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        assert resp.data["count"] == 2
+        # Team sub was created later in the fixture, but the order in the
+        # response is determined by the builder, which always appends team
+        # first when both exist.
+        assert str(resp.data["results"][0]["id"]) == str(team_sub.id)
+        assert str(resp.data["results"][1]["id"]) == str(personal_sub.id)
+
+    def test_get_dedupes_personal_sub_matching_both_indexes(
+        self, plan, plan_price, team_plan, team_plan_price
+    ):
+        """Regression: ``_get_active_subscriptions_for_user`` queries the
+        personal sub via two indexes (``Subscription.user_id`` and
+        ``stripe_customer_id``). When the same row is found by both — the
+        common case for personal subs created via the upgrade flow — it
+        must appear exactly once in the response, not twice."""
+        from apps.billing.models import Subscription
+
+        user, _team_sub, personal_sub = self._setup_concurrent(team_plan, plan)
+
+        # Sanity: confirm the personal sub is matched by BOTH queries —
+        # ``user_id`` is set AND ``stripe_customer.user_id`` is set.
+        assert personal_sub.user_id == user.id
+        assert personal_sub.stripe_customer is not None
+        assert personal_sub.stripe_customer.user_id == user.id
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        # Two subs total (team + personal), with the personal sub appearing once.
+        assert resp.data["count"] == 2
+        personal_ids = [
+            r["id"] for r in resp.data["results"] if str(r["id"]) == str(personal_sub.id)
+        ]
+        assert len(personal_ids) == 1
+        # Confirm it's actually the same Subscription row from both indexes —
+        # not two different rows that happen to share an id.
+        assert (
+            Subscription.objects.filter(user_id=user.id, stripe_customer__user_id=user.id).count()
+            == 1
+        )
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_patch_with_context_personal_refetches_personal_sub(
+        self,
+        mock_cancel,
+        _mock_task,
+        plan,
+        plan_price,
+        team_plan,
+        team_plan_price,
+    ):
+        """``_refetch_subscription_after_mutation`` must return the personal
+        sub (not whichever sub sorts newest) when ``context=personal`` is
+        passed. The team sub here is intentionally newer (``2026-01`` start
+        vs personal ``2025-12``) so a context-blind refetch would return
+        the wrong row."""
+        user, team_sub, personal_sub = self._setup_concurrent(team_plan, plan)
+        # Make team sub strictly newer than personal sub by created_at as well.
+        from apps.billing.models import Subscription
+
+        Subscription.objects.filter(id=team_sub.id).update(
+            created_at=personal_sub.created_at.replace(year=personal_sub.created_at.year + 1)
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=personal",
+            {"cancel_at_period_end": True},
+            format="json",
+        )
+        assert resp.status_code == 200
+        # The response body is the *refetched* sub — must be the personal one,
+        # not the team one (which is newer).
+        assert str(resp.data["id"]) == str(personal_sub.id)
+        # And the cancel call must have hit the personal customer.
+        passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
+        assert passed_customer_id == personal_sub.stripe_customer_id
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_delete_with_context_team_returns_404_when_only_personal_exists(
+        self, _mock_cancel, _mock_task, plan, plan_price, team_plan, team_plan_price
+    ):
+        """If a PERSONAL user (no org membership) somehow passes
+        ``?context=team``, ``_resolve_billing_customer`` cannot find a team
+        customer and the request short-circuits to 404 — the
+        ``_require_billing_authority`` gate also rejects it (403). Either
+        outcome is acceptable; the important behavior is that the personal
+        sub is never wrongly hit by a team-context mutation."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.users.models import AccountType, User
+
+        user = User.objects.create_user(
+            email="personal-only@example.com",
+            full_name="Personal Only",
+            account_type=AccountType.PERSONAL,
+        )
+        personal_customer = StripeCustomer.objects.create(
+            stripe_id="cus_personal_only", user=user, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_personal_only",
+            stripe_customer=personal_customer,
+            user=user,
+            status="active",
+            plan=plan,
+            quantity=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.delete("/api/v1/billing/subscriptions/me/?context=team")
+        # Either 404 (no team customer) or 403 (no is_billing membership) —
+        # both prove the personal sub is not silently mutated by a team
+        # context request.
+        assert resp.status_code in (403, 404)
+
 
 @pytest.mark.django_db
 class TestBillingAuthorityOnMutations:
