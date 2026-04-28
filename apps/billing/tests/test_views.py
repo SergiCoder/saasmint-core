@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -129,9 +129,9 @@ class TestCheckoutSessionView:
         assert resp.status_code == 400
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    @patch("apps.billing.views.create_team_stripe_customer", new_callable=AsyncMock)
     def test_trial_suppressed_for_team_plans(
-        self, mock_get_customer, mock_create, org_member_client, mock_stripe_customer, db
+        self, mock_team_customer, mock_create, org_member_client, db
     ):
         team_plan = Plan.objects.create(
             name="Team Monthly", context="team", interval="month", is_active=True
@@ -139,7 +139,7 @@ class TestCheckoutSessionView:
         team_price = PlanPrice.objects.create(
             plan=team_plan, stripe_price_id="price_team", amount=2999
         )
-        mock_get_customer.return_value = mock_stripe_customer
+        mock_team_customer.return_value = "cus_team_fresh"
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         org_member_client.post(
@@ -203,10 +203,23 @@ class TestCheckoutSessionView:
         resp = client.post("/api/v1/billing/checkout-sessions/", {}, format="json")
         assert resp.status_code in (401, 403)
 
-    def test_personal_user_cannot_checkout_team_plan(
-        self, authed_client, team_plan, team_plan_price
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.create_team_stripe_customer", new_callable=AsyncMock)
+    def test_personal_user_can_checkout_team_plan_when_no_owned_org(
+        self,
+        mock_team_customer,
+        mock_create,
+        authed_client,
+        team_plan,
+        team_plan_price,
     ):
-        """Personal account_type users are rejected when checking out a team plan."""
+        """PR 5: a PERSONAL user without an owned org may upgrade to team.
+        The eventual ``checkout.session.completed`` webhook flips their
+        ``account_type`` and creates the org. The 409 is reserved for users
+        who already own one."""
+        mock_team_customer.return_value = "cus_team_personal_upgrade"
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
         resp = authed_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
@@ -218,9 +231,33 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
+        assert resp.status_code == 200
+        assert mock_create.call_args.kwargs["stripe_customer_id"] == "cus_team_personal_upgrade"
+
+    def test_user_owning_org_cannot_create_second_org(
+        self, org_member_client, org_member_user, team_plan, team_plan_price
+    ):
+        """Rule 8: one owned org per user. A user who already owns an org
+        cannot start a second team checkout."""
+        from apps.orgs.models import Org, OrgMember, OrgRole
+
+        org = Org.objects.create(name="Existing", slug="existing", created_by=org_member_user)
+        OrgMember.objects.create(org=org, user=org_member_user, role=OrgRole.OWNER, is_billing=True)
+
+        resp = org_member_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                "org_name": "Second Org",
+            },
+            format="json",
+        )
         assert resp.status_code == 409
         assert resp.data["code"] == "account_type_mismatch"
-        assert "org accounts" in resp.data["detail"].lower()
+        assert "already own" in resp.data["detail"].lower()
 
     def test_org_member_cannot_checkout_personal_plan(self, org_member_client, plan_price):
         """Org member account_type users are rejected when checking out a personal plan."""
@@ -238,20 +275,17 @@ class TestCheckoutSessionView:
         assert "personal plans" in resp.data["detail"].lower()
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    @patch("apps.billing.views.create_team_stripe_customer", new_callable=AsyncMock)
     def test_team_checkout_requires_org_name(
         self,
-        mock_get_customer,
+        mock_team_customer,
         mock_create,
         org_member_client,
-        org_member_stripe_customer,
         team_plan,
         team_plan_price,
     ):
         """Team plan checkout must include org_name."""
-        mock_get_customer.return_value = MagicMock(
-            stripe_id="cus_org_test", user_id=org_member_stripe_customer.user_id
-        )
+        mock_team_customer.return_value = "cus_team_org_test"
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         resp = org_member_client.post(
@@ -269,20 +303,19 @@ class TestCheckoutSessionView:
         assert "org_name" in resp.data
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    @patch("apps.billing.views.create_team_stripe_customer", new_callable=AsyncMock)
     def test_team_checkout_passes_metadata(
         self,
-        mock_get_customer,
+        mock_team_customer,
         mock_create,
         org_member_client,
-        org_member_stripe_customer,
         team_plan,
         team_plan_price,
     ):
-        """Team checkout should pass org_name in metadata to Stripe."""
-        mock_get_customer.return_value = MagicMock(
-            stripe_id="cus_org_test", user_id=org_member_stripe_customer.user_id
-        )
+        """Team checkout passes org_name + keep_personal_subscription in metadata.
+        Stripe metadata values are strings — booleans go through as
+        ``"true"``/``"false"`` and the webhook parses them back."""
+        mock_team_customer.return_value = "cus_team_org_test"
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         org_member_client.post(
@@ -296,7 +329,39 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert mock_create.call_args.kwargs["metadata"] == {"org_name": "My Team Org"}
+        assert mock_create.call_args.kwargs["metadata"] == {
+            "org_name": "My Team Org",
+            "keep_personal_subscription": "false",
+        }
+
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.create_team_stripe_customer", new_callable=AsyncMock)
+    def test_team_checkout_keep_personal_subscription_true_propagates(
+        self,
+        mock_team_customer,
+        mock_create,
+        org_member_client,
+        team_plan,
+        team_plan_price,
+    ):
+        """Opt-out: ``keep_personal_subscription=True`` is encoded as
+        ``"true"`` so the webhook keeps the personal sub running (rule 5b)."""
+        mock_team_customer.return_value = "cus_team_keep"
+        mock_create.return_value = "https://checkout.stripe.com/session"
+
+        org_member_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "quantity": 2,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                "org_name": "Keep Personal",
+                "keep_personal_subscription": True,
+            },
+            format="json",
+        )
+        assert mock_create.call_args.kwargs["metadata"]["keep_personal_subscription"] == "true"
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
@@ -780,9 +845,9 @@ class TestQuantityValidationOnCheckout:
         assert resp.status_code == 400
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    @patch("apps.billing.views.create_team_stripe_customer", new_callable=AsyncMock)
     def test_team_plan_with_single_seat_succeeds(
-        self, mock_get_customer, mock_create, org_member_client, mock_stripe_customer, db
+        self, mock_team_customer, mock_create, org_member_client, db
     ):
         team_plan = Plan.objects.create(
             name="Team Mini", context="team", interval="month", is_active=True
@@ -790,7 +855,7 @@ class TestQuantityValidationOnCheckout:
         team_price = PlanPrice.objects.create(
             plan=team_plan, stripe_price_id="price_team_mini", amount=1500
         )
-        mock_get_customer.return_value = mock_stripe_customer
+        mock_team_customer.return_value = "cus_team_mini"
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         resp = org_member_client.post(
@@ -808,9 +873,9 @@ class TestQuantityValidationOnCheckout:
         assert mock_create.call_args.kwargs["quantity"] == 1
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    @patch("apps.billing.views.create_team_stripe_customer", new_callable=AsyncMock)
     def test_team_plan_with_min_seats_succeeds(
-        self, mock_get_customer, mock_create, org_member_client, mock_stripe_customer, db
+        self, mock_team_customer, mock_create, org_member_client, db
     ):
         team_plan = Plan.objects.create(
             name="Team Min", context="team", interval="month", is_active=True
@@ -818,7 +883,7 @@ class TestQuantityValidationOnCheckout:
         team_price = PlanPrice.objects.create(
             plan=team_plan, stripe_price_id="price_team_min", amount=2000
         )
-        mock_get_customer.return_value = mock_stripe_customer
+        mock_team_customer.return_value = "cus_team_min"
         mock_create.return_value = "https://checkout.stripe.com/session"
 
         resp = org_member_client.post(

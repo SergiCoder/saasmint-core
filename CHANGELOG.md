@@ -8,6 +8,61 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.8.4] - 2026-04-28
+
+### Added
+
+- **Personal→team upgrade flow.** A user with `account_type=personal`
+  (with or without an active personal subscription) can now POST a team-
+  context checkout to `POST /api/v1/billing/checkout-sessions/`. The 409
+  guard previously gated on `account_type == ORG_MEMBER`; it now gates on
+  "user already owns an org" (rule 8 — one owned org per user). The
+  legacy `/auth/register/org-owner/` path still works unchanged.
+- **`keep_personal_subscription` field on `CheckoutRequestSerializer`**
+  (boolean, default `false`). On the team-context
+  `checkout.session.completed` webhook, when the flag is `false`
+  (default), the user's existing personal subscription — if any — is
+  scheduled to cancel at period end via Stripe
+  (`Subscription.modify(cancel_at="min_period_end")`). When `true`, the
+  personal sub is left running concurrently with the new team sub
+  (rule 5b). Idempotent: Stripe accepts re-modifying an
+  already-scheduled cancellation with no error, and the helper no-ops
+  cleanly when the user has no personal customer or no active personal
+  subscription.
+
+### Changed
+
+- **`account_type` flips atomically with org creation.**
+  `apps.orgs.services._create_org_with_owner` now flips
+  `user.account_type` from `personal` to `org_member` inside the same
+  transaction that creates the org and owner membership. The flip is
+  one-way — the function never demotes `org_member` back to `personal`,
+  and is a no-op for users who registered via the legacy
+  `/auth/register/org-owner/` path.
+- **Team checkout creates a fresh org-scoped Stripe customer.**
+  `CheckoutSessionView` no longer reuses the user-scoped
+  `StripeCustomer` for team-context checkouts. A new helper
+  `saasmint_core.services.billing.create_team_stripe_customer` mints a
+  Stripe customer at checkout-init time without persisting a DB row;
+  `_create_org_with_owner` then creates the org-scoped `StripeCustomer`
+  in the webhook. This keeps personal and team subs on distinct Stripe
+  customers (rule 3) so each retains its own locked currency and
+  payment method, instead of rebinding the user-scoped customer to the
+  org and orphaning the personal subscription's billing linkage.
+- **`OnTeamCheckoutCompleted` callback signature** gains a trailing
+  `keep_personal_subscription: bool` argument. The webhook decodes the
+  Stripe metadata string `"true"`/`"false"` to a Python bool and forwards
+  it to the callback.
+
+### Removed
+
+- **User-scoped `StripeCustomer` rebind branch in
+  `_create_org_with_owner`.** With the team-checkout customer now
+  created fresh and org-scoped from the webhook, the rebind path
+  (`existing_customer.user = None; existing_customer.org = org`) is
+  unreachable and has been deleted. The duplicate-webhook short-circuit
+  on an already-org-bound customer is preserved.
+
 ## [0.8.3] - 2026-04-27
 
 ### Changed

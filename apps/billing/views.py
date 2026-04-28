@@ -28,6 +28,7 @@ from saasmint_core.services.billing import (
     create_billing_portal_session,
     create_checkout_session,
     create_product_checkout_session,
+    create_team_stripe_customer,
     get_or_create_customer,
     resume_subscription,
 )
@@ -324,17 +325,25 @@ class CheckoutSessionView(BillingScopedView):
 
         is_team = plan_price.plan.context == PlanContext.TEAM
 
-        # Enforce account_type / plan context match
-        if is_team and user.account_type != AccountType.ORG_MEMBER:
-            raise _AccountTypeMismatch(
-                "Only org accounts can check out team plans. "
-                "Register at /api/v1/auth/register/org-owner/ first."
-            )
+        # Personal-context checkouts: caller must be a PERSONAL user. Org members
+        # checkout team plans for the org via the team path below.
         if not is_team and user.account_type != AccountType.PERSONAL:
             raise _AccountTypeMismatch("Org accounts cannot check out personal plans.")
 
-        # Team plans require org_name
+        # Team plans: any user without an owned org may upgrade. The PERSONAL→
+        # team upgrade flow flips ``account_type`` to ORG_MEMBER atomically with
+        # org creation in ``_create_org_with_owner`` (rule 8: one owned org per
+        # user). ORG_MEMBER users without an owned org are the legacy
+        # /auth/register/org-owner/ path and are allowed for the same reason.
         if is_team:
+            from apps.orgs.models import OrgMember, OrgRole
+
+            already_owns_org = OrgMember.objects.filter(
+                user_id=user.id, role=OrgRole.OWNER
+            ).exists()
+            if already_owns_org:
+                raise _AccountTypeMismatch("You already own an organization.")
+
             if "org_name" not in data:
                 raise ValidationError({"org_name": ["Required for team plans."]})
 
@@ -343,23 +352,37 @@ class CheckoutSessionView(BillingScopedView):
         if trial_period_days is not None and is_team:
             trial_period_days = None
 
-        # Build metadata for the checkout session
+        # Build metadata for the checkout session. Stripe metadata values are
+        # strings — booleans go through as "true"/"false" and are parsed back
+        # on the webhook side.
         metadata: dict[str, str] | None = None
         if is_team:
             metadata = {
                 "org_name": data["org_name"],
+                "keep_personal_subscription": "true"
+                if data["keep_personal_subscription"]
+                else "false",
             }
 
         async def _do() -> str:
-            customer = await get_or_create_customer(
-                user_id=user.id,
-                email=str(user.email),
-                name=user.full_name,
-                locale=user.preferred_locale,
-                customer_repo=get_billing_repos().customers,
-            )
+            if is_team:
+                stripe_customer_id = await create_team_stripe_customer(
+                    user_id=user.id,
+                    email=str(user.email),
+                    name=user.full_name,
+                    locale=user.preferred_locale,
+                )
+            else:
+                customer = await get_or_create_customer(
+                    user_id=user.id,
+                    email=str(user.email),
+                    name=user.full_name,
+                    locale=user.preferred_locale,
+                    customer_repo=get_billing_repos().customers,
+                )
+                stripe_customer_id = customer.stripe_id
             return await create_checkout_session(
-                stripe_customer_id=customer.stripe_id,
+                stripe_customer_id=stripe_customer_id,
                 client_reference_id=str(user.id),
                 price_id=plan_price.stripe_price_id,
                 quantity=quantity,

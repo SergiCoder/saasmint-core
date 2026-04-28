@@ -1265,6 +1265,9 @@ components:
           type: string
           minLength: 1
           maxLength: 255
+        keep_personal_subscription:
+          type: boolean
+          default: false
       required:
       - cancel_url
       - plan_price_id

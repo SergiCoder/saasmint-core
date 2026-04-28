@@ -164,6 +164,7 @@ class CheckoutRequestSerializer(serializers.Serializer[object]):
         required=False, allow_null=True, default=None, min_value=1, max_value=90
     )
     org_name = serializers.CharField(max_length=255, required=False)
+    keep_personal_subscription = serializers.BooleanField(default=False)
 
     def validate_success_url(self, value: str) -> str:
         return _validate_redirect_url(value)

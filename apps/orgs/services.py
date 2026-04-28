@@ -71,13 +71,20 @@ async def on_team_checkout_completed(
     stripe_customer_id: str,
     livemode: bool,
     stripe_subscription_id: str | None,
+    keep_personal_subscription: bool,
 ) -> None:
     """Create an org and its Stripe customer after a team plan checkout.
 
-    Called from the checkout.session.completed webhook handler.
-    The user already has account_type=ORG_MEMBER from registration.
-    Creates the Org, adds the user as owner + billing contact, and
-    links the Stripe customer to the org.
+    Called from the checkout.session.completed webhook handler. Handles both
+    the legacy register-org-owner path (user already ORG_MEMBER) and the
+    PERSONAL→team upgrade path (user starts as PERSONAL, gets flipped to
+    ORG_MEMBER inside ``_create_org_with_owner``).
+
+    When ``keep_personal_subscription`` is False (the default for the upgrade
+    flow), the user's existing personal subscription — if any — is scheduled
+    to cancel at period end so they're not double-billed (rule 16). Set True
+    to leave the personal sub running concurrently with the new team sub
+    (rule 5b).
     """
     user = await User.objects.aget(id=user_id)
 
@@ -96,6 +103,9 @@ async def on_team_checkout_completed(
         )
         raise
 
+    if not keep_personal_subscription:
+        await _schedule_personal_cancel_at_period_end(user_id)
+
     logger.info(
         "Team checkout completed: org '%s' (slug=%s) created for user %s, Stripe customer %s",
         org_name,
@@ -103,6 +113,35 @@ async def on_team_checkout_completed(
         user_id,
         stripe_customer_id,
     )
+
+
+async def _schedule_personal_cancel_at_period_end(user_id: UUID) -> None:
+    """Schedule cancel-at-period-end on the user's personal sub, if any.
+
+    No-op when the user has no user-scoped Stripe customer or no active
+    personal subscription. Idempotent on already-scheduled subs — Stripe's
+    ``Subscription.modify(cancel_at="min_period_end")`` accepts being called
+    repeatedly with the same value.
+    """
+    from saasmint_core.exceptions import SubscriptionNotFoundError
+    from saasmint_core.services.billing import cancel_subscription
+
+    from apps.billing.repositories import get_billing_repos
+
+    repos = get_billing_repos()
+    personal_customer = await repos.customers.get_by_user_id(user_id)
+    if personal_customer is None:
+        return
+
+    try:
+        await cancel_subscription(
+            stripe_customer_id=personal_customer.id,
+            at_period_end=True,
+            subscription_repo=repos.subscriptions,
+        )
+    except SubscriptionNotFoundError:
+        # User has a personal customer but no active sub on it — fine, nothing to cancel.
+        return
 
 
 def _create_org_with_owner(
@@ -114,35 +153,31 @@ def _create_org_with_owner(
 ) -> tuple[Org, OrgMember]:
     """Atomically create an org, its owner membership, and (optionally) its Stripe customer.
 
-    The user must already have account_type=ORG_MEMBER (set at registration).
-    Passing `stripe_customer_id` links the org to its Stripe customer in the same
-    transaction, preventing orgs without billing linkage on partial failure.
+    Flips ``user.account_type`` to ORG_MEMBER inside the same transaction —
+    the PERSONAL→team upgrade flow (rule 16) starts with a PERSONAL user, the
+    legacy register-org-owner path starts with an already-ORG_MEMBER user,
+    and both must end at ORG_MEMBER + owned org. The flip is one-way: this
+    function never demotes ORG_MEMBER back to PERSONAL.
 
-    Handles the user→org transition: ``CheckoutSessionView`` saves a user-scoped
-    ``StripeCustomer`` when starting team checkout (the org does not exist yet).
-    On ``checkout.session.completed``, that same row is re-bound here to the new
-    org. A ``StripeCustomer`` already linked to an org is treated as a duplicate
-    webhook delivery — the existing org and membership are returned unchanged.
+    Duplicate-webhook short-circuit: a ``StripeCustomer`` row that already
+    points to an org+OrgMember pair indicates a re-delivery and returns the
+    existing org+member unchanged.
     """
     from apps.billing.models import StripeCustomer
-
-    if user.account_type != AccountType.ORG_MEMBER:
-        raise ValueError(f"User {user.id} must have account_type=org_member to create an org")
 
     with transaction.atomic():
         # Duplicate-webhook short-circuit has to happen INSIDE the transaction
         # with SELECT FOR UPDATE — otherwise two concurrent deliveries can
         # both pass a pre-check, both create an Org, and the second wins the
-        # StripeCustomer reassignment, orphaning the first Org.
-        existing_customer = None
+        # StripeCustomer creation, orphaning the first Org.
         if stripe_customer_id is not None:
-            existing_customer = (
+            existing = (
                 StripeCustomer.objects.select_for_update()
                 .filter(stripe_id=stripe_customer_id)
                 .first()
             )
-            if existing_customer is not None and existing_customer.org_id is not None:
-                already_org = Org.objects.filter(id=existing_customer.org_id).first()
+            if existing is not None and existing.org_id is not None:
+                already_org = Org.objects.filter(id=existing.org_id).first()
                 if already_org is not None:
                     member = OrgMember.objects.filter(org=already_org, user=user).first()
                     if member is not None:
@@ -161,17 +196,16 @@ def _create_org_with_owner(
             is_billing=True,
         )
         if stripe_customer_id is not None:
-            if existing_customer is None:
-                StripeCustomer.objects.create(
-                    stripe_id=stripe_customer_id,
-                    org=org,
-                    livemode=livemode,
-                )
-            else:
-                existing_customer.user = None
-                existing_customer.org = org
-                existing_customer.livemode = livemode
-                existing_customer.save(update_fields=["user", "org", "livemode"])
+            StripeCustomer.objects.create(
+                stripe_id=stripe_customer_id,
+                org=org,
+                livemode=livemode,
+            )
+
+        if user.account_type != AccountType.ORG_MEMBER:
+            user.account_type = AccountType.ORG_MEMBER
+            user.save(update_fields=["account_type", "updated_at"])
+
     return org, member
 
 
