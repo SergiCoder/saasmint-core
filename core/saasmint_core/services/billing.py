@@ -60,6 +60,33 @@ async def get_or_create_customer(
     )
 
 
+async def create_team_stripe_customer(
+    *,
+    user_id: UUID,
+    email: str,
+    name: str | None = None,
+    locale: str = "en",
+) -> str:
+    """Create a fresh Stripe customer for a team checkout. No DB row.
+
+    Team subscriptions belong to the org's Stripe customer; personal
+    subscriptions belong to the user's. They must be different Stripe
+    customers so each can keep its own locked currency and payment method
+    (rule 3). For team checkout we therefore always mint a fresh Stripe
+    customer here and let the ``checkout.session.completed`` webhook persist
+    the matching ``StripeCustomer`` row scoped to the new org. The user-
+    scoped customer (if any) is left untouched on its personal subscription.
+    """
+    stripe_customer = await asyncio.to_thread(
+        stripe.Customer.create,
+        email=email,
+        name=name,  # type: ignore[arg-type]  # Stripe stub declares str, API accepts str | None
+        preferred_locales=[locale],
+        metadata={"user_id": str(user_id), "scope": "team_checkout"},
+    )
+    return stripe_customer.id
+
+
 async def create_checkout_session(
     *,
     stripe_customer_id: str,

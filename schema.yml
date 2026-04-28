@@ -433,6 +433,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/CheckoutResponse'
           description: ''
+        '400':
+          description: Request body failed validation (e.g. ``org_name`` missing for
+            a team-context plan, invalid quantity for the plan's context).
+        '404':
+          description: Invalid plan price.
+        '409':
+          description: 'Caller is not eligible for the requested plan context (``code=account_type_mismatch``).
+            Two cases share this code: an ORG account checking out a personal plan,
+            and a user who already owns an organization trying to start a second team
+            checkout (rule 8).'
   /api/v1/billing/credits/me/:
     get:
       operationId: billing_credits_me_retrieve
@@ -563,8 +573,11 @@ paths:
   /api/v1/billing/subscriptions/me/:
     get:
       operationId: billing_subscriptions_me_retrieve
-      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
-        subscription.
+      description: List every active subscription the caller has billing visibility
+        into. Empty ``results`` indicates the free tier. Up to two rows can appear
+        when a user holds both a personal and a team subscription concurrently (rule
+        5a — paid personal user accepts a team invite — or rule 5b — keep-personal
+        opt-out during a personal→team upgrade).
       parameters:
       - in: query
         name: currency
@@ -581,17 +594,30 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Subscription'
+                $ref: '#/components/schemas/SubscriptionListResponse'
           description: ''
-        '404':
-          description: Caller has no active subscription. Returned for users on the
-            free tier (no Stripe-backed subscription) and for ORG_MEMBER users without
-            an active org membership.
     patch:
       operationId: billing_subscriptions_me_partial_update
-      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
-        subscription.
+      description: |-
+        GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current subscriptions.
+
+        GET returns every active subscription the caller has billing visibility
+        into (0, 1, or 2 — see :func:`_get_active_subscriptions_for_user`).
+        PATCH/DELETE accept a ``?context=personal|team`` query param to pick
+        which subscription to mutate when the caller has both concurrently.
       parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for ``ORG_MEMBER`` callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
       - in: query
         name: currency
         schema:
@@ -620,17 +646,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '400':
+          description: Request body failed validation, or the ``?context=`` query
+            param is set to a value other than ``personal``/``team``.
         '403':
-          description: Caller is an ORG_MEMBER without `is_billing=True` on their
-            active org membership — only billing members may modify the team subscription.
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership — only billing members may modify the team
+            subscription. ``?context=personal`` does not enforce this gate.'
         '404':
           description: No Stripe customer or active paid subscription for the caller.
     delete:
       operationId: billing_subscriptions_me_destroy
       description: Schedule subscription cancellation at the end of the current billing
         period. Returns 202 Accepted — the subscription remains active until the period
-        end timestamp returned in the body.
+        end timestamp returned in the body. Use ``?context=personal`` to cancel the
+        personal sub when the caller also holds a concurrent team sub.
       parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for ``ORG_MEMBER`` callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
       - in: query
         name: currency
         schema:
@@ -648,9 +691,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '400':
+          description: The ``?context=`` query param is set to a value other than
+            ``personal``/``team``.
         '403':
-          description: Caller is an ORG_MEMBER without `is_billing=True` on their
-            active org membership — only billing members may cancel the team subscription.
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership — only billing members may cancel the team
+            subscription. ``?context=personal`` does not enforce this gate.'
         '404':
           description: No Stripe customer or active paid subscription for the caller.
   /api/v1/currencies/:
@@ -1265,6 +1312,9 @@ components:
           type: string
           minLength: 1
           maxLength: 255
+        keep_personal_subscription:
+          type: boolean
+          default: false
       required:
       - cancel_url
       - plan_price_id
@@ -2075,6 +2125,28 @@ components:
       - quantity
       - status
       - trial_ends_at
+    SubscriptionListResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Subscription'
+      required:
+      - count
+      - next
+      - previous
+      - results
     SubscriptionStatusEnum:
       enum:
       - active

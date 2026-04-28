@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -18,6 +18,7 @@ from apps.orgs.services import (
     delete_org_on_subscription_cancel,
     delete_orgs_created_by_user,
     generate_unique_slug,
+    on_team_checkout_completed,
 )
 from apps.users.models import AccountType, User
 
@@ -100,49 +101,86 @@ class TestCreateOrgWithOwner:
         assert member.role == OrgRole.OWNER
         assert member.is_billing is True
 
-    def test_rejects_personal_account_type(self):
+    def test_flips_personal_user_to_org_member(self) -> None:
+        """PERSONAL→team upgrade flow: ``_create_org_with_owner`` is the
+        only place ``account_type`` flips from PERSONAL to ORG_MEMBER, and
+        it does so atomically with org+membership creation."""
         user = User.objects.create_user(
-            email="personal@example.com",
-            full_name="Personal",
+            email="upgrade@example.com",
+            full_name="Upgrade",
             account_type=AccountType.PERSONAL,
         )
-        with pytest.raises(ValueError, match="account_type=org_member"):
-            _create_org_with_owner(user, "Bad Org")
 
-    def test_rebinds_existing_user_scoped_stripe_customer(self) -> None:
-        """Team checkout init saves a user-scoped StripeCustomer; the webhook
-        handler must re-bind it to the new org rather than INSERTing a
-        duplicate (UNIQUE violation on stripe_id)."""
+        org, member = _create_org_with_owner(user, "Upgrade Org")
+
+        user.refresh_from_db()
+        assert user.account_type == AccountType.ORG_MEMBER
+        assert org.created_by == user
+        assert member.role == OrgRole.OWNER
+
+    def test_already_org_member_account_type_unchanged(self) -> None:
+        """Legacy register-org-owner path: user already ORG_MEMBER, the flip
+        is a no-op (no spurious UPDATE)."""
+        user = User.objects.create_user(
+            email="orgmember@example.com",
+            full_name="OrgMember",
+            account_type=AccountType.ORG_MEMBER,
+        )
+
+        _create_org_with_owner(user, "Existing OrgMember")
+
+        user.refresh_from_db()
+        assert user.account_type == AccountType.ORG_MEMBER
+
+    def test_creates_org_scoped_stripe_customer(self) -> None:
+        """Team checkout passes a fresh Stripe customer ID; the row is
+        created org-scoped (no user linkage). Personal subs on a separate
+        user-scoped customer are unaffected."""
         from apps.billing.models import StripeCustomer
 
         user = User.objects.create_user(
-            email="rebind@example.com",
-            full_name="Rebind",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        StripeCustomer.objects.create(stripe_id="cus_rebind", user=user, livemode=False)
-
-        org, member = _create_org_with_owner(
-            user, "Rebind Org", stripe_customer_id="cus_rebind", livemode=True
+            email="freshcust@example.com",
+            full_name="Fresh",
+            account_type=AccountType.PERSONAL,
         )
 
-        customer = StripeCustomer.objects.get(stripe_id="cus_rebind")
+        org, _ = _create_org_with_owner(
+            user, "Fresh Org", stripe_customer_id="cus_fresh", livemode=True
+        )
+
+        customer = StripeCustomer.objects.get(stripe_id="cus_fresh")
         assert customer.user_id is None
         assert customer.org_id == org.id
         assert customer.livemode is True
-        assert member.role == OrgRole.OWNER
+
+    def test_second_owner_membership_for_same_user_raises(self) -> None:
+        """Rule 8 (``uniq_org_owner_per_user``) is enforced at the DB layer —
+        even if the view-layer guard is bypassed by a TOCTOU race, a second
+        OWNER row for the same user across two orgs cannot land. The test
+        bypasses ``_create_org_with_owner`` and inserts directly to keep the
+        assertion at the constraint level."""
+        from django.db.utils import IntegrityError
+
+        user = User.objects.create_user(
+            email="dual-owner@example.com",
+            full_name="Dual Owner",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        org1 = Org.objects.create(name="Org1", slug="dual-owner-1", created_by=user)
+        OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER)
+
+        org2 = Org.objects.create(name="Org2", slug="dual-owner-2", created_by=user)
+        with pytest.raises(IntegrityError, match="uniq_org_owner_per_user"):
+            OrgMember.objects.create(org=org2, user=user, role=OrgRole.OWNER)
 
     def test_duplicate_webhook_is_idempotent(self) -> None:
         """A second checkout.session.completed delivery must not raise — it
         should return the org+membership already created on the first call."""
-        from apps.billing.models import StripeCustomer
-
         user = User.objects.create_user(
             email="dup@example.com",
             full_name="Dup",
-            account_type=AccountType.ORG_MEMBER,
+            account_type=AccountType.PERSONAL,
         )
-        StripeCustomer.objects.create(stripe_id="cus_dup", user=user, livemode=False)
 
         org1, member1 = _create_org_with_owner(
             user, "Dup Org", stripe_customer_id="cus_dup", livemode=False
@@ -154,6 +192,151 @@ class TestCreateOrgWithOwner:
         assert org1.id == org2.id
         assert member1.id == member2.id
         assert Org.objects.filter(name="Dup Org").count() == 1
+
+
+# ---------------------------------------------------------------------------
+# on_team_checkout_completed — personal-sub cancel-at-period-end (PR 5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestOnTeamCheckoutCompleted:
+    """The webhook callback wires three things together: org creation,
+    account_type flip (covered in TestCreateOrgWithOwner), and the optional
+    auto-cancel of the user's existing personal subscription.
+
+    The PR 5 default ``keep_personal_subscription=False`` cancels personal
+    at period end. ``True`` leaves it running (rule 5b)."""
+
+    @patch("saasmint_core.services.billing.cancel_subscription", new_callable=AsyncMock)
+    def test_default_schedules_personal_cancel_at_period_end(self, mock_cancel: AsyncMock) -> None:
+        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
+
+        user = User.objects.create_user(
+            email="upgrader@example.com",
+            full_name="Upgrader",
+            account_type=AccountType.PERSONAL,
+        )
+        personal_customer = StripeCustomer.objects.create(
+            stripe_id="cus_personal", user=user, livemode=False
+        )
+        personal_plan = Plan.objects.create(
+            name="Personal", context="personal", interval="month", is_active=True
+        )
+        PlanPrice.objects.create(plan=personal_plan, stripe_price_id="price_personal", amount=999)
+        Subscription.objects.create(
+            stripe_id="sub_personal",
+            stripe_customer=personal_customer,
+            user=user,
+            status="active",
+            plan=personal_plan,
+            quantity=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+
+        async_to_sync(on_team_checkout_completed)(
+            user.id,
+            "Upgrade Org",
+            "cus_team_fresh",
+            False,
+            "sub_team_fresh",
+            False,  # keep_personal_subscription
+        )
+
+        mock_cancel.assert_awaited_once()
+        kwargs = mock_cancel.await_args.kwargs
+        assert kwargs["stripe_customer_id"] == personal_customer.id
+        assert kwargs["at_period_end"] is True
+
+    @patch("saasmint_core.services.billing.cancel_subscription", new_callable=AsyncMock)
+    def test_keep_flag_skips_personal_cancel(self, mock_cancel: AsyncMock) -> None:
+        """Opt-out path: user explicitly chose concurrent billing. The
+        callback must not touch the personal sub even if one exists."""
+        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
+
+        user = User.objects.create_user(
+            email="keeper@example.com",
+            full_name="Keeper",
+            account_type=AccountType.PERSONAL,
+        )
+        personal_customer = StripeCustomer.objects.create(
+            stripe_id="cus_keep_personal", user=user, livemode=False
+        )
+        personal_plan = Plan.objects.create(
+            name="Personal Keep", context="personal", interval="month", is_active=True
+        )
+        PlanPrice.objects.create(plan=personal_plan, stripe_price_id="price_keep", amount=999)
+        Subscription.objects.create(
+            stripe_id="sub_keep_personal",
+            stripe_customer=personal_customer,
+            user=user,
+            status="active",
+            plan=personal_plan,
+            quantity=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+
+        async_to_sync(on_team_checkout_completed)(
+            user.id,
+            "Keep Org",
+            "cus_team_keep_fresh",
+            False,
+            "sub_team_keep_fresh",
+            True,  # keep_personal_subscription
+        )
+
+        mock_cancel.assert_not_awaited()
+
+    @patch("saasmint_core.services.billing.cancel_subscription", new_callable=AsyncMock)
+    def test_no_personal_customer_is_noop(self, mock_cancel: AsyncMock) -> None:
+        """ORG_MEMBER user from /auth/register/org-owner/ has no personal
+        customer. Default flag still runs through the helper, but it
+        no-ops without raising."""
+        user = User.objects.create_user(
+            email="legacy@example.com",
+            full_name="Legacy",
+            account_type=AccountType.ORG_MEMBER,
+        )
+
+        async_to_sync(on_team_checkout_completed)(
+            user.id,
+            "Legacy Org",
+            "cus_team_legacy",
+            False,
+            "sub_team_legacy",
+            False,
+        )
+
+        mock_cancel.assert_not_awaited()
+
+    def test_no_active_personal_sub_swallows_not_found(self) -> None:
+        """User has a personal Stripe customer but no active sub on it
+        (e.g. their previous personal sub was already canceled). The
+        helper catches ``SubscriptionNotFoundError`` and continues."""
+        from apps.billing.models import StripeCustomer
+
+        user = User.objects.create_user(
+            email="orphan@example.com",
+            full_name="Orphan",
+            account_type=AccountType.PERSONAL,
+        )
+        StripeCustomer.objects.create(stripe_id="cus_orphan", user=user, livemode=False)
+
+        # No mock — the real cancel_subscription should raise
+        # SubscriptionNotFoundError internally and the helper should swallow it.
+        async_to_sync(on_team_checkout_completed)(
+            user.id,
+            "Orphan Org",
+            "cus_team_orphan",
+            False,
+            None,
+            False,
+        )
+
+        # If we got here without raising, the no-op path works.
+        assert Org.objects.filter(name="Orphan Org").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +399,12 @@ class TestDeleteOrg:
 class TestDeleteOrgsCreatedByUser:
     @patch("apps.orgs.services._cancel_team_subscription")
     def test_deletes_all_active_orgs(self, mock_cancel):
+        """``delete_orgs_created_by_user`` filters by ``Org.created_by`` and
+        is independent of OrgMember role — a user who's only ever owned one
+        org at a time (rule 8) can still have *created* multiple orgs over
+        their lifetime via ownership transfers. This setup mirrors that:
+        same ``created_by`` on both orgs, but only the OWNER constraint-
+        respecting first one carries an OrgMember row."""
         user = User.objects.create_user(
             email="multiorg@example.com",
             full_name="Multi Org",
@@ -224,7 +413,6 @@ class TestDeleteOrgsCreatedByUser:
         org1 = Org.objects.create(name="Org1", slug="org1", created_by=user)
         OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER)
         org2 = Org.objects.create(name="Org2", slug="org2", created_by=user)
-        OrgMember.objects.create(org=org2, user=user, role=OrgRole.OWNER)
         org1_id = org1.id
         org2_id = org2.id
 

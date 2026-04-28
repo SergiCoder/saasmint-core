@@ -660,9 +660,7 @@ async def test_org_cancellation_without_callback_logs_and_succeeds() -> None:
     org_id = uuid4()
     customer = make_stripe_customer(org_id=org_id, stripe_id="cus_no_cb")
     await customer_repo.save(customer)
-    org_sub = make_subscription(
-        stripe_id="sub_no_cb", user_id=None, stripe_customer_id=customer.id
-    )
+    org_sub = make_subscription(stripe_id="sub_no_cb", user_id=None, stripe_customer_id=customer.id)
     await subscription_repo.save(org_sub)
 
     repos = WebhookRepos(
@@ -1107,3 +1105,86 @@ async def test_subscription_mode_still_routes_to_team_callback() -> None:
 
     assert len(team_calls) == 1
     assert product_calls == []
+
+
+@pytest.mark.anyio
+async def test_team_callback_passes_keep_personal_subscription_true() -> None:
+    """PR 5: ``keep_personal_subscription=true`` in session metadata must
+    decode back to a boolean ``True`` for the callback. Stripe metadata is
+    string-typed, so the wire form is the literal ``"true"``."""
+    event_repo = InMemoryStripeEventRepository()
+    team_calls: list[tuple[object, ...]] = []
+
+    async def _on_team(*args: object) -> None:
+        team_calls.append(args)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=InMemorySubscriptionRepository(),
+        customers=InMemoryStripeCustomerRepository(),
+        plans=InMemoryPlanRepository(),
+        on_team_checkout_completed=_on_team,
+    )
+    event: dict[str, Any] = {
+        "id": "evt_team_keep",
+        "type": "checkout.session.completed",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "cs_team_keep",
+                "mode": "subscription",
+                "client_reference_id": "a1111111-0000-0000-0000-000000000000",
+                "customer": "cus_keep",
+                "subscription": "sub_keep",
+                "metadata": {"org_name": "KeepOrg", "keep_personal_subscription": "true"},
+            }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert len(team_calls) == 1
+    # Callback signature: (user_id, org_name, customer, livemode, sub_id, keep_personal)
+    assert team_calls[0][5] is True
+
+
+@pytest.mark.anyio
+async def test_team_callback_defaults_keep_personal_subscription_to_false() -> None:
+    """Missing or non-``"true"`` value for ``keep_personal_subscription``
+    decodes to ``False`` — matches PR 5's default behavior (auto-cancel
+    personal at period end)."""
+    event_repo = InMemoryStripeEventRepository()
+    team_calls: list[tuple[object, ...]] = []
+
+    async def _on_team(*args: object) -> None:
+        team_calls.append(args)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=InMemorySubscriptionRepository(),
+        customers=InMemoryStripeCustomerRepository(),
+        plans=InMemoryPlanRepository(),
+        on_team_checkout_completed=_on_team,
+    )
+    event: dict[str, Any] = {
+        "id": "evt_team_default",
+        "type": "checkout.session.completed",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "cs_team_default",
+                "mode": "subscription",
+                "client_reference_id": "a1111111-0000-0000-0000-000000000000",
+                "customer": "cus_default",
+                "subscription": "sub_default",
+                "metadata": {"org_name": "DefaultOrg"},  # no keep_personal_subscription
+            }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    assert len(team_calls) == 1
+    assert team_calls[0][5] is False

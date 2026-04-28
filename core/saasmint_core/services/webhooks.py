@@ -21,8 +21,9 @@ from saasmint_core.repositories.subscription import SubscriptionRepository
 logger = logging.getLogger(__name__)
 
 # Callback type for team checkout completion.
-# Args: user_id, org_name, stripe_customer_id, livemode, stripe_subscription_id
-OnTeamCheckoutCompleted = Callable[[UUID, str, str, bool, str | None], Awaitable[None]]
+# Args: user_id, org_name, stripe_customer_id, livemode, stripe_subscription_id,
+#       keep_personal_subscription
+OnTeamCheckoutCompleted = Callable[[UUID, str, str, bool, str | None, bool], Awaitable[None]]
 
 # Callback type for org deactivation after subscription cancellation.
 # Args: org_id
@@ -132,9 +133,19 @@ async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRep
 
     livemode: bool = session_data.get("livemode", False)
 
+    # Stripe metadata is always string-typed — coerce back to bool. Default to
+    # False (auto-cancel personal at period end) so a missing field on a
+    # legacy session matches the new default behavior.
+    keep_personal_subscription = metadata.get("keep_personal_subscription") == "true"
+
     if repos.on_team_checkout_completed is not None:
         await repos.on_team_checkout_completed(
-            user_id, org_name, str(stripe_customer_id), livemode, subscription_id
+            user_id,
+            org_name,
+            str(stripe_customer_id),
+            livemode,
+            subscription_id,
+            keep_personal_subscription,
         )
     else:
         logger.warning(

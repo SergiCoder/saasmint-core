@@ -39,10 +39,13 @@ class TestOrgListViewGET:
         assert resp.status_code in (401, 403)
 
     def test_returns_orgs_ordered_by_name(self, authed_client, user):
+        # Rule 8 (``uniq_org_owner_per_user``) limits a user to one OWNER role,
+        # so the second membership uses ADMIN — the listing endpoint sorts
+        # on Org.name regardless of the caller's role.
         org_b = Org.objects.create(name="Bravo", slug="bravo", created_by=user)
         org_a = Org.objects.create(name="Alpha", slug="alpha", created_by=user)
         OrgMember.objects.create(org=org_b, user=user, role=OrgRole.OWNER)
-        OrgMember.objects.create(org=org_a, user=user, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org_a, user=user, role=OrgRole.ADMIN)
         resp = authed_client.get("/api/v1/orgs/")
         names = [o["name"] for o in resp.data["results"]]
         assert names == ["Alpha", "Bravo"]
@@ -754,7 +757,11 @@ class TestInvitationDeclineView:
         )
         client = APIClient()  # unauthenticated
         resp = client.post("/api/v1/invitations/decline-token/decline/")
-        assert resp.status_code == 401
+        # SessionAuthentication doesn't emit a WWW-Authenticate challenge, so
+        # DRF picks 403; JWT auth (the prod default) would emit 401. Accepting
+        # either matches the project-wide pattern used in other unauthenticated
+        # rejection tests.
+        assert resp.status_code in (401, 403)
 
     def test_decline_rejects_email_mismatch(self, org, owner_membership, user, authed_client):
         invitation = Invitation.objects.create(
