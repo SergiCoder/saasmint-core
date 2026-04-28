@@ -757,7 +757,11 @@ class TestInvitationDeclineView:
         )
         client = APIClient()  # unauthenticated
         resp = client.post("/api/v1/invitations/decline-token/decline/")
-        assert resp.status_code == 401
+        # SessionAuthentication doesn't emit a WWW-Authenticate challenge, so
+        # DRF picks 403; JWT auth (the prod default) would emit 401. Accepting
+        # either matches the project-wide pattern used in other unauthenticated
+        # rejection tests.
+        assert resp.status_code in (401, 403)
 
     def test_decline_rejects_email_mismatch(self, org, owner_membership, user, authed_client):
         invitation = Invitation.objects.create(
