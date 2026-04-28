@@ -80,6 +80,7 @@ For bugs touching infra, proxy (Caddy/Nginx), OAuth, or deploy:
 - Token-based actions (decline, accept, unsubscribe): verify the caller owns the token's subject.
 - All password inputs go through `validate_password()`.
 - OAuth `email_verified=True` only from a provider-signed token. Microsoft specifically: signature-valid OIDC `id_token` with `xms_edov: true` — Graph `/me.mail` is admin-mutable and does not prove ownership.
+- Auto-linking an OAuth login onto an existing local account additionally requires the provider to be on `apps.users.services.TRUSTED_FOR_AUTO_LINK` (currently `google`, `github`, `microsoft`). Providers not on the allowlist raise `OAuthEmailUnverifiedCollisionError` on email collision and the user must sign in with their password to link explicitly.
 
 **Settings & secrets**
 - Never set `ALLOWED_HOSTS=["*"]` when `USE_X_FORWARDED_HOST=True` — enumerate hosts.

@@ -56,6 +56,7 @@ from apps.users.models import AccountType, User
 from apps.users.oauth import (
     PROVIDERS,
     OAuthEmailNotVerifiedError,
+    OAuthEmailUnverifiedCollisionError,
     OAuthError,
     exchange_code,
     get_authorization_url,
@@ -378,6 +379,8 @@ class OAuthCallbackView(AuthPublicView):
 
         try:
             user = resolve_oauth_user(provider, user_info)
+        except OAuthEmailUnverifiedCollisionError:
+            return _oauth_error_redirect(frontend_url, "oauth_email_unverified_collision")
         except OAuthEmailNotVerifiedError:
             return _oauth_error_redirect(frontend_url, "email_not_verified")
         except ValueError:

@@ -8,6 +8,36 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.8.3] - 2026-04-27
+
+### Changed
+
+- **OAuth + existing-password-account collision now returns a specific
+  error code.** When an OAuth-provided email matches an existing local
+  account but the provider is either unverified or not on the auto-link
+  trust allowlist, `OAuthCallbackView` now redirects to
+  `/auth/error?error=oauth_email_unverified_collision` (previously the
+  generic `email_not_verified`). The frontend uses this to guide the
+  user to log in with their password and link the provider explicitly,
+  rather than showing the generic verification error.
+- **Auto-link onto an existing local account now requires the OAuth
+  provider to be on `apps.users.services.TRUSTED_FOR_AUTO_LINK`.** The
+  current allowlist is `{"google", "github", "microsoft"}` — providers
+  whose `email_verified=True` reflects the user's own mailbox-
+  verification act (Google + GitHub) or whose `xms_edov` claim attests
+  to tenant-domain ownership (Microsoft, gated upstream in
+  `apps.users.oauth.exchange_code`). The allowlist is defense-in-depth
+  for any future provider added without explicit trust review — fresh
+  signups still work, but auto-linking onto an existing local account
+  requires explicit trust certification.
+
+### Added
+
+- `OAuthEmailUnverifiedCollisionError` exception in
+  `apps.users.oauth`. Raised by `apps.users.services.resolve_oauth_user`
+  when the OAuth-provided email matches an existing user but auto-link
+  is unsafe (provider untrusted or `email_verified` false).
+
 ## [0.8.2] - 2026-04-27
 
 ### Changed
