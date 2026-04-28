@@ -433,6 +433,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/CheckoutResponse'
           description: ''
+        '400':
+          description: Request body failed validation (e.g. ``org_name`` missing for
+            a team-context plan, invalid quantity for the plan's context).
+        '404':
+          description: Invalid plan price.
+        '409':
+          description: 'Caller is not eligible for the requested plan context (``code=account_type_mismatch``).
+            Two cases share this code: an ORG account checking out a personal plan,
+            and a user who already owns an organization trying to start a second team
+            checkout (rule 8).'
   /api/v1/billing/credits/me/:
     get:
       operationId: billing_credits_me_retrieve

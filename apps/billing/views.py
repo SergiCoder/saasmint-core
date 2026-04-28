@@ -368,7 +368,25 @@ class CheckoutSessionView(BillingScopedView):
 
     @extend_schema(
         request=CheckoutRequestSerializer,
-        responses={200: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()})},
+        responses={
+            200: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()}),
+            400: OpenApiResponse(
+                description=(
+                    "Request body failed validation (e.g. ``org_name`` missing for a"
+                    " team-context plan, invalid quantity for the plan's context)."
+                )
+            ),
+            404: OpenApiResponse(description="Invalid plan price."),
+            409: OpenApiResponse(
+                description=(
+                    "Caller is not eligible for the requested plan context"
+                    " (``code=account_type_mismatch``). Two cases share this code:"
+                    " an ORG account checking out a personal plan, and a user who"
+                    " already owns an organization trying to start a second team"
+                    " checkout (rule 8)."
+                )
+            ),
+        },
         tags=["billing"],
     )
     def post(self, request: Request) -> Response:
@@ -702,6 +720,21 @@ def _require_billing_authority(user: User, *, context: str) -> UUID | None:
     return billing_member.org_id
 
 
+def _resolve_mutation_context(request: Request, user: User) -> tuple[str, UUID | None]:
+    """Resolve ``?context=`` and enforce billing authority for the chosen context.
+
+    Shared prologue for ``PATCH`` and ``DELETE`` on ``/me/`` — both endpoints
+    parse the same query param and run the same authority check, so keeping
+    them in lockstep here avoids drift if the gate ever needs to grow (e.g.
+    new context value, new role check).
+    """
+    context = _validate_subscription_context(
+        request.query_params.get("context")
+    ) or _default_subscription_context(user)
+    org_id = _require_billing_authority(user, context=context)
+    return context, org_id
+
+
 def _billing_notice_recipients(user: User, org_id: UUID | None) -> list[str]:
     """Return the list of emails to notify on a billing-state change.
 
@@ -789,10 +822,7 @@ class SubscriptionView(BillingScopedView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        context = _validate_subscription_context(
-            request.query_params.get("context")
-        ) or _default_subscription_context(user)
-        org_id = _require_billing_authority(user, context=context)
+        context, org_id = _resolve_mutation_context(request, user)
 
         plan_price = (
             _get_active_plan_price(data["plan_price_id"]) if "plan_price_id" in data else None
@@ -880,10 +910,7 @@ class SubscriptionView(BillingScopedView):
     )
     def delete(self, request: Request) -> Response:
         user = get_user(request)
-        context = _validate_subscription_context(
-            request.query_params.get("context")
-        ) or _default_subscription_context(user)
-        org_id = _require_billing_authority(user, context=context)
+        context, org_id = _resolve_mutation_context(request, user)
 
         async def _do() -> None:
             customer, _, _ = await _get_customer_and_paid_subscription(user, context=context)

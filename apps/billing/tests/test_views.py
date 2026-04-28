@@ -497,6 +497,22 @@ class TestSubscriptionView:
         assert resp.data["count"] == 0
         assert resp.data["results"] == []
 
+    def test_personal_user_with_customer_but_no_subscription_returns_empty_list(
+        self, authed_client, stripe_customer
+    ):
+        """``_get_active_subscriptions_for_user`` PERSONAL branch where the
+        user has a ``StripeCustomer`` row (so ``customer_id is not None`` and
+        the ``stripe_customer_id``-indexed lookup is exercised) but no active
+        Subscription exists on either the user or the customer. Both
+        ``sub_user`` and ``sub_customer`` resolve to ``None`` and the function
+        returns an empty list rather than raising. Sister to
+        ``test_no_subscription_returns_empty_list`` which covers the
+        no-customer-at-all branch (``customer_id is None``)."""
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        assert resp.data["count"] == 0
+        assert resp.data["results"] == []
+
     def test_unauthenticated_rejected(self):
         client = APIClient()
         resp = client.get("/api/v1/billing/subscriptions/me/")
@@ -1229,6 +1245,45 @@ class TestConcurrentSubscriptions:
         assert resp.status_code == 400
         assert "context" in resp.data
 
+    def test_patch_with_invalid_context_returns_400(
+        self, plan, plan_price, team_plan, team_plan_price
+    ):
+        """Parallel of the DELETE invalid-context test for the PATCH path —
+        ``_validate_subscription_context`` runs on both endpoints, so a
+        bogus ``?context=`` value must reject the PATCH request before any
+        billing-authority check or Stripe call can fire."""
+        user, _team_sub, _personal_sub = self._setup_concurrent(team_plan, plan)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=garbage",
+            {"cancel_at_period_end": True},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "context" in resp.data
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_delete_with_empty_context_falls_back_to_default(
+        self, mock_cancel, _mock_task, plan, plan_price, team_plan, team_plan_price
+    ):
+        """Empty-string ``?context=`` (e.g. an HTML form submitting an
+        unset value) must be treated as no override —
+        ``_validate_subscription_context`` returns ``None`` for ``""`` and
+        the default-resolver picks team for an ORG_MEMBER caller. Without
+        the empty-string short-circuit the value would fail validation."""
+        user, team_sub, _personal_sub = self._setup_concurrent(team_plan, plan)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.delete("/api/v1/billing/subscriptions/me/?context=")
+        assert resp.status_code == 202
+        mock_cancel.assert_called_once()
+        passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
+        assert passed_customer_id == team_sub.stripe_customer_id
+
     def test_delete_with_context_personal_skips_billing_authority(
         self, plan, plan_price, team_plan, team_plan_price
     ):
@@ -1389,6 +1444,36 @@ class TestConcurrentSubscriptions:
         # And the cancel call must have hit the personal customer.
         passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
         assert passed_customer_id == personal_sub.stripe_customer_id
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    def test_delete_returns_404_when_webhook_cancels_sub_mid_request(
+        self, _mock_task, plan, plan_price, team_plan, team_plan_price
+    ):
+        """Race window: between the Stripe call and the post-mutation refetch,
+        a ``customer.subscription.deleted`` webhook arrives and flips the row
+        to ``canceled``. ``_refetch_subscription_after_mutation`` then finds
+        no active subs and raises ``NotFound``. The Stripe-side cancel still
+        happened — this test pins the (acceptable) 404 outcome of the refetch
+        race so a future regression that swallows the NotFound or returns
+        500 instead is caught."""
+        from apps.billing.models import Subscription
+
+        user, team_sub, _personal_sub = self._setup_concurrent(team_plan, plan)
+
+        async def _flip_sub_to_canceled(**_kwargs: object) -> None:
+            # Simulate the webhook winning the race: the team sub is gone by
+            # the time we refetch, but the Stripe call already returned.
+            await Subscription.objects.filter(id=team_sub.id).aupdate(status="canceled")
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        with patch(
+            "apps.billing.views.cancel_subscription",
+            new=AsyncMock(side_effect=_flip_sub_to_canceled),
+        ):
+            resp = client.delete("/api/v1/billing/subscriptions/me/?context=team")
+        assert resp.status_code == 404
 
     @patch("apps.billing.views.send_subscription_cancel_notice_task")
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)

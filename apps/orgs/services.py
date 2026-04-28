@@ -151,9 +151,12 @@ def _create_org_with_owner(
     stripe_customer_id: str | None = None,
     livemode: bool = False,
 ) -> tuple[Org, OrgMember]:
-    """Atomically create an org, its owner membership, and (optionally) its Stripe customer.
+    """Atomically create an org, its owner membership, its Stripe customer, and flip account_type.
 
-    Flips ``user.account_type`` to ORG_MEMBER inside the same transaction —
+    All four state changes happen in a single transaction so partial-failure
+    can't leave an org without billing linkage or a user stuck mid-upgrade.
+
+    The ``account_type`` flip handles both entry paths into this function:
     the PERSONAL→team upgrade flow (rule 16) starts with a PERSONAL user, the
     legacy register-org-owner path starts with an already-ORG_MEMBER user,
     and both must end at ORG_MEMBER + owned org. The flip is one-way: this
