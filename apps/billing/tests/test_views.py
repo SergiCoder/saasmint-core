@@ -486,27 +486,35 @@ class TestSubscriptionView:
     def test_returns_active_subscription(self, authed_client, subscription):
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 200
-        assert resp.data["status"] == "active"
+        assert resp.data["count"] == 1
+        assert resp.data["results"][0]["status"] == "active"
 
-    def test_no_subscription_returns_404(self, authed_client, user):
+    def test_no_subscription_returns_empty_list(self, authed_client, user):
+        """PR 5: free tier is now an empty list (was 404). Single-sub callers
+        adapt by checking ``count == 0`` instead of catching the 404."""
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.data["count"] == 0
+        assert resp.data["results"] == []
 
     def test_unauthenticated_rejected(self):
         client = APIClient()
         resp = client.get("/api/v1/billing/subscriptions/me/")
         assert resp.status_code in (401, 403)
 
-    def test_get_returns_404_after_cancellation_webhook(self, authed_client, user, subscription):
-        """End-to-end: after a `customer.subscription.deleted` webhook is
-        processed, the API surface for the personal user reports no active
-        subscription.
+    def test_get_returns_empty_list_after_cancellation_webhook(
+        self, authed_client, user, subscription
+    ):
+        """End-to-end: after a ``customer.subscription.deleted`` webhook is
+        processed, the API reports no active subscription. The Subscription
+        row stays in CANCELED state for history but ``GET /me/`` returns an
+        empty list (the new shape — was 404 pre-PR 5).
 
         Previously the cancellation handler created a free fallback row, so a
-        follow-up GET would still return 200; the refactor removed that
-        fallback. The unit tests in core verify the row state — this
-        integration test asserts the absence is observable through the API.
-        """
+        follow-up GET would still return 200 with active state; the
+        ``Subscription``-as-Stripe-mirror refactor removed that fallback. The
+        unit tests in core verify the row state — this integration test
+        asserts the absence is observable through the API."""
         from asgiref.sync import async_to_sync
         from saasmint_core.services.webhooks import _on_subscription_deleted
 
@@ -522,6 +530,7 @@ class TestSubscriptionView:
         # Sanity-check: the API sees the active sub before cancellation.
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 200
+        assert resp.data["count"] == 1
 
         repos = get_webhook_repos()
         async_to_sync(_on_subscription_deleted)({"id": subscription.stripe_id}, repos)
@@ -536,7 +545,8 @@ class TestSubscriptionView:
         assert Subscription.objects.filter(user=user).count() == 1
 
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.data["count"] == 0
 
 
 @pytest.mark.django_db
@@ -994,7 +1004,7 @@ class TestCurrencyConversion:
 
     def test_subscription_includes_currency(self, authed_client, subscription):
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")
-        price = resp.data["plan"]["price"]
+        price = resp.data["results"][0]["plan"]["price"]
         assert "currency" in price
         assert "display_amount" in price
 
@@ -1076,8 +1086,9 @@ class TestTeamSubscriptionResolution:
         _, _, sub = team_org_setup
         resp = org_member_client.get("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 200
-        assert str(resp.data["plan"]["id"]) == str(team_plan.id)
-        assert str(resp.data["id"]) == str(sub.id)
+        assert resp.data["count"] == 1
+        assert str(resp.data["results"][0]["plan"]["id"]) == str(team_plan.id)
+        assert str(resp.data["results"][0]["id"]) == str(sub.id)
 
     def test_non_billing_member_get_still_returns_team_subscription(
         self, team_org_setup, team_plan
@@ -1099,13 +1110,190 @@ class TestTeamSubscriptionResolution:
 
         resp = client.get("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 200
-        assert str(resp.data["plan"]["id"]) == str(team_plan.id)
+        assert resp.data["count"] == 1
+        assert str(resp.data["results"][0]["plan"]["id"]) == str(team_plan.id)
 
-    def test_org_member_without_membership_returns_404(self, org_member_client):
-        """An org_member user who isn't a member of any active org has no sub
-        to look up."""
+    def test_org_member_without_membership_returns_empty_list(self, org_member_client):
+        """An ``ORG_MEMBER`` user who isn't a member of any active org has no
+        team sub to surface and (per the legacy register-org-owner flow) no
+        personal sub either — empty list, no error."""
         resp = org_member_client.get("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 404
+        assert resp.status_code == 200
+        assert resp.data["count"] == 0
+
+
+@pytest.mark.django_db
+class TestConcurrentSubscriptions:
+    """Rule 5b (keep-personal opt-out during personal→team upgrade): an
+    ORG_MEMBER user can hold both a team sub (on the org's customer) and a
+    personal sub (on their user-scoped customer) at the same time. The
+    /me/ endpoint must surface both."""
+
+    def _setup_concurrent(self, team_plan, plan):
+        """Create an ORG_MEMBER user owning an org with a team sub AND a
+        user-scoped Stripe customer carrying an active personal sub."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import AccountType, User
+
+        user = User.objects.create_user(
+            email="concurrent@example.com",
+            full_name="Concurrent",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        org = Org.objects.create(name="ConcurrentOrg", slug="concurrent-org", created_by=user)
+        OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_concurrent_team", org=org, livemode=False
+        )
+        team_sub = Subscription.objects.create(
+            stripe_id="sub_concurrent_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,
+            quantity=2,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        personal_customer = StripeCustomer.objects.create(
+            stripe_id="cus_concurrent_personal", user=user, livemode=False
+        )
+        personal_sub = Subscription.objects.create(
+            stripe_id="sub_concurrent_personal",
+            stripe_customer=personal_customer,
+            user=user,
+            status="active",
+            plan=plan,
+            quantity=1,
+            current_period_start=datetime(2025, 12, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        return user, team_sub, personal_sub
+
+    def test_get_returns_both_team_and_personal_subs(
+        self, plan, plan_price, team_plan, team_plan_price
+    ):
+        user, team_sub, personal_sub = self._setup_concurrent(team_plan, plan)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        assert resp.data["count"] == 2
+        ids = {str(r["id"]) for r in resp.data["results"]}
+        assert ids == {str(team_sub.id), str(personal_sub.id)}
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_delete_with_context_personal_targets_personal_sub(
+        self, mock_cancel, _mock_task, plan, plan_price, team_plan, team_plan_price
+    ):
+        """Concurrent-billing user explicitly cancels their personal sub via
+        ``?context=personal``. The cancel call must hit the personal Stripe
+        customer's UUID, not the org customer's."""
+        user, _team_sub, personal_sub = self._setup_concurrent(team_plan, plan)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.delete("/api/v1/billing/subscriptions/me/?context=personal")
+        assert resp.status_code == 202
+        mock_cancel.assert_called_once()
+        passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
+        assert passed_customer_id == personal_sub.stripe_customer_id
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_delete_default_context_targets_team_for_org_member(
+        self, mock_cancel, _mock_task, plan, plan_price, team_plan, team_plan_price
+    ):
+        """Backwards-compat: an ORG_MEMBER user with no ``?context=`` query
+        param defaults to the team sub (existing behavior)."""
+        user, team_sub, _personal_sub = self._setup_concurrent(team_plan, plan)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.delete("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 202
+        mock_cancel.assert_called_once()
+        passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
+        assert passed_customer_id == team_sub.stripe_customer_id
+
+    def test_delete_with_invalid_context_returns_400(
+        self, plan, plan_price, team_plan, team_plan_price
+    ):
+        user, _team_sub, _personal_sub = self._setup_concurrent(team_plan, plan)
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.delete("/api/v1/billing/subscriptions/me/?context=invalid")
+        assert resp.status_code == 400
+        assert "context" in resp.data
+
+    def test_delete_with_context_personal_skips_billing_authority(
+        self, plan, plan_price, team_plan, team_plan_price
+    ):
+        """A concurrent-billing user who is NOT ``is_billing=True`` on the
+        org can still cancel their personal sub via ``?context=personal``.
+        The ``is_billing`` gate only applies to team-context mutations."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import AccountType, User
+
+        owner = User.objects.create_user(
+            email="other-owner@example.com",
+            full_name="Other Owner",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        org = Org.objects.create(name="OtherOrg", slug="other-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+
+        # Plain non-billing member with their own personal sub
+        member = User.objects.create_user(
+            email="non-billing@example.com",
+            full_name="Non Billing",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_other_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_other_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,
+            quantity=2,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        personal_customer = StripeCustomer.objects.create(
+            stripe_id="cus_member_personal", user=member, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_member_personal",
+            stripe_customer=personal_customer,
+            user=member,
+            status="active",
+            plan=plan,
+            quantity=1,
+            current_period_start=datetime(2025, 12, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=member)
+
+        # Default context (team) is forbidden — no is_billing
+        resp_team = client.delete("/api/v1/billing/subscriptions/me/")
+        assert resp_team.status_code == 403
+
+        # context=personal is allowed
+        with (
+            patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock),
+            patch("apps.billing.views.send_subscription_cancel_notice_task"),
+        ):
+            resp_personal = client.delete("/api/v1/billing/subscriptions/me/?context=personal")
+        assert resp_personal.status_code == 202
 
 
 @pytest.mark.django_db

@@ -13,6 +13,7 @@ from saasmint_core.services.billing import (
     create_billing_portal_session,
     create_checkout_session,
     create_product_checkout_session,
+    create_team_stripe_customer,
     get_or_create_customer,
     resume_subscription,
 )
@@ -106,6 +107,76 @@ async def test_get_or_create_customer_neither_raises() -> None:
     repo = InMemoryStripeCustomerRepository()
     with pytest.raises(ValueError, match="user_id or org_id"):
         await get_or_create_customer(email="x@x.com", customer_repo=repo)
+
+
+# ── create_team_stripe_customer ───────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_create_team_stripe_customer_returns_fresh_id() -> None:
+    """Team checkout always mints a fresh Stripe customer (rule 3 / PR 5).
+    The helper returns the new ``cus_…`` id and does not consult any repo —
+    persistence is deferred to the ``checkout.session.completed`` webhook."""
+    user_id = uuid4()
+    mock_stripe_cust = MagicMock()
+    mock_stripe_cust.id = "cus_team_fresh"
+
+    with patch("stripe.Customer.create", return_value=mock_stripe_cust) as mock_create:
+        result = await create_team_stripe_customer(
+            user_id=user_id,
+            email="upgrader@example.com",
+            name="Upgrader",
+            locale="en",
+        )
+
+    assert result == "cus_team_fresh"
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["email"] == "upgrader@example.com"
+    assert call_kwargs["name"] == "Upgrader"
+    assert call_kwargs["preferred_locales"] == ["en"]
+    assert call_kwargs["metadata"] == {
+        "user_id": str(user_id),
+        "scope": "team_checkout",
+    }
+
+
+@pytest.mark.anyio
+async def test_create_team_stripe_customer_each_call_mints_separate_customer() -> None:
+    """Two team checkouts for the same user must produce two distinct
+    Stripe customers — the helper has no de-duplication, by design. This
+    guarantees the personal-vs-team customer split (rule 3) even when the
+    user ran a prior team checkout that didn't complete."""
+    user_id = uuid4()
+
+    side_effects = [MagicMock(id="cus_team_first"), MagicMock(id="cus_team_second")]
+    with patch("stripe.Customer.create", side_effect=side_effects) as mock_create:
+        first = await create_team_stripe_customer(user_id=user_id, email="a@example.com")
+        second = await create_team_stripe_customer(user_id=user_id, email="a@example.com")
+
+    assert first == "cus_team_first"
+    assert second == "cus_team_second"
+    assert mock_create.call_count == 2
+
+
+@pytest.mark.anyio
+async def test_create_team_stripe_customer_defaults_locale_and_name() -> None:
+    """Optional name / locale: defaults are ``None`` and ``"en"``. The
+    Stripe SDK accepts ``name=None`` even though stubs declare ``str``
+    (the existing ``# type: ignore[arg-type]`` documents this)."""
+    user_id = uuid4()
+    mock_stripe_cust = MagicMock()
+    mock_stripe_cust.id = "cus_team_minimal"
+
+    with patch("stripe.Customer.create", return_value=mock_stripe_cust) as mock_create:
+        result = await create_team_stripe_customer(
+            user_id=user_id,
+            email="minimal@example.com",
+        )
+
+    assert result == "cus_team_minimal"
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["name"] is None
+    assert call_kwargs["preferred_locales"] == ["en"]
 
 
 # ── create_checkout_session ───────────────────────────────────────────────────

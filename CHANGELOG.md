@@ -29,9 +29,37 @@ only valid if all three repos already match `<X.Y.Z>` on `main`.
   already-scheduled cancellation with no error, and the helper no-ops
   cleanly when the user has no personal customer or no active personal
   subscription.
+- **DB-level enforcement of rule 8 ("one owned org per user").** Migration
+  `apps/orgs/migrations/0011_uniq_org_owner_per_user.py` adds a partial
+  unique index on `OrgMember(user)` where `role='owner'`. The view-layer
+  `.exists()` check stays as a fast-path UX guard; the constraint is the
+  authoritative enforcer for the TOCTOU race where two parallel team
+  checkouts would both pass the application-layer guard before either
+  webhook fires. The losing webhook now raises `IntegrityError` and is
+  retried/marked failed by Celery instead of silently creating a second
+  owned org.
+- **`?context=personal|team` query param on
+  `PATCH/DELETE /api/v1/billing/subscriptions/me/`.** Lets a
+  concurrent-billing user (rule 5a/5b) target either of their two active
+  subscriptions explicitly. Defaults: `team` for `ORG_MEMBER` callers
+  (existing behavior), `personal` otherwise. The `is_billing=True` gate
+  only applies to `?context=team` — any user may cancel their own
+  personal sub. This fulfills rule 16's "user can manually cancel
+  personal earlier from the subscription page" promise in the
+  keep-personal opt-out case.
 
 ### Changed
 
+- **`GET /api/v1/billing/subscriptions/me/` returns a paginated list**
+  (`{count, next, previous, results: [Subscription]}`) instead of a
+  single object. The change is **breaking** for clients that read the
+  response as a top-level `Subscription`. An empty `results` list now
+  represents the free tier (replacing the old 404). The shape mirrors
+  the existing `plans/`, `products/`, and `credits/` envelopes. Required
+  for the rule-5a/5b concurrent-billing case, where a user can hold both
+  a personal and a team subscription at the same time — the old single-
+  object shape forced a routing decision that hid one sub from
+  the caller. Frontend in lockstep needs to update its `/me/` parser.
 - **`account_type` flips atomically with org creation.**
   `apps.orgs.services._create_org_with_owner` now flips
   `user.account_type` from `personal` to `org_member` inside the same

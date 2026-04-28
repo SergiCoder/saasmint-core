@@ -153,6 +153,26 @@ class TestCreateOrgWithOwner:
         assert customer.org_id == org.id
         assert customer.livemode is True
 
+    def test_second_owner_membership_for_same_user_raises(self) -> None:
+        """Rule 8 (``uniq_org_owner_per_user``) is enforced at the DB layer —
+        even if the view-layer guard is bypassed by a TOCTOU race, a second
+        OWNER row for the same user across two orgs cannot land. The test
+        bypasses ``_create_org_with_owner`` and inserts directly to keep the
+        assertion at the constraint level."""
+        from django.db.utils import IntegrityError
+
+        user = User.objects.create_user(
+            email="dual-owner@example.com",
+            full_name="Dual Owner",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        org1 = Org.objects.create(name="Org1", slug="dual-owner-1", created_by=user)
+        OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER)
+
+        org2 = Org.objects.create(name="Org2", slug="dual-owner-2", created_by=user)
+        with pytest.raises(IntegrityError, match="uniq_org_owner_per_user"):
+            OrgMember.objects.create(org=org2, user=user, role=OrgRole.OWNER)
+
     def test_duplicate_webhook_is_idempotent(self) -> None:
         """A second checkout.session.completed delivery must not raise — it
         should return the org+membership already created on the first call."""
@@ -379,6 +399,12 @@ class TestDeleteOrg:
 class TestDeleteOrgsCreatedByUser:
     @patch("apps.orgs.services._cancel_team_subscription")
     def test_deletes_all_active_orgs(self, mock_cancel):
+        """``delete_orgs_created_by_user`` filters by ``Org.created_by`` and
+        is independent of OrgMember role — a user who's only ever owned one
+        org at a time (rule 8) can still have *created* multiple orgs over
+        their lifetime via ownership transfers. This setup mirrors that:
+        same ``created_by`` on both orgs, but only the OWNER constraint-
+        respecting first one carries an OrgMember row."""
         user = User.objects.create_user(
             email="multiorg@example.com",
             full_name="Multi Org",
@@ -387,7 +413,6 @@ class TestDeleteOrgsCreatedByUser:
         org1 = Org.objects.create(name="Org1", slug="org1", created_by=user)
         OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER)
         org2 = Org.objects.create(name="Org2", slug="org2", created_by=user)
-        OrgMember.objects.create(org=org2, user=user, role=OrgRole.OWNER)
         org1_id = org1.id
         org2_id = org2.id
 

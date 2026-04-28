@@ -563,8 +563,11 @@ paths:
   /api/v1/billing/subscriptions/me/:
     get:
       operationId: billing_subscriptions_me_retrieve
-      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
-        subscription.
+      description: List every active subscription the caller has billing visibility
+        into. Empty ``results`` indicates the free tier. Up to two rows can appear
+        when a user holds both a personal and a team subscription concurrently (rule
+        5a — paid personal user accepts a team invite — or rule 5b — keep-personal
+        opt-out during a personal→team upgrade).
       parameters:
       - in: query
         name: currency
@@ -581,17 +584,30 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Subscription'
+                $ref: '#/components/schemas/SubscriptionListResponse'
           description: ''
-        '404':
-          description: Caller has no active subscription. Returned for users on the
-            free tier (no Stripe-backed subscription) and for ORG_MEMBER users without
-            an active org membership.
     patch:
       operationId: billing_subscriptions_me_partial_update
-      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
-        subscription.
+      description: |-
+        GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current subscriptions.
+
+        GET returns every active subscription the caller has billing visibility
+        into (0, 1, or 2 — see :func:`_get_active_subscriptions_for_user`).
+        PATCH/DELETE accept a ``?context=personal|team`` query param to pick
+        which subscription to mutate when the caller has both concurrently.
       parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for ``ORG_MEMBER`` callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
       - in: query
         name: currency
         schema:
@@ -621,16 +637,30 @@ paths:
                 $ref: '#/components/schemas/Subscription'
           description: ''
         '403':
-          description: Caller is an ORG_MEMBER without `is_billing=True` on their
-            active org membership — only billing members may modify the team subscription.
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership — only billing members may modify the team
+            subscription. ``?context=personal`` does not enforce this gate.'
         '404':
           description: No Stripe customer or active paid subscription for the caller.
     delete:
       operationId: billing_subscriptions_me_destroy
       description: Schedule subscription cancellation at the end of the current billing
         period. Returns 202 Accepted — the subscription remains active until the period
-        end timestamp returned in the body.
+        end timestamp returned in the body. Use ``?context=personal`` to cancel the
+        personal sub when the caller also holds a concurrent team sub.
       parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for ``ORG_MEMBER`` callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
       - in: query
         name: currency
         schema:
@@ -649,8 +679,9 @@ paths:
                 $ref: '#/components/schemas/Subscription'
           description: ''
         '403':
-          description: Caller is an ORG_MEMBER without `is_billing=True` on their
-            active org membership — only billing members may cancel the team subscription.
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership — only billing members may cancel the team
+            subscription. ``?context=personal`` does not enforce this gate.'
         '404':
           description: No Stripe customer or active paid subscription for the caller.
   /api/v1/currencies/:
@@ -2078,6 +2109,28 @@ components:
       - quantity
       - status
       - trial_ends_at
+    SubscriptionListResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Subscription'
+      required:
+      - count
+      - next
+      - previous
+      - results
     SubscriptionStatusEnum:
       enum:
       - active
