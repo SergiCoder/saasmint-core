@@ -502,17 +502,32 @@ class PortalSessionView(BillingScopedView):
         return Response({"url": url})
 
 
-def _require_owner_for_product_purchase(user: User) -> UUID | None:
-    """Authorize a credit purchase. Returns ``org_id`` for team buys, ``None`` for personal.
+def _resolve_product_purchase_context(user: User, context: str | None) -> UUID | None:
+    """Authorize a credit purchase under the requested context.
 
-    PERSONAL: always allowed, credits go to the user's own balance.
-    ORG_MEMBER: must hold ``role=OWNER`` on an active org; admin/member → 403.
-    Unlike subscription mutations (which gate on ``is_billing``), credit
-    purchases are owner-only — the spend authority sits with the principal,
-    not the delegated billing contact.
+    Returns ``org_id`` when the purchase is scoped to an org, ``None`` for a
+    personal purchase. Mirrors the ``?context=personal|team`` semantics used
+    by subscription mutations (rule 5a/5b).
+
+    Defaults when ``context`` is None: ORG_MEMBER → team, PERSONAL → personal —
+    preserves the historical auto-route by ``account_type``.
+
+    ``context=personal`` is universally allowed: anyone can buy credits for
+    themselves, including ORG_MEMBER admins/regular members who cannot buy
+    for the org. The owner-only gate only applies to ``context=team``, since
+    only owners may spend org funds. PERSONAL callers cannot pick ``team``
+    (no org to buy for) and get 400.
     """
-    if user.account_type != AccountType.ORG_MEMBER:
+    effective = context or _default_subscription_context(user)
+
+    if effective == _SUBSCRIPTION_CONTEXT_PERSONAL:
         return None
+
+    # effective == "team"
+    if user.account_type != AccountType.ORG_MEMBER:
+        raise ValidationError(
+            {"context": ["PERSONAL users cannot purchase team credits."]},
+        )
 
     from apps.orgs.models import OrgMember, OrgRole
 
@@ -534,18 +549,45 @@ class ProductCheckoutSessionView(BillingScopedView):
 
     @extend_schema(
         request=ProductCheckoutRequestSerializer,
+        parameters=[
+            OpenApiParameter(
+                name="context",
+                description=(
+                    "Pick the buyer scope when the caller can purchase under both"
+                    " (rule 5a/5b). ``personal`` credits the user's own balance;"
+                    " ``team`` credits the org. Default: ``team`` for ORG_MEMBER"
+                    " callers, ``personal`` otherwise. ``team`` requires"
+                    " ``role=OWNER`` on the active org. PERSONAL users cannot"
+                    " pick ``team``."
+                ),
+                required=False,
+                type=str,
+                enum=["personal", "team"],
+            ),
+        ],
         responses={
             200: inline_serializer("ProductCheckoutResponse", {"url": drf_serializers.URLField()}),
+            400: OpenApiResponse(
+                description=(
+                    "Invalid ``?context=`` value, or PERSONAL caller requested"
+                    " ``?context=team``."
+                )
+            ),
             403: OpenApiResponse(
-                description=("Caller is an ORG_MEMBER without ``role=OWNER`` on their active org.")
+                description=(
+                    "``?context=team``: caller is not the org owner. Admins and"
+                    " regular members can still buy ``?context=personal``."
+                )
             ),
             404: OpenApiResponse(description="Invalid product price."),
         },
         description=(
             "Create a Stripe Checkout Session (``mode=payment``) for a one-time"
-            " product purchase (credit pack). PERSONAL users buy for themselves;"
-            " ORG_MEMBER owners buy for the org. Admins and regular members are"
-            " rejected with 403."
+            " product purchase (credit pack). The buyer scope is selected by"
+            " ``?context=personal|team``; defaults to ``team`` for ORG_MEMBER"
+            " callers and ``personal`` otherwise. ``personal`` is universally"
+            " allowed (anyone can buy credits for themselves); ``team`` is"
+            " restricted to org owners."
         ),
         tags=["billing"],
     )
@@ -555,8 +597,9 @@ class ProductCheckoutSessionView(BillingScopedView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
+        context = _validate_subscription_context(request.query_params.get("context"))
         product_price = _get_active_product_price(data["product_price_id"])
-        org_id = _require_owner_for_product_purchase(user)
+        org_id = _resolve_product_purchase_context(user, context)
 
         metadata: dict[str, str] = {"product_id": str(product_price.product_id)}
         if org_id is not None:

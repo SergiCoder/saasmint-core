@@ -1806,6 +1806,147 @@ class TestProductCheckoutTeamOwnership:
         assert resp.status_code == 403
 
 
+@pytest.mark.django_db
+class TestProductCheckoutContextSelector:
+    """``?context=personal|team`` selector for callers who can buy under both
+    scopes (rule 5a/5b — e.g. an ORG_MEMBER owner who kept their personal sub
+    after upgrade)."""
+
+    def _setup_org(self, role, is_billing=False):
+        from apps.orgs.models import Org, OrgMember
+        from apps.users.models import AccountType, User
+
+        user = User.objects.create_user(
+            email=f"ctx-{role.value}@example.com",
+            full_name=f"{role.value} User",
+            account_type=AccountType.ORG_MEMBER,
+        )
+        org = Org.objects.create(name="Ctx Org", slug=f"ctx-org-{role.value}", created_by=user)
+        OrgMember.objects.create(org=org, user=user, role=role, is_billing=is_billing)
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return user, org, client
+
+    @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_org_owner_personal_context_routes_to_user_customer(
+        self, mock_customer, mock_session, boost_product, boost_product_price, mock_stripe_customer
+    ):
+        from apps.orgs.models import OrgRole
+
+        user, _, client = self._setup_org(OrgRole.OWNER, is_billing=True)
+        mock_customer.return_value = mock_stripe_customer
+        mock_session.return_value = "https://checkout.stripe.com/personal"
+
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=personal",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        # No org_id in metadata — webhook will grant to the user balance.
+        metadata = mock_session.call_args.kwargs["metadata"]
+        assert metadata == {"product_id": str(boost_product.id)}
+        # Customer resolution must use user_id, not org_id.
+        assert mock_customer.call_args.kwargs.get("user_id") == user.id
+        assert "org_id" not in mock_customer.call_args.kwargs
+
+    @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_org_admin_can_purchase_personal_context(
+        self, mock_customer, mock_session, boost_product_price, mock_stripe_customer
+    ):
+        """Admins can't buy for the org, but ``?context=personal`` is anyone's
+        right — the owner-only gate applies only when spending org funds."""
+        from apps.orgs.models import OrgRole
+
+        user, _, client = self._setup_org(OrgRole.ADMIN)
+        mock_customer.return_value = mock_stripe_customer
+        mock_session.return_value = "https://checkout.stripe.com/personal-admin"
+
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=personal",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert mock_customer.call_args.kwargs.get("user_id") == user.id
+
+    @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_org_owner_explicit_team_context_routes_to_org(
+        self, mock_customer, mock_session, boost_product, boost_product_price, mock_stripe_customer
+    ):
+        from apps.orgs.models import OrgRole
+
+        _, org, client = self._setup_org(OrgRole.OWNER, is_billing=True)
+        mock_customer.return_value = mock_stripe_customer
+        mock_session.return_value = "https://checkout.stripe.com/team-explicit"
+
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=team",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        metadata = mock_session.call_args.kwargs["metadata"]
+        assert metadata == {"product_id": str(boost_product.id), "org_id": str(org.id)}
+        assert mock_customer.call_args.kwargs.get("org_id") == org.id
+
+    def test_org_admin_explicit_team_context_returns_403(self, boost_product_price):
+        from apps.orgs.models import OrgRole
+
+        _, _, client = self._setup_org(OrgRole.ADMIN)
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=team",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 403
+
+    def test_personal_user_team_context_returns_400(self, authed_client, boost_product_price):
+        resp = authed_client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=team",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "context" in resp.data
+
+    def test_invalid_context_value_returns_400(self, authed_client, boost_product_price):
+        resp = authed_client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=bogus",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "context" in resp.data
+
+
 # ---------------------------------------------------------------------------
 # GET /api/v1/billing/credits/me/
 # ---------------------------------------------------------------------------

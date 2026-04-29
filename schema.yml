@@ -517,8 +517,23 @@ paths:
     post:
       operationId: billing_product_checkout_sessions_create
       description: Create a Stripe Checkout Session (``mode=payment``) for a one-time
-        product purchase (credit pack). PERSONAL users buy for themselves; ORG_MEMBER
-        owners buy for the org. Admins and regular members are rejected with 403.
+        product purchase (credit pack). The buyer scope is selected by ``?context=personal|team``;
+        defaults to ``team`` for ORG_MEMBER callers and ``personal`` otherwise. ``personal``
+        is universally allowed (anyone can buy credits for themselves); ``team`` is
+        restricted to org owners.
+      parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: 'Pick the buyer scope when the caller can purchase under both
+          (rule 5a/5b). ``personal`` credits the user''s own balance; ``team`` credits
+          the org. Default: ``team`` for ORG_MEMBER callers, ``personal`` otherwise.
+          ``team`` requires ``role=OWNER`` on the active org. PERSONAL users cannot
+          pick ``team``.'
       tags:
       - billing
       requestBody:
@@ -543,9 +558,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProductCheckoutResponse'
           description: ''
+        '400':
+          description: Invalid ``?context=`` value, or PERSONAL caller requested ``?context=team``.
         '403':
-          description: Caller is an ORG_MEMBER without ``role=OWNER`` on their active
-            org.
+          description: '``?context=team``: caller is not the org owner. Admins and
+            regular members can still buy ``?context=personal``.'
         '404':
           description: Invalid product price.
   /api/v1/billing/products/:
