@@ -9,8 +9,32 @@
 {% endif %}
 {% endblock %}
 
+{% block bodyclass %}{{ block.super }} env-{{ ENVIRONMENT }}{% endblock %}
+
 {% block extrastyle %}
 <style>
+  /* ── Environment banner (top strip across every admin page) ── */
+  body { padding-top: 22px; }
+  body::before {
+    content: "{{ ENVIRONMENT|upper }} ENVIRONMENT";
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 22px;
+    line-height: 22px;
+    text-align: center;
+    color: #fff;
+    background: #555;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    z-index: 9999;
+  }
+  body.env-local::before { background: #2f7a3a; }
+  body.env-dev::before   { background: #b8860b; }
+  body.env-prod::before  { background: #b00020; }
+
   /* ── Center admin layout to 960px like the dashboard ── */
 
   /* Only center the dashboard index page — list/detail pages keep full width */
@@ -43,9 +67,10 @@
   {% if site_url %}
     <a href="{{ site_url }}">View site</a> /
   {% endif %}
-  {# swagger-ui and redoc URL names are only registered when DEBUG=True (see config/urls.py). #}
-  {# Without a guard here this will raise NoReverseMatch in production — render only when DEBUG. #}
-  {% if debug %}
+  {# swagger-ui / redoc / schema URL names are only registered when DEBUG or SCHEMA_PUBLIC #}
+  {# is true (see config/urls.py). The `schema_links_enabled` flag mirrors that exact gate #}
+  {# via config.context_processors.app_context, so links and routes can never disagree. #}
+  {% if schema_links_enabled %}
   <a href="{% url 'swagger-ui' %}">Swagger</a> /
   <a href="{% url 'redoc' %}">ReDoc</a> /
   <a href="{% url 'schema' %}">Schema</a> /

@@ -11,12 +11,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Repo root: base.py → settings/ → config/ → repo
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# Select the active env file based on ENVIRONMENT (default: local)
+# Select the active env file based on ENVIRONMENT (default: local).
+# Accepted values: local | dev | prod. Anything else falls back to .env.local.
 _ENV_NAME = os.environ.get("ENVIRONMENT", "local")
 _ENV_FILE_MAP = {
     "local": ".env.local",
-    "development": ".env.dev",
-    "production": ".env.prod",
+    "dev": ".env.dev",
+    "prod": ".env.prod",
 }
 _ACTIVE_ENV = _REPO_ROOT / _ENV_FILE_MAP.get(_ENV_NAME, ".env.local")
 
@@ -34,7 +35,7 @@ class _Env(BaseSettings):
     stripe_webhook_secret: str
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://localhost:5432/saasmint"
-    debug: bool = False
+    environment: str = "local"  # local | dev | prod — surfaced in admin banner + logs
     schema_public: bool = False  # expose /api/schema, /api/docs, /api/redoc outside DEBUG
     allowed_hosts: list[str] = []
     cors_allowed_origins: list[str] = []
@@ -76,7 +77,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = env.django_secret_key
 JWT_SIGNING_KEY = env.jwt_signing_key or env.django_secret_key
-DEBUG = env.debug
+ENVIRONMENT = env.environment
 SCHEMA_PUBLIC = env.schema_public
 ALLOWED_HOSTS = env.allowed_hosts
 
@@ -127,6 +128,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "config.context_processors.app_context",
             ],
         },
     },
