@@ -2254,6 +2254,19 @@ components:
           items:
             type: string
           readOnly: true
+        has_stripe_customer:
+          type: boolean
+          description: |-
+            Whether the user has a personal Stripe customer.
+
+            The user's billing currency is locked at first purchase on this
+            customer (rule 12). After that, even cancellation leaves the
+            customer row in place, so the lock survives — frontend uses this
+            flag to gate the "your billing currency can't be changed" notice
+            on the profile form. Org-scoped Stripe customers don't count;
+            the user's currency is independent of any org's billing currency
+            (rule 3 — distinct customers per scope).
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -2269,6 +2282,7 @@ components:
       - created_at
       - email
       - full_name
+      - has_stripe_customer
       - id
       - is_verified
       - job_title
