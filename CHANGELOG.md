@@ -8,6 +8,18 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.8.5] - 2026-04-29
+
+### Added
+
+- **`has_stripe_customer: bool` on `GET /api/v1/account/me/`.** The user's
+  billing currency is locked at first purchase by Stripe (rule 12) and the
+  customer row survives subscription cancellation, so the lock is permanent
+  once set. The frontend uses this flag to gate the "your billing currency
+  can't be changed" notice on the profile form. Only user-scoped Stripe
+  customers count — org-scoped customers (rule 3) belong to the org's
+  billing scope, not the user's, and don't lock the user's currency.
+
 ## [0.8.4] - 2026-04-28
 
 ### Added

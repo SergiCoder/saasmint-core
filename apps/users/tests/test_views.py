@@ -59,6 +59,79 @@ class TestAccountViewGET:
         resp = client.get("/api/v1/account/")
         assert resp.status_code in (401, 403)
 
+    def test_has_stripe_customer_false_when_no_customer(self, authed_client, user):
+        """User with no personal Stripe customer (free tier, never subscribed)
+        gets ``has_stripe_customer: false`` — frontend hides the
+        currency-locked notice (rule 12)."""
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is False
+
+    def test_has_stripe_customer_true_when_user_scoped_customer_exists(
+        self, authed_client, user
+    ):
+        """A user-scoped ``StripeCustomer`` row means the user's billing
+        currency is locked at first purchase, so the notice should render —
+        even after the subscription is later cancelled (the customer row
+        survives cancellation)."""
+        from apps.billing.models import StripeCustomer
+
+        StripeCustomer.objects.create(stripe_id="cus_user_locked", user=user, livemode=False)
+
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is True
+
+    def test_has_stripe_customer_false_when_only_org_customer_exists(
+        self, authed_client, user
+    ):
+        """Org-scoped Stripe customers don't count — the user's currency is
+        independent of the org's billing currency (rule 3 — distinct
+        customers per scope). An ORG_MEMBER user who only ever paid for
+        team plans must still see ``has_stripe_customer: false`` so the
+        notice doesn't show until they personally subscribe."""
+        from apps.billing.models import StripeCustomer
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import AccountType
+
+        user.account_type = AccountType.ORG_MEMBER
+        user.save(update_fields=["account_type"])
+        org = Org.objects.create(
+            name="OrgOnly", slug="org-only-account", created_by=user
+        )
+        OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
+        StripeCustomer.objects.create(stripe_id="cus_org_only", org=org, livemode=False)
+
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is False
+
+    def test_has_stripe_customer_false_after_customer_hard_deleted(
+        self, authed_client, user
+    ):
+        """If the user's personal Stripe customer is hard-deleted (e.g. via
+        the GDPR-erasure path that survives the user, or admin cleanup),
+        the flag flips back to ``false``. The flag is recomputed per
+        request, not cached on the user row, so any state change is
+        immediately reflected."""
+        from apps.billing.models import StripeCustomer
+
+        cust = StripeCustomer.objects.create(
+            stripe_id="cus_to_delete", user=user, livemode=False
+        )
+
+        # Pre-condition: flag is true while the customer row exists.
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is True
+
+        # Hard-delete the customer (no on_delete cascade to the user).
+        cust.delete()
+
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is False
+
 
 @pytest.mark.django_db
 class TestAccountViewPATCH:
@@ -288,6 +361,39 @@ class TestAccountViewPATCHEdgeCases:
         client = APIClient()
         resp = client.patch("/api/v1/account/", {"full_name": "Hacker"}, format="json")
         assert resp.status_code in (401, 403)
+
+    def test_patch_response_includes_has_stripe_customer(self, authed_client, user):
+        """PATCH /account/ returns ``UserSerializer`` data, so the new
+        ``has_stripe_customer`` flag must appear in the response envelope
+        — frontend reads it from the same payload after profile edits to
+        decide whether to re-render the currency-locked notice."""
+        from apps.billing.models import StripeCustomer
+
+        StripeCustomer.objects.create(stripe_id="cus_patch_resp", user=user, livemode=False)
+
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"full_name": "Renamed"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert "has_stripe_customer" in resp.data
+        assert resp.data["has_stripe_customer"] is True
+
+    def test_patch_cannot_set_has_stripe_customer(self, authed_client, user):
+        """``has_stripe_customer`` is a derived ``SerializerMethodField`` on
+        the response serializer, and ``UpdateUserSerializer`` does not
+        declare it — a client attempting to inject ``true`` via PATCH is
+        silently ignored, and the response reflects the real DB state
+        (no personal ``StripeCustomer`` row -> ``false``)."""
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"has_stripe_customer": True, "full_name": "Still Me"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is False
+        assert resp.data["full_name"] == "Still Me"
 
 
 @pytest.mark.django_db
