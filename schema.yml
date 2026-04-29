@@ -446,9 +446,11 @@ paths:
   /api/v1/billing/credits/me/:
     get:
       operationId: billing_credits_me_retrieve
-      description: Return the caller's current credit balance. PERSONAL users see
-        their own balance; ORG_MEMBER users see their org's balance (readable by any
-        active member).
+      description: Return the caller's current credit balances as a list. PERSONAL
+        users see a single entry with their own balance. ORG_MEMBER users see their
+        org's balance (readable by any active member), plus a ``user``-scoped entry
+        iff a personal balance survives from before a personal→team upgrade (rule
+        16) — this entry is omitted when the user has no leftover personal credits.
       tags:
       - billing
       security:
@@ -1349,6 +1351,16 @@ components:
       required:
       - email
     CreditBalance:
+      type: object
+      properties:
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreditBalanceEntry'
+          readOnly: true
+      required:
+      - balances
+    CreditBalanceEntry:
       type: object
       properties:
         balance:
@@ -2266,6 +2278,12 @@ components:
             on the profile form. Org-scoped Stripe customers don't count;
             the user's currency is independent of any org's billing currency
             (rule 3 — distinct customers per scope).
+
+            Performance: a single indexed ``EXISTS`` on the unique ``user_id``
+            (OneToOneField) — ``SELECT 1 ... LIMIT 1``. The flag must reflect
+            live DB state (the row can be hard-deleted out from under the
+            cached ``User`` instance), so we deliberately do not short-circuit
+            via ``_state.fields_cache``.
           readOnly: true
         created_at:
           type: string

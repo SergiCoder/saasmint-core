@@ -1816,7 +1816,7 @@ class TestCreditBalanceView:
     def test_personal_user_gets_zero_by_default(self, authed_client, user):
         resp = authed_client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
-        assert resp.data == {"balance": 0, "scope": "user"}
+        assert resp.data == {"balances": [{"balance": 0, "scope": "user"}]}
 
     def test_personal_user_sees_own_balance(self, authed_client, user):
         from apps.billing.models import CreditBalance
@@ -1824,7 +1824,7 @@ class TestCreditBalanceView:
         CreditBalance.objects.create(user=user, balance=125)
         resp = authed_client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
-        assert resp.data == {"balance": 125, "scope": "user"}
+        assert resp.data == {"balances": [{"balance": 125, "scope": "user"}]}
 
     def test_org_member_sees_org_balance(self, org_member_user, team_org_setup):
         from apps.billing.models import CreditBalance
@@ -1835,7 +1835,46 @@ class TestCreditBalanceView:
         client.force_authenticate(user=org_member_user)
         resp = client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
-        assert resp.data == {"balance": 500, "scope": "org"}
+        assert resp.data == {"balances": [{"balance": 500, "scope": "org"}]}
+
+    def test_org_member_with_leftover_personal_balance_sees_both(
+        self, org_member_user, team_org_setup
+    ):
+        """Pre-upgrade personal credits remain visible after a PERSONAL→team
+        upgrade (rule 16). The org balance is always emitted; the user balance
+        is appended iff > 0."""
+        from apps.billing.models import CreditBalance
+
+        org, _, _ = team_org_setup
+        CreditBalance.objects.create(org=org, balance=500)
+        CreditBalance.objects.create(user=org_member_user, balance=75)
+        client = APIClient()
+        client.force_authenticate(user=org_member_user)
+        resp = client.get("/api/v1/billing/credits/me/")
+        assert resp.status_code == 200
+        assert resp.data == {
+            "balances": [
+                {"balance": 500, "scope": "org"},
+                {"balance": 75, "scope": "user"},
+            ]
+        }
+
+    def test_org_member_with_zero_personal_balance_omits_user_entry(
+        self, org_member_user, team_org_setup
+    ):
+        """A zero-valued personal CreditBalance row is treated the same as no
+        row — we don't surface a noisy ``user`` entry for ORG_MEMBERs who
+        never had pre-upgrade credits."""
+        from apps.billing.models import CreditBalance
+
+        org, _, _ = team_org_setup
+        CreditBalance.objects.create(org=org, balance=500)
+        CreditBalance.objects.create(user=org_member_user, balance=0)
+        client = APIClient()
+        client.force_authenticate(user=org_member_user)
+        resp = client.get("/api/v1/billing/credits/me/")
+        assert resp.status_code == 200
+        assert resp.data == {"balances": [{"balance": 500, "scope": "org"}]}
 
     def test_non_billing_member_still_sees_org_balance(self, team_org_setup):
         """Read access to the org's credit balance is granted to any member,
@@ -1857,7 +1896,7 @@ class TestCreditBalanceView:
 
         resp = client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
-        assert resp.data == {"balance": 42, "scope": "org"}
+        assert resp.data == {"balances": [{"balance": 42, "scope": "org"}]}
 
     def test_org_member_without_membership_returns_404(self, org_member_client):
         resp = org_member_client.get("/api/v1/billing/credits/me/")

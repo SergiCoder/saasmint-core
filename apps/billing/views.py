@@ -594,14 +594,18 @@ class CreditBalanceView(BillingScopedView):
     @extend_schema(
         responses={200: CreditBalanceSerializer},
         description=(
-            "Return the caller's current credit balance. PERSONAL users see their"
-            " own balance; ORG_MEMBER users see their org's balance (readable by"
-            " any active member)."
+            "Return the caller's current credit balances as a list. PERSONAL"
+            " users see a single entry with their own balance. ORG_MEMBER users"
+            " see their org's balance (readable by any active member), plus a"
+            " ``user``-scoped entry iff a personal balance survives from before"
+            " a personal→team upgrade (rule 16) — this entry is omitted when"
+            " the user has no leftover personal credits."
         ),
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
         user = get_user(request)
+        balances: list[dict[str, object]] = []
 
         if user.account_type == AccountType.ORG_MEMBER:
             from apps.orgs.models import OrgMember
@@ -617,13 +621,17 @@ class CreditBalanceView(BillingScopedView):
             )
             if org_id is None:
                 raise NotFound("No active org found.")
-            balance = get_credit_balance(org_id=org_id)
-            scope = "org"
+            balances.append({"balance": get_credit_balance(org_id=org_id), "scope": "org"})
+            # Surface leftover personal credits from a pre-upgrade purchase
+            # (rule 16). Only emit when > 0 so we don't spam zero-rows for
+            # ORG_MEMBERs who never had a personal balance.
+            personal_balance = get_credit_balance(user=user)
+            if personal_balance > 0:
+                balances.append({"balance": personal_balance, "scope": "user"})
         else:
-            balance = get_credit_balance(user=user)
-            scope = "user"
+            balances.append({"balance": get_credit_balance(user=user), "scope": "user"})
 
-        return Response(CreditBalanceSerializer({"balance": balance, "scope": scope}).data)
+        return Response(CreditBalanceSerializer({"balances": balances}).data)
 
 
 def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
