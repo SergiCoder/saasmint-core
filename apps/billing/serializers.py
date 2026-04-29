@@ -150,6 +150,7 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "current_period_start",
             "current_period_end",
             "canceled_at",
+            "cancel_at",
             "created_at",
         )
         read_only_fields = fields

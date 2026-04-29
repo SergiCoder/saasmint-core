@@ -48,6 +48,7 @@ def _sub_event(
     price_id: str = "price_webhook",
     trial_end: int | None = None,
     canceled_at: int | None = None,
+    cancel_at: int | None = None,
     quantity: int = 1,
 ) -> dict[str, object]:
     return {
@@ -72,6 +73,7 @@ def _sub_event(
                 "current_period_end": NOW_TS + 86400,
                 "trial_end": trial_end,
                 "canceled_at": canceled_at,
+                "cancel_at": cancel_at,
             }
         },
     }
@@ -457,6 +459,96 @@ async def test_sync_subscription_with_canceled_at() -> None:
 
     sub = next(iter(subscription_repo._store.values()))
     assert sub.canceled_at is not None
+
+
+@pytest.mark.anyio
+async def test_sync_subscription_persists_cancel_at_when_scheduled() -> None:
+    """When Stripe reports a scheduled cancel (Dahlia ``cancel_at``), the
+    timestamp is persisted on the local mirror so the UI can show the exact
+    cutover date instead of inferring from current_period_end."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_sched_cancel")
+    await customer_repo.save(customer)
+    plan = make_plan()
+    plan_repo._plans[plan.id] = plan
+    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_sched_cancel")
+    plan_repo._prices[price.id] = price
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    cancel_ts = NOW_TS + 7 * 86400  # 7 days from now
+    event = _sub_event(
+        "customer.subscription.updated",
+        stripe_customer_id="cus_sched_cancel",
+        price_id="price_sched_cancel",
+        cancel_at=cancel_ts,
+    )
+    stripe_id = await _persist(event_repo, event)
+
+    await process_stored_event(event, stripe_id, repos)
+
+    sub = next(iter(subscription_repo._store.values()))
+    assert sub.cancel_at is not None
+    assert int(sub.cancel_at.timestamp()) == cancel_ts
+    # canceled_at stays None — the cancellation is scheduled, not fired.
+    assert sub.canceled_at is None
+
+
+@pytest.mark.anyio
+async def test_sync_subscription_clears_cancel_at_on_resume() -> None:
+    """A resume event (Stripe sends ``cancel_at: null``) clears the local
+    mirror so a subsequent call to /me/ stops showing a cancellation date."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_resume")
+    await customer_repo.save(customer)
+    plan = make_plan()
+    plan_repo._plans[plan.id] = plan
+    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_resume")
+    plan_repo._prices[price.id] = price
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+
+    # 1) First event schedules the cancel.
+    schedule_event = _sub_event(
+        "customer.subscription.updated",
+        stripe_customer_id="cus_resume",
+        price_id="price_resume",
+        cancel_at=NOW_TS + 86400,
+    )
+    sched_id = await _persist(event_repo, schedule_event)
+    await process_stored_event(schedule_event, sched_id, repos)
+    assert next(iter(subscription_repo._store.values())).cancel_at is not None
+
+    # 2) Resume event clears it.
+    resume_event = _sub_event(
+        "customer.subscription.updated",
+        stripe_customer_id="cus_resume",
+        price_id="price_resume",
+        cancel_at=None,
+    )
+    resume_event["id"] = "evt_webhook_resume"
+    resume_id = await _persist(event_repo, resume_event)
+    await process_stored_event(resume_event, resume_id, repos)
+
+    sub = next(iter(subscription_repo._store.values()))
+    assert sub.cancel_at is None
 
 
 # ── _on_subscription_deleted ──────────────────────────────────────────────────

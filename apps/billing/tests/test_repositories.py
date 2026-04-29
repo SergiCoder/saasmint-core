@@ -203,6 +203,43 @@ class TestDjangoSubscriptionRepository:
         async_to_sync(repo.save)(sub)
         assert Subscription.objects.filter(stripe_id="sub_new").exists()
 
+    def test_save_round_trips_cancel_at(self, repo, stripe_customer, plan):
+        """``cancel_at`` survives both directions through the repo so the
+        webhook can write a scheduled-cancel timestamp and the API view can
+        read it back without losing precision."""
+        from saasmint_core.domain.subscription import (
+            Subscription as DomainSub,
+        )
+        from saasmint_core.domain.subscription import (
+            SubscriptionStatus,
+        )
+
+        cancel_at = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+        sub = DomainSub(
+            id=uuid4(),
+            stripe_id="sub_with_cancel",
+            stripe_customer_id=stripe_customer.id,
+            status=SubscriptionStatus.ACTIVE,
+            plan_id=plan.id,
+            quantity=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+            cancel_at=cancel_at,
+            created_at=datetime.now(UTC),
+        )
+        async_to_sync(repo.save)(sub)
+
+        loaded = async_to_sync(repo.get_by_stripe_id)("sub_with_cancel")
+        assert loaded is not None
+        assert loaded.cancel_at == cancel_at
+
+        # Update path: clearing the field (resume) writes NULL back.
+        cleared = sub.model_copy(update={"cancel_at": None})
+        async_to_sync(repo.save)(cleared)
+        reloaded = async_to_sync(repo.get_by_stripe_id)("sub_with_cancel")
+        assert reloaded is not None
+        assert reloaded.cancel_at is None
+
     def test_get_active_for_user_returns_active_subscription(self, repo, subscription, user):
         result = async_to_sync(repo.get_active_for_user)(user.id)
         assert result is not None

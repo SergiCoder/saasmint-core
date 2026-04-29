@@ -59,6 +59,10 @@ class TestSubscriptionSerializer:
         assert "current_period_start" in data
         assert "current_period_end" in data
         assert "created_at" in data
+        # cancel_at is exposed (as None by default) so the frontend can show a
+        # precise scheduled-cancel date instead of inferring from period_end.
+        assert "cancel_at" in data
+        assert data["cancel_at"] is None
 
 
 class TestCheckoutRequestSerializer:
