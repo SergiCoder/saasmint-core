@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
+import stripe
 
 from saasmint_core.exceptions import SubscriptionNotFoundError
 from saasmint_core.services.billing import (
@@ -386,7 +388,20 @@ async def test_cancel_subscription_at_period_end() -> None:
     sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_cancel")
     await repo.save(sub)
 
-    with patch("stripe.Subscription.modify") as mock_modify:
+    # Stripe's modify() echoes back the updated subscription as a
+    # ``stripe.Subscription`` object. We mirror its cancel_at into the local
+    # row synchronously so the frontend's PATCH-then-GET path doesn't race
+    # the customer.subscription.updated webhook.
+    stripe_response = stripe.Subscription.construct_from(
+        {
+            "id": "sub_cancel",
+            "status": "active",
+            "cancel_at": 1_780_000_000,
+            "canceled_at": None,
+        },
+        "sk_test",
+    )
+    with patch("stripe.Subscription.modify", return_value=stripe_response) as mock_modify:
         await cancel_subscription(
             stripe_customer_id=customer_id,
             at_period_end=True,
@@ -394,6 +409,10 @@ async def test_cancel_subscription_at_period_end() -> None:
         )
 
     mock_modify.assert_called_once_with("sub_cancel", cancel_at="min_period_end")
+    saved = await repo.get_active_for_customer(customer_id)
+    assert saved is not None
+    assert saved.cancel_at is not None
+    assert int(saved.cancel_at.timestamp()) == 1_780_000_000
 
 
 @pytest.mark.anyio
@@ -403,7 +422,18 @@ async def test_cancel_subscription_immediately() -> None:
     sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_immed")
     await repo.save(sub)
 
-    with patch("stripe.Subscription.cancel") as mock_cancel:
+    # Immediate cancel (e.g. GDPR delete): Stripe transitions status to
+    # canceled and sets canceled_at; mirror both onto the local row.
+    stripe_response = stripe.Subscription.construct_from(
+        {
+            "id": "sub_immed",
+            "status": "canceled",
+            "cancel_at": None,
+            "canceled_at": 1_780_000_000,
+        },
+        "sk_test",
+    )
+    with patch("stripe.Subscription.cancel", return_value=stripe_response) as mock_cancel:
         await cancel_subscription(
             stripe_customer_id=customer_id,
             at_period_end=False,
@@ -411,6 +441,13 @@ async def test_cancel_subscription_immediately() -> None:
         )
 
     mock_cancel.assert_called_once_with("sub_immed")
+    # Status transitioned to canceled, so the row is no longer "active" — fetch
+    # by stripe_id to confirm the mirrored fields landed.
+    saved = await repo.get_by_stripe_id("sub_immed")
+    assert saved is not None
+    assert saved.status.value == "canceled"
+    assert saved.canceled_at is not None
+    assert int(saved.canceled_at.timestamp()) == 1_780_000_000
 
 
 @pytest.mark.anyio
@@ -446,16 +483,34 @@ async def test_cancel_subscription_free_sub_raises() -> None:
 async def test_resume_subscription_clears_cancel_at() -> None:
     repo = InMemorySubscriptionRepository()
     customer_id = uuid4()
-    sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_resume")
+    # Sub was previously scheduled to cancel; resume should clear cancel_at
+    # both upstream (Stripe) and locally (our mirror) before returning.
+    sub = make_subscription(
+        stripe_customer_id=customer_id,
+        stripe_id="sub_resume",
+        cancel_at=datetime.fromtimestamp(1_780_000_000, tz=UTC),
+    )
     await repo.save(sub)
 
-    with patch("stripe.Subscription.modify") as mock_modify:
+    stripe_response = stripe.Subscription.construct_from(
+        {
+            "id": "sub_resume",
+            "status": "active",
+            "cancel_at": None,
+            "canceled_at": None,
+        },
+        "sk_test",
+    )
+    with patch("stripe.Subscription.modify", return_value=stripe_response) as mock_modify:
         await resume_subscription(
             stripe_customer_id=customer_id,
             subscription_repo=repo,
         )
 
     mock_modify.assert_called_once_with("sub_resume", cancel_at="")
+    saved = await repo.get_active_for_customer(customer_id)
+    assert saved is not None
+    assert saved.cancel_at is None
 
 
 @pytest.mark.anyio
