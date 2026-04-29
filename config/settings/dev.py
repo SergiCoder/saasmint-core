@@ -10,7 +10,6 @@ ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
     "django",  # docker service name (stripe-cli forwards here)
-    "dev.saasmint.net",
     *ALLOWED_HOSTS,  # noqa: F405  # from env via base.py star import
 ]
 CORS_ALLOW_ALL_ORIGINS = True
