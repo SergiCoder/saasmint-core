@@ -58,21 +58,25 @@ class TestPlanListView:
         assert resp.status_code == 200
         assert len(resp.data["results"]) == 2
 
-    def test_personal_user_sees_only_personal_plans(
+    def test_personal_user_sees_all_plans(
         self, authed_client, plan, plan_price, team_plan, team_plan_price
     ):
+        # PERSONAL users can upgrade to a team plan via team-context checkout,
+        # so both contexts must be discoverable from the listing endpoint.
         resp = authed_client.get("/api/v1/billing/plans/")
         assert resp.status_code == 200
-        assert len(resp.data["results"]) == 1
-        assert resp.data["results"][0]["context"] == "personal"
+        assert len(resp.data["results"]) == 2
+        assert {row["context"] for row in resp.data["results"]} == {"personal", "team"}
 
-    def test_org_member_sees_only_team_plans(
+    def test_org_member_sees_all_plans(
         self, org_member_client, plan, plan_price, team_plan, team_plan_price
     ):
+        # ORG_MEMBER users see the same catalogue as everyone else; the
+        # checkout endpoint enforces which contexts they can actually purchase.
         resp = org_member_client.get("/api/v1/billing/plans/")
         assert resp.status_code == 200
-        assert len(resp.data["results"]) == 1
-        assert resp.data["results"][0]["context"] == "team"
+        assert len(resp.data["results"]) == 2
+        assert {row["context"] for row in resp.data["results"]} == {"personal", "team"}
 
 
 @pytest.mark.django_db

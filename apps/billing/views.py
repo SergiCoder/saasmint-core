@@ -60,7 +60,7 @@ from apps.billing.serializers import (
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
-from apps.billing.services import get_credit_balance, plan_context_for
+from apps.billing.services import get_credit_balance
 from apps.billing.tasks import send_subscription_cancel_notice_task
 from apps.users.models import AccountType, User
 from helpers import get_user
@@ -326,12 +326,11 @@ class PlanListView(APIView):
         auth=[],
     )
     def get(self, request: Request) -> Response:
+        # Personal and team plans are both shown to every caller (auth or anon).
+        # PERSONAL users can upgrade to a team plan via team-context checkout
+        # (see CheckoutSessionView), so hiding team plans from them would make
+        # the upgrade undiscoverable.
         qs = PlanModel.objects.filter(is_active=True).select_related("price")
-
-        # Authenticated users only see plans matching their account type
-        if request.user.is_authenticated:
-            qs = qs.filter(context=plan_context_for(request.user))
-
         data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
         return Response(_catalog_envelope(list(data)))
 
