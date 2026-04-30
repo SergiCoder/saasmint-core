@@ -266,8 +266,8 @@ class TestOnTeamCheckoutCompleted:
 
     @patch("saasmint_core.services.billing.cancel_subscription", new_callable=AsyncMock)
     def test_no_personal_customer_is_noop(self, mock_cancel: AsyncMock) -> None:
-        """ORG_MEMBER user from /auth/register/org-owner/ has no personal
-        customer. Default flag still runs through the helper, but it
+        """User with no personal Stripe customer (e.g. straight-to-team
+        signup): the default flag still runs through the helper, but it
         no-ops without raising."""
         user = User.objects.create_user(
             email="legacy@example.com",

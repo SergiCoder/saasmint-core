@@ -82,19 +82,19 @@ class DashboardView(TemplateView):
         user = await request.auser()
         if not user.is_authenticated:
             return HttpResponseRedirect(f"{settings.LOGIN_URL}?next={request.path}")
-        # Org-member status drives the plan-context filter. Resolve it first
-        # (single indexed EXISTS query) so the gather only fetches one plan
-        # list. The org_memberships fetch is a separate query because the
-        # template renders the full list, not just the boolean.
-        is_org_member = await OrgMember.objects.filter(user_id=user.id).aexists()
-        plan_context = PlanContext.TEAM if is_org_member else PlanContext.PERSONAL
-        # Independent fetches — run concurrently to cut round-trip latency.
-        subscription, plans, products, org_memberships = await asyncio.gather(
+        # All four reads are independent — gather them in a single round-trip.
+        # Memberships drive the plan-context filter (TEAM vs PERSONAL) but the
+        # template needs the full list anyway, so we fetch the unioned active
+        # plan list and filter by context in Python afterwards rather than
+        # serializing a sequential EXISTS/membership lookup before the gather.
+        subscription, all_plans, products, org_memberships = await asyncio.gather(
             DjangoSubscriptionRepository().get_active_for_user(user.id),
-            DjangoPlanRepository().list_active_by_context(plan_context),
+            DjangoPlanRepository().list_active(),
             DjangoProductRepository().list_active(),
             _get_org_memberships(user),
         )
+        plan_context = PlanContext.TEAM if org_memberships else PlanContext.PERSONAL
+        plans = [p for p in all_plans if p.context == plan_context]
         # Look up the subscription's plan from the already-fetched list to avoid
         # an extra DB round-trip.
         plan = (

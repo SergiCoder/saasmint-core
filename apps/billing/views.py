@@ -346,9 +346,9 @@ class PlanListView(APIView):
     )
     def get(self, request: Request) -> Response:
         # Personal and team plans are both shown to every caller (auth or anon).
-        # PERSONAL users can upgrade to a team plan via team-context checkout
-        # (see CheckoutSessionView), so hiding team plans from them would make
-        # the upgrade undiscoverable.
+        # Users without an owned org can upgrade to a team plan via team-context
+        # checkout (see CheckoutSessionView), so hiding team plans from them
+        # would make the upgrade undiscoverable.
         qs = PlanModel.objects.filter(is_active=True).select_related("price")
         data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
         return Response(_catalog_envelope(list(data)))
@@ -535,25 +535,20 @@ def _resolve_product_purchase_context(user: User, context: str | None) -> UUID |
     if effective == _SUBSCRIPTION_CONTEXT_PERSONAL:
         return None
 
-    # effective == "team"
-    owner = (
-        OrgMember.objects.filter(
-            user_id=user.id,
-            role=OrgRole.OWNER,
+    # effective == "team" — fetch any membership (regardless of role) in a
+    # single query, then discriminate the three outcomes (owner / non-owner /
+    # not-a-member) in Python. Selecting ``role`` lets us collapse the prior
+    # two-query error path (owner-only filter → exists() fallback) into one.
+    membership = OrgMember.objects.filter(user_id=user.id).only("org_id", "role").first()
+    if membership is None:
+        # Not an org member at all (400 — bad request, no team scope).
+        raise ValidationError(
+            {"context": ["Only org members can purchase team credits."]},
         )
-        .only("org_id")
-        .first()
-    )
-    if owner is None:
-        # Discriminate between "not an org member at all" (400 — bad request,
-        # they have no team scope) vs. "org member but not owner" (403 —
-        # only the owner can spend org funds).
-        if not OrgMember.objects.filter(user_id=user.id).exists():
-            raise ValidationError(
-                {"context": ["Only org members can purchase team credits."]},
-            )
+    if membership.role != OrgRole.OWNER:
+        # Org member but not owner — only owners may spend org funds.
         raise PermissionDenied("Only the org owner can purchase credits for the team.")
-    return owner.org_id
+    return membership.org_id
 
 
 class ProductCheckoutSessionView(BillingScopedView):
@@ -771,19 +766,34 @@ def _resolve_mutation_context(request: Request, user: User) -> tuple[str, UUID |
     parse the same query param and run the same authority check, so keeping
     them in lockstep here avoids drift if the gate ever needs to grow (e.g.
     new context value, new role check).
+
+    When ``?context=`` is omitted, the default-context lookup and the
+    is_billing authority check both target the same OrgMember row, so we
+    fetch it once and derive both — saves one round-trip on every PATCH /
+    DELETE without an explicit context.
     """
-    context = _validate_subscription_context(
-        request.query_params.get("context")
-    ) or _default_subscription_context(user)
-    org_id = _require_billing_authority(user, context=context)
-    return context, org_id
+    explicit = _validate_subscription_context(request.query_params.get("context"))
+    if explicit is not None:
+        return explicit, _require_billing_authority(user, context=explicit)
+
+    from apps.orgs.models import OrgMember
+
+    membership = OrgMember.objects.filter(user_id=user.id).only("org_id", "is_billing").first()
+    if membership is None:
+        # No org → default is personal, no authority gate.
+        return _SUBSCRIPTION_CONTEXT_PERSONAL, None
+    # Org member → default is team; reuse the same row for the is_billing gate.
+    if not membership.is_billing:
+        raise PermissionDenied("Only billing members can modify the team subscription.")
+    return _SUBSCRIPTION_CONTEXT_TEAM, membership.org_id
 
 
 def _billing_notice_recipients(user: User, org_id: UUID | None) -> list[str]:
     """Return the list of emails to notify on a billing-state change.
 
-    PERSONAL subs: just the owner. Team subs: every ``is_billing=True`` member
-    of the org (so a rogue billing contact's action is visible to peers).
+    Personal-context subs: just the owner. Team-context subs: every
+    ``is_billing=True`` member of the org (so a rogue billing contact's
+    action is visible to peers).
     """
     if org_id is None:
         return [str(user.email)]

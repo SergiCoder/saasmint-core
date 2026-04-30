@@ -140,9 +140,9 @@ class TestRegisterView:
 
     @patch("apps.users.tasks.send_verification_email_task.delay")
     def test_no_subscription_created(self, _mock_email, api):
-        """PERSONAL registration creates a User but no Subscription —
-        Subscription is a pure Stripe mirror, so it only exists once the
-        user pays. Previously the free plan was assigned at signup."""
+        """Registration creates a User but no Subscription — Subscription
+        is a pure Stripe mirror, so it only exists once the user pays.
+        Previously the free plan was assigned at signup."""
         from apps.billing.models import Subscription
 
         api.post(
