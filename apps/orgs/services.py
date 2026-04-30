@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING
@@ -102,6 +103,9 @@ async def on_team_checkout_completed(
         )
         raise
 
+    if stripe_subscription_id is not None:
+        await _persist_team_subscription(stripe_subscription_id)
+
     if not keep_personal_subscription:
         await _schedule_personal_cancel_at_period_end(user_id)
 
@@ -111,6 +115,38 @@ async def on_team_checkout_completed(
         org.slug,
         user_id,
         stripe_customer_id,
+    )
+
+
+async def _persist_team_subscription(stripe_subscription_id: str) -> None:
+    """Upsert the team subscription mirror row immediately after org creation.
+
+    Stripe sometimes delivers ``customer.subscription.created`` BEFORE
+    ``checkout.session.completed`` — when that happens, the sync webhook
+    raises ``Unknown customer`` because the ``StripeCustomer`` row has
+    not been written yet (it's only created here, by the team-checkout
+    handler). Fetching the subscription from Stripe and upserting it now
+    closes that race; the later ``customer.subscription.updated`` events
+    flow through the same idempotent upsert.
+    """
+    from saasmint_core.services.webhooks import sync_subscription_from_data
+
+    from apps.billing.repositories import get_webhook_repos
+
+    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
+    repos = get_webhook_repos()
+    # ``stripe.Subscription.retrieve`` returns a ``StripeObject``: it supports
+    # ``[...]`` indexing but does NOT inherit from ``dict``, so ``.get(...)``,
+    # ``.items()``, etc. are proxied through ``__getattr__`` and crash with
+    # ``AttributeError`` when the requested key is absent. The webhook-dispatch
+    # path receives plain dicts (json-decoded by ``stripe.Webhook.construct_event``)
+    # and ``sync_subscription_from_data`` is written against dict semantics, so
+    # we normalise at the boundary via ``to_dict()`` (recursive in this SDK).
+    await sync_subscription_from_data(
+        sub.to_dict(),
+        customers=repos.customers,
+        plans=repos.plans,
+        subscriptions=repos.subscriptions,
     )
 
 

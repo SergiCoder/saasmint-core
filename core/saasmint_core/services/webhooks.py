@@ -196,7 +196,31 @@ async def _on_product_checkout_completed(session_data: dict[str, Any], repos: We
 
 
 async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
-    """Upsert a Stripe subscription into the local DB from raw event data."""
+    """Webhook-dispatch wrapper around :func:`sync_subscription_from_data`."""
+    await sync_subscription_from_data(
+        sub_data,
+        customers=repos.customers,
+        plans=repos.plans,
+        subscriptions=repos.subscriptions,
+    )
+
+
+async def sync_subscription_from_data(
+    sub_data: dict[str, Any],
+    *,
+    customers: StripeCustomerRepository,
+    plans: PlanRepository,
+    subscriptions: SubscriptionRepository,
+) -> None:
+    """Upsert a Stripe subscription into the local DB from raw subscription data.
+
+    Idempotent on ``stripe_id`` — replays from the ``customer.subscription.*``
+    webhooks find the existing row and update it. Callable both from the
+    webhook dispatcher and from out-of-band callers (e.g. the team-checkout
+    completion handler, which races ``customer.subscription.created`` and
+    must persist the row directly to avoid losing it when the subscription
+    event arrives before its ``StripeCustomer`` row exists).
+    """
     from saasmint_core.exceptions import WebhookDataError
 
     stripe_customer_str = str(sub_data["customer"])
@@ -224,9 +248,9 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         )
 
     customer, plan_price, existing = await asyncio.gather(
-        repos.customers.get_by_stripe_id(stripe_customer_str),
-        repos.plans.get_price_by_stripe_id(price_id),
-        repos.subscriptions.get_by_stripe_id(stripe_sub_id),
+        customers.get_by_stripe_id(stripe_customer_str),
+        plans.get_price_by_stripe_id(price_id),
+        subscriptions.get_by_stripe_id(stripe_sub_id),
     )
 
     if customer is None:
@@ -256,7 +280,7 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         created_at=existing.created_at if existing else datetime.now(UTC),
     )
 
-    await repos.subscriptions.save(subscription)
+    await subscriptions.save(subscription)
 
 
 async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos) -> None:

@@ -185,8 +185,11 @@ class TestOnTeamCheckoutCompleted:
     The PR 5 default ``keep_personal_subscription=False`` cancels personal
     at period end. ``True`` leaves it running (rule 5b)."""
 
+    @patch("apps.orgs.services._persist_team_subscription", new_callable=AsyncMock)
     @patch("saasmint_core.services.billing.cancel_subscription", new_callable=AsyncMock)
-    def test_default_schedules_personal_cancel_at_period_end(self, mock_cancel: AsyncMock) -> None:
+    def test_default_schedules_personal_cancel_at_period_end(
+        self, mock_cancel: AsyncMock, _mock_persist: AsyncMock
+    ) -> None:
         from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
 
         user = User.objects.create_user(
@@ -225,8 +228,11 @@ class TestOnTeamCheckoutCompleted:
         assert kwargs["stripe_customer_id"] == personal_customer.id
         assert kwargs["at_period_end"] is True
 
+    @patch("apps.orgs.services._persist_team_subscription", new_callable=AsyncMock)
     @patch("saasmint_core.services.billing.cancel_subscription", new_callable=AsyncMock)
-    def test_keep_flag_skips_personal_cancel(self, mock_cancel: AsyncMock) -> None:
+    def test_keep_flag_skips_personal_cancel(
+        self, mock_cancel: AsyncMock, _mock_persist: AsyncMock
+    ) -> None:
         """Opt-out path: user explicitly chose concurrent billing. The
         callback must not touch the personal sub even if one exists."""
         from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
@@ -264,8 +270,11 @@ class TestOnTeamCheckoutCompleted:
 
         mock_cancel.assert_not_awaited()
 
+    @patch("apps.orgs.services._persist_team_subscription", new_callable=AsyncMock)
     @patch("saasmint_core.services.billing.cancel_subscription", new_callable=AsyncMock)
-    def test_no_personal_customer_is_noop(self, mock_cancel: AsyncMock) -> None:
+    def test_no_personal_customer_is_noop(
+        self, mock_cancel: AsyncMock, _mock_persist: AsyncMock
+    ) -> None:
         """User with no personal Stripe customer (e.g. straight-to-team
         signup): the default flag still runs through the helper, but it
         no-ops without raising."""
@@ -310,6 +319,134 @@ class TestOnTeamCheckoutCompleted:
 
         # If we got here without raising, the no-op path works.
         assert Org.objects.filter(name="Orphan Org").exists()
+
+
+@pytest.mark.django_db
+class TestPersistTeamSubscription:
+    """Stripe sometimes delivers ``customer.subscription.created`` BEFORE
+    ``checkout.session.completed`` — the sync webhook fails because the
+    StripeCustomer row hasn't been written yet. ``on_team_checkout_completed``
+    closes that race by retrieving the subscription and upserting the row
+    directly after org creation."""
+
+    def _make_sub_dict(self, stripe_sub_id: str, stripe_customer_id: str, price_id: str) -> dict:
+        """Plain-dict shape — matches what the webhook dispatcher receives
+        (events are JSON-decoded by ``stripe.Webhook.construct_event``)."""
+        period_start = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp())
+        period_end = int(datetime(2026, 2, 1, tzinfo=UTC).timestamp())
+        return {
+            "id": stripe_sub_id,
+            "customer": stripe_customer_id,
+            "status": "active",
+            "items": {
+                "data": [
+                    {
+                        "price": {"id": price_id},
+                        "quantity": 2,
+                        "current_period_start": period_start,
+                        "current_period_end": period_end,
+                    }
+                ]
+            },
+            "trial_end": None,
+            "canceled_at": None,
+            "cancel_at": None,
+        }
+
+    def _make_stripe_subscription(self, stripe_sub_id: str, stripe_customer_id: str, price_id: str):
+        """Real StripeObject — matches what ``stripe.Subscription.retrieve``
+        returns. Exercises the boundary conversion in ``_persist_team_subscription``,
+        which would otherwise crash with ``AttributeError: get`` because
+        StripeObject proxies ``.get(...)`` through ``__getattr__``."""
+        import stripe
+
+        return stripe.StripeObject.construct_from(
+            self._make_sub_dict(stripe_sub_id, stripe_customer_id, price_id),
+            "sk_test_unused",
+        )
+
+    @patch("apps.orgs.services.stripe.Subscription.retrieve")
+    def test_persists_team_subscription_after_org_creation(self, mock_retrieve) -> None:
+        """The webhook handler must land the team Subscription row even if
+        the matching ``customer.subscription.created`` event raced and was
+        marked failed. After ``on_team_checkout_completed`` runs, the local
+        Subscription mirror exists, scoped to the new org's StripeCustomer."""
+        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
+
+        user = User.objects.create_user(
+            email="raced@example.com",
+            full_name="Raced",
+        )
+        team_plan = Plan.objects.create(
+            name="Team Basic", context="team", interval="month", is_active=True
+        )
+        PlanPrice.objects.create(plan=team_plan, stripe_price_id="price_team_raced", amount=2500)
+
+        mock_retrieve.return_value = self._make_stripe_subscription(
+            "sub_team_raced", "cus_team_raced", "price_team_raced"
+        )
+
+        async_to_sync(on_team_checkout_completed)(
+            user.id,
+            "Raced Org",
+            "cus_team_raced",
+            False,
+            "sub_team_raced",
+            True,  # keep_personal_subscription — skip the cancel branch
+        )
+
+        customer = StripeCustomer.objects.get(stripe_id="cus_team_raced")
+        assert customer.org_id is not None
+        sub = Subscription.objects.get(stripe_id="sub_team_raced")
+        assert sub.stripe_customer_id == customer.id
+        assert sub.user_id is None  # team sub — no user mirror
+        assert sub.plan_id == team_plan.id
+        assert sub.quantity == 2
+        mock_retrieve.assert_called_once_with("sub_team_raced")
+
+    @patch("apps.orgs.services.stripe.Subscription.retrieve")
+    def test_persist_is_idempotent_with_later_webhook(self, mock_retrieve) -> None:
+        """If ``customer.subscription.created`` later succeeds (or
+        ``customer.subscription.updated`` arrives), the upsert finds the
+        existing row by stripe_id and updates it — no duplicate."""
+        from saasmint_core.services.webhooks import sync_subscription_from_data
+
+        from apps.billing.models import Plan, PlanPrice, Subscription
+        from apps.billing.repositories import get_webhook_repos
+
+        user = User.objects.create_user(
+            email="idem-sub@example.com",
+            full_name="Idem Sub",
+        )
+        team_plan = Plan.objects.create(
+            name="Team Idem", context="team", interval="month", is_active=True
+        )
+        PlanPrice.objects.create(plan=team_plan, stripe_price_id="price_team_idem", amount=2500)
+        mock_retrieve.return_value = self._make_stripe_subscription(
+            "sub_team_idem", "cus_team_idem", "price_team_idem"
+        )
+
+        # First write via the team-checkout handler (StripeObject path).
+        async_to_sync(on_team_checkout_completed)(
+            user.id, "Idem Org", "cus_team_idem", False, "sub_team_idem", True
+        )
+
+        # Second write via the (delayed) ``customer.subscription.updated``
+        # webhook path with a different quantity. Same stripe_id → row
+        # updates, not duplicates. Webhook events arrive as plain dicts.
+        update_payload = self._make_sub_dict("sub_team_idem", "cus_team_idem", "price_team_idem")
+        update_payload["items"]["data"][0]["quantity"] = 5
+        repos = get_webhook_repos()
+        async_to_sync(sync_subscription_from_data)(
+            update_payload,
+            customers=repos.customers,
+            plans=repos.plans,
+            subscriptions=repos.subscriptions,
+        )
+
+        rows = Subscription.objects.filter(stripe_id="sub_team_idem")
+        assert rows.count() == 1
+        assert rows.first().quantity == 5
 
 
 # ---------------------------------------------------------------------------
