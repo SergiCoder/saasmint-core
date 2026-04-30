@@ -239,9 +239,7 @@ async def resume_subscription(
 
     # 2026-03-25.dahlia: clear a scheduled cancellation set via
     # cancel_at="min_period_end" by passing cancel_at="".
-    stripe_sub = await asyncio.to_thread(
-        stripe.Subscription.modify, active.stripe_id, cancel_at=""
-    )
+    stripe_sub = await asyncio.to_thread(stripe.Subscription.modify, active.stripe_id, cancel_at="")
     await _mirror_cancel_state_from_stripe(active, stripe_sub, subscription_repo)
 
 
