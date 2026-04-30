@@ -150,6 +150,7 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "current_period_start",
             "current_period_end",
             "canceled_at",
+            "cancel_at",
             "created_at",
         )
         read_only_fields = fields
@@ -192,9 +193,13 @@ class ProductCheckoutRequestSerializer(serializers.Serializer[object]):
         return _validate_redirect_url(value)
 
 
-class CreditBalanceSerializer(serializers.Serializer[object]):
+class CreditBalanceEntrySerializer(serializers.Serializer[object]):
     balance = serializers.IntegerField(read_only=True)
     scope = serializers.CharField(read_only=True)
+
+
+class CreditBalanceSerializer(serializers.Serializer[object]):
+    balances = CreditBalanceEntrySerializer(many=True, read_only=True)
 
 
 class UpdateSubscriptionSerializer(serializers.Serializer[object]):

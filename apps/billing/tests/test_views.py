@@ -493,6 +493,25 @@ class TestSubscriptionView:
         assert resp.data["count"] == 1
         assert resp.data["results"][0]["status"] == "active"
 
+    def test_response_surfaces_cancel_at_when_scheduled(self, authed_client, subscription):
+        """End-to-end: a subscription scheduled to cancel (mirror of Stripe's
+        ``cancel_at`` set by the webhook) exposes the timestamp on the API
+        response. Unit-level coverage in ``test_serializers.py`` only asserts
+        the field is declared with default ``None`` on a fresh row; this test
+        proves the populated value reaches the wire through the GET endpoint."""
+        scheduled = datetime(2026, 2, 1, tzinfo=UTC)
+        subscription.cancel_at = scheduled
+        subscription.save(update_fields=["cancel_at"])
+
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        assert resp.data["count"] == 1
+        assert resp.data["results"][0]["cancel_at"] is not None
+        # DRF serializes datetimes to ISO-8601 strings; assert the field round-trips.
+        from rest_framework.fields import DateTimeField
+
+        assert resp.data["results"][0]["cancel_at"] == DateTimeField().to_representation(scheduled)
+
     def test_no_subscription_returns_empty_list(self, authed_client, user):
         """PR 5: free tier is now an empty list (was 404). Single-sub callers
         adapt by checking ``count == 0`` instead of catching the 404."""
@@ -1687,6 +1706,32 @@ def boost_product_price(boost_product):
     return boost_product.price
 
 
+def _setup_org_member_client(role, *, is_billing: bool = False, label: str = "team"):
+    """Create an ORG_MEMBER user + org + authed client for product-checkout
+    tests. Each test rolls back its own transaction (``@pytest.mark.django_db``)
+    so the email/slug only needs to be unique *within* a single test, not across
+    the suite. ``label`` lets two classes that exercise the same role share one
+    helper without colliding on the unique slug if both classes ever run inside
+    the same transaction (defensive)."""
+    from apps.orgs.models import Org, OrgMember
+    from apps.users.models import AccountType, User
+
+    user = User.objects.create_user(
+        email=f"{label}-{role.value}@example.com",
+        full_name=f"{role.value} User",
+        account_type=AccountType.ORG_MEMBER,
+    )
+    org = Org.objects.create(
+        name=f"{label.title()} Org",
+        slug=f"{label}-org-{role.value}",
+        created_by=user,
+    )
+    OrgMember.objects.create(org=org, user=user, role=role, is_billing=is_billing)
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return user, org, client
+
+
 @pytest.mark.django_db
 class TestProductCheckoutPersonal:
     @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
@@ -1734,19 +1779,7 @@ class TestProductCheckoutPersonal:
 @pytest.mark.django_db
 class TestProductCheckoutTeamOwnership:
     def _setup_org(self, role, is_billing=False):
-        from apps.orgs.models import Org, OrgMember
-        from apps.users.models import AccountType, User
-
-        user = User.objects.create_user(
-            email=f"{role.value}@example.com",
-            full_name=f"{role.value} User",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="Team Org", slug="team-org", created_by=user)
-        OrgMember.objects.create(org=org, user=user, role=role, is_billing=is_billing)
-        client = APIClient()
-        client.force_authenticate(user=user)
-        return user, org, client
+        return _setup_org_member_client(role, is_billing=is_billing, label="team")
 
     @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
@@ -1806,6 +1839,135 @@ class TestProductCheckoutTeamOwnership:
         assert resp.status_code == 403
 
 
+@pytest.mark.django_db
+class TestProductCheckoutContextSelector:
+    """``?context=personal|team`` selector for callers who can buy under both
+    scopes (rule 5a/5b — e.g. an ORG_MEMBER owner who kept their personal sub
+    after upgrade)."""
+
+    def _setup_org(self, role, is_billing=False):
+        return _setup_org_member_client(role, is_billing=is_billing, label="ctx")
+
+    @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_org_owner_personal_context_routes_to_user_customer(
+        self, mock_customer, mock_session, boost_product, boost_product_price, mock_stripe_customer
+    ):
+        from apps.orgs.models import OrgRole
+
+        user, _, client = self._setup_org(OrgRole.OWNER, is_billing=True)
+        mock_customer.return_value = mock_stripe_customer
+        mock_session.return_value = "https://checkout.stripe.com/personal"
+
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=personal",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        # No org_id in metadata — webhook will grant to the user balance.
+        metadata = mock_session.call_args.kwargs["metadata"]
+        assert metadata == {"product_id": str(boost_product.id)}
+        # Customer resolution must use user_id, not org_id.
+        assert mock_customer.call_args.kwargs.get("user_id") == user.id
+        assert "org_id" not in mock_customer.call_args.kwargs
+
+    @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_org_admin_can_purchase_personal_context(
+        self, mock_customer, mock_session, boost_product_price, mock_stripe_customer
+    ):
+        """Admins can't buy for the org, but ``?context=personal`` is anyone's
+        right — the owner-only gate applies only when spending org funds."""
+        from apps.orgs.models import OrgRole
+
+        user, _, client = self._setup_org(OrgRole.ADMIN)
+        mock_customer.return_value = mock_stripe_customer
+        mock_session.return_value = "https://checkout.stripe.com/personal-admin"
+
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=personal",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert mock_customer.call_args.kwargs.get("user_id") == user.id
+
+    @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_org_owner_explicit_team_context_routes_to_org(
+        self, mock_customer, mock_session, boost_product, boost_product_price, mock_stripe_customer
+    ):
+        from apps.orgs.models import OrgRole
+
+        _, org, client = self._setup_org(OrgRole.OWNER, is_billing=True)
+        mock_customer.return_value = mock_stripe_customer
+        mock_session.return_value = "https://checkout.stripe.com/team-explicit"
+
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=team",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 200
+        metadata = mock_session.call_args.kwargs["metadata"]
+        assert metadata == {"product_id": str(boost_product.id), "org_id": str(org.id)}
+        assert mock_customer.call_args.kwargs.get("org_id") == org.id
+
+    def test_org_admin_explicit_team_context_returns_403(self, boost_product_price):
+        from apps.orgs.models import OrgRole
+
+        _, _, client = self._setup_org(OrgRole.ADMIN)
+        resp = client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=team",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 403
+
+    def test_personal_user_team_context_returns_400(self, authed_client, boost_product_price):
+        resp = authed_client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=team",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "context" in resp.data
+
+    def test_invalid_context_value_returns_400(self, authed_client, boost_product_price):
+        resp = authed_client.post(
+            "/api/v1/billing/product-checkout-sessions/?context=bogus",
+            {
+                "product_price_id": str(boost_product_price.id),
+                "success_url": "https://localhost/ok",
+                "cancel_url": "https://localhost/no",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "context" in resp.data
+
+
 # ---------------------------------------------------------------------------
 # GET /api/v1/billing/credits/me/
 # ---------------------------------------------------------------------------
@@ -1816,7 +1978,7 @@ class TestCreditBalanceView:
     def test_personal_user_gets_zero_by_default(self, authed_client, user):
         resp = authed_client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
-        assert resp.data == {"balance": 0, "scope": "user"}
+        assert resp.data == {"balances": [{"balance": 0, "scope": "user"}]}
 
     def test_personal_user_sees_own_balance(self, authed_client, user):
         from apps.billing.models import CreditBalance
@@ -1824,7 +1986,7 @@ class TestCreditBalanceView:
         CreditBalance.objects.create(user=user, balance=125)
         resp = authed_client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
-        assert resp.data == {"balance": 125, "scope": "user"}
+        assert resp.data == {"balances": [{"balance": 125, "scope": "user"}]}
 
     def test_org_member_sees_org_balance(self, org_member_user, team_org_setup):
         from apps.billing.models import CreditBalance
@@ -1835,7 +1997,46 @@ class TestCreditBalanceView:
         client.force_authenticate(user=org_member_user)
         resp = client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
-        assert resp.data == {"balance": 500, "scope": "org"}
+        assert resp.data == {"balances": [{"balance": 500, "scope": "org"}]}
+
+    def test_org_member_with_leftover_personal_balance_sees_both(
+        self, org_member_user, team_org_setup
+    ):
+        """Pre-upgrade personal credits remain visible after a PERSONAL→team
+        upgrade (rule 16). The org balance is always emitted; the user balance
+        is appended iff > 0."""
+        from apps.billing.models import CreditBalance
+
+        org, _, _ = team_org_setup
+        CreditBalance.objects.create(org=org, balance=500)
+        CreditBalance.objects.create(user=org_member_user, balance=75)
+        client = APIClient()
+        client.force_authenticate(user=org_member_user)
+        resp = client.get("/api/v1/billing/credits/me/")
+        assert resp.status_code == 200
+        assert resp.data == {
+            "balances": [
+                {"balance": 500, "scope": "org"},
+                {"balance": 75, "scope": "user"},
+            ]
+        }
+
+    def test_org_member_with_zero_personal_balance_omits_user_entry(
+        self, org_member_user, team_org_setup
+    ):
+        """A zero-valued personal CreditBalance row is treated the same as no
+        row — we don't surface a noisy ``user`` entry for ORG_MEMBERs who
+        never had pre-upgrade credits."""
+        from apps.billing.models import CreditBalance
+
+        org, _, _ = team_org_setup
+        CreditBalance.objects.create(org=org, balance=500)
+        CreditBalance.objects.create(user=org_member_user, balance=0)
+        client = APIClient()
+        client.force_authenticate(user=org_member_user)
+        resp = client.get("/api/v1/billing/credits/me/")
+        assert resp.status_code == 200
+        assert resp.data == {"balances": [{"balance": 500, "scope": "org"}]}
 
     def test_non_billing_member_still_sees_org_balance(self, team_org_setup):
         """Read access to the org's credit balance is granted to any member,
@@ -1857,7 +2058,7 @@ class TestCreditBalanceView:
 
         resp = client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
-        assert resp.data == {"balance": 42, "scope": "org"}
+        assert resp.data == {"balances": [{"balance": 42, "scope": "org"}]}
 
     def test_org_member_without_membership_returns_404(self, org_member_client):
         resp = org_member_client.get("/api/v1/billing/credits/me/")

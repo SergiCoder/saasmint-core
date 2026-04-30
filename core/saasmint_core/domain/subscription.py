@@ -86,4 +86,5 @@ class Subscription(BaseModel):
     current_period_start: datetime
     current_period_end: datetime
     canceled_at: datetime | None = None
+    cancel_at: datetime | None = None
     created_at: datetime

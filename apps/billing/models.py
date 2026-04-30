@@ -151,6 +151,12 @@ class Subscription(models.Model):
     current_period_start = models.DateTimeField()
     current_period_end = models.DateTimeField()
     canceled_at = models.DateTimeField(null=True, blank=True)
+    # Mirror of Stripe's ``cancel_at`` — the scheduled cancellation timestamp.
+    # NULL means no cancel is scheduled. Distinct from ``canceled_at`` (which
+    # is when the cancellation *fired*): a sub with cancel_at set and status
+    # still ``active`` is "scheduled to cancel"; once the cutover happens the
+    # webhook flips status to ``canceled`` and sets ``canceled_at``.
+    cancel_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

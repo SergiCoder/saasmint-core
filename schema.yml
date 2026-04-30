@@ -446,9 +446,11 @@ paths:
   /api/v1/billing/credits/me/:
     get:
       operationId: billing_credits_me_retrieve
-      description: Return the caller's current credit balance. PERSONAL users see
-        their own balance; ORG_MEMBER users see their org's balance (readable by any
-        active member).
+      description: Return the caller's current credit balances as a list. PERSONAL
+        users see a single entry with their own balance. ORG_MEMBER users see their
+        org's balance (readable by any active member), plus a ``user``-scoped entry
+        iff a personal balance survives from before a personal→team upgrade (rule
+        16) — this entry is omitted when the user has no leftover personal credits.
       tags:
       - billing
       security:
@@ -515,8 +517,23 @@ paths:
     post:
       operationId: billing_product_checkout_sessions_create
       description: Create a Stripe Checkout Session (``mode=payment``) for a one-time
-        product purchase (credit pack). PERSONAL users buy for themselves; ORG_MEMBER
-        owners buy for the org. Admins and regular members are rejected with 403.
+        product purchase (credit pack). The buyer scope is selected by ``?context=personal|team``;
+        defaults to ``team`` for ORG_MEMBER callers and ``personal`` otherwise. ``personal``
+        is universally allowed (anyone can buy credits for themselves); ``team`` is
+        restricted to org owners.
+      parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: 'Pick the buyer scope when the caller can purchase under both
+          (rule 5a/5b). ``personal`` credits the user''s own balance; ``team`` credits
+          the org. Default: ``team`` for ORG_MEMBER callers, ``personal`` otherwise.
+          ``team`` requires ``role=OWNER`` on the active org. PERSONAL users cannot
+          pick ``team``.'
       tags:
       - billing
       requestBody:
@@ -541,9 +558,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProductCheckoutResponse'
           description: ''
+        '400':
+          description: Invalid ``?context=`` value, or PERSONAL caller requested ``?context=team``.
         '403':
-          description: Caller is an ORG_MEMBER without ``role=OWNER`` on their active
-            org.
+          description: '``?context=team``: caller is not the org owner. Admins and
+            regular members can still buy ``?context=personal``.'
         '404':
           description: Invalid product price.
   /api/v1/billing/products/:
@@ -1351,6 +1370,16 @@ components:
     CreditBalance:
       type: object
       properties:
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreditBalanceEntry'
+          readOnly: true
+      required:
+      - balances
+    CreditBalanceEntry:
+      type: object
+      properties:
         balance:
           type: integer
           readOnly: true
@@ -2111,11 +2140,17 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        cancel_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
         created_at:
           type: string
           format: date-time
           readOnly: true
       required:
+      - cancel_at
       - canceled_at
       - created_at
       - current_period_end
@@ -2266,6 +2301,12 @@ components:
             on the profile form. Org-scoped Stripe customers don't count;
             the user's currency is independent of any org's billing currency
             (rule 3 — distinct customers per scope).
+
+            Performance: a single indexed ``EXISTS`` on the unique ``user_id``
+            (OneToOneField) — ``SELECT 1 ... LIMIT 1``. The flag must reflect
+            live DB state (the row can be hard-deleted out from under the
+            cached ``User`` instance), so we deliberately do not short-circuit
+            via ``_state.fields_cache``.
           readOnly: true
         created_at:
           type: string

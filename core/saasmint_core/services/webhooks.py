@@ -248,6 +248,11 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         current_period_start=datetime.fromtimestamp(period_start, tz=UTC),
         current_period_end=datetime.fromtimestamp(period_end, tz=UTC),
         canceled_at=_ts_to_dt(sub_data.get("canceled_at")),
+        # Stripe API 2026-03-25.dahlia: ``cancel_at`` is the scheduled cutover
+        # timestamp (None when no cancel is queued). Cleared by the user
+        # resuming the sub or by it actually firing — Stripe re-emits an
+        # ``updated`` event in either case so the local mirror converges.
+        cancel_at=_ts_to_dt(sub_data.get("cancel_at")),
         created_at=existing.created_at if existing else datetime.now(UTC),
     )
 
