@@ -46,13 +46,6 @@ class TestDomainExceptionHandler:
         assert resp is not None
         assert resp.status_code == 409
 
-    def test_account_type_conflict_returns_409(self, context):
-        from saasmint_core.exceptions import AccountTypeConflictError
-
-        resp = domain_exception_handler(AccountTypeConflictError("conflict"), context)
-        assert resp is not None
-        assert resp.status_code == 409
-
     def test_insufficient_permission_returns_403(self, context):
         from saasmint_core.exceptions import InsufficientPermissionError
 

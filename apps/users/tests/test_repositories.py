@@ -50,7 +50,6 @@ def test_get_by_email_not_found(repo):
 
 
 def test_save_creates_new(repo):
-    from saasmint_core.domain.user import AccountType
     from saasmint_core.domain.user import User as DomainUser
 
     user_id = uuid4()
@@ -58,7 +57,6 @@ def test_save_creates_new(repo):
         id=user_id,
         email="save_new@example.com",
         full_name="Save New",
-        account_type=AccountType.PERSONAL,
         preferred_locale="en",
         preferred_currency="usd",
         is_verified=True,

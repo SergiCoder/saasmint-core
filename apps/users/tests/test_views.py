@@ -67,9 +67,7 @@ class TestAccountViewGET:
         assert resp.status_code == 200
         assert resp.data["has_stripe_customer"] is False
 
-    def test_has_stripe_customer_true_when_user_scoped_customer_exists(
-        self, authed_client, user
-    ):
+    def test_has_stripe_customer_true_when_user_scoped_customer_exists(self, authed_client, user):
         """A user-scoped ``StripeCustomer`` row means the user's billing
         currency is locked at first purchase, so the notice should render —
         even after the subscription is later cancelled (the customer row
@@ -82,23 +80,16 @@ class TestAccountViewGET:
         assert resp.status_code == 200
         assert resp.data["has_stripe_customer"] is True
 
-    def test_has_stripe_customer_false_when_only_org_customer_exists(
-        self, authed_client, user
-    ):
+    def test_has_stripe_customer_false_when_only_org_customer_exists(self, authed_client, user):
         """Org-scoped Stripe customers don't count — the user's currency is
         independent of the org's billing currency (rule 3 — distinct
-        customers per scope). An ORG_MEMBER user who only ever paid for
+        customers per scope). An org-member user who only ever paid for
         team plans must still see ``has_stripe_customer: false`` so the
         notice doesn't show until they personally subscribe."""
         from apps.billing.models import StripeCustomer
         from apps.orgs.models import Org, OrgMember, OrgRole
-        from apps.users.models import AccountType
 
-        user.account_type = AccountType.ORG_MEMBER
-        user.save(update_fields=["account_type"])
-        org = Org.objects.create(
-            name="OrgOnly", slug="org-only-account", created_by=user
-        )
+        org = Org.objects.create(name="OrgOnly", slug="org-only-account", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
         StripeCustomer.objects.create(stripe_id="cus_org_only", org=org, livemode=False)
 
@@ -106,9 +97,7 @@ class TestAccountViewGET:
         assert resp.status_code == 200
         assert resp.data["has_stripe_customer"] is False
 
-    def test_has_stripe_customer_false_after_customer_hard_deleted(
-        self, authed_client, user
-    ):
+    def test_has_stripe_customer_false_after_customer_hard_deleted(self, authed_client, user):
         """If the user's personal Stripe customer is hard-deleted (e.g. via
         the GDPR-erasure path that survives the user, or admin cleanup),
         the flag flips back to ``false``. The flag is recomputed per
@@ -116,9 +105,7 @@ class TestAccountViewGET:
         immediately reflected."""
         from apps.billing.models import StripeCustomer
 
-        cust = StripeCustomer.objects.create(
-            stripe_id="cus_to_delete", user=user, livemode=False
-        )
+        cust = StripeCustomer.objects.create(stripe_id="cus_to_delete", user=user, livemode=False)
 
         # Pre-condition: flag is true while the customer row exists.
         resp = authed_client.get("/api/v1/account/")
@@ -467,12 +454,10 @@ class TestAccountViewDELETE:
             Subscription,
         )
         from apps.orgs.models import Org, OrgMember, OrgRole
-        from apps.users.models import AccountType
 
         owner = User.objects.create_user(
             email="teamowner@example.com",
             full_name="Team Owner",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="Delete Test Org", slug="delete-test-org", created_by=owner)
         OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)

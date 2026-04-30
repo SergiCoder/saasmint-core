@@ -25,33 +25,6 @@ def send_password_reset_email_task(email: str, token: str) -> None:
     send_password_reset_email(email, token)
 
 
-@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
-def cleanup_orphaned_org_accounts() -> None:
-    """Delete org_member accounts that never completed checkout.
-
-    Targets users with account_type=ORG_MEMBER who have no org membership
-    and were created more than 24 hours ago.
-    """
-    from datetime import UTC, datetime, timedelta
-
-    from django.db.models import Subquery
-
-    from apps.orgs.models import OrgMember
-    from apps.users.models import AccountType, User
-
-    cutoff = datetime.now(UTC) - timedelta(hours=24)
-    orphans = User.objects.filter(
-        account_type=AccountType.ORG_MEMBER,
-        created_at__lt=cutoff,
-    ).exclude(
-        id__in=Subquery(OrgMember.objects.values("user_id")),
-    )
-    # _, details has a mapping but we only need the aggregate count for logging
-    deleted, _ = orphans.delete()
-    if deleted:
-        logger.info("Cleaned up %d orphaned org-member accounts", deleted)
-
-
 _REFRESH_TOKEN_DELETE_BATCH = 10_000
 
 

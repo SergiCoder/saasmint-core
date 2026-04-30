@@ -14,12 +14,9 @@ from apps.users.models import User
 
 @pytest.fixture
 def org_member(db):
-    from apps.users.models import AccountType
-
     return User.objects.create_user(
         email="owner@example.com",
         full_name="Owner",
-        account_type=AccountType.ORG_MEMBER,
     )
 
 

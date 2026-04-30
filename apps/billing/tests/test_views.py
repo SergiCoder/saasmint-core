@@ -217,10 +217,10 @@ class TestCheckoutSessionView:
         team_plan,
         team_plan_price,
     ):
-        """PR 5: a PERSONAL user without an owned org may upgrade to team.
-        The eventual ``checkout.session.completed`` webhook flips their
-        ``account_type`` and creates the org. The 409 is reserved for users
-        who already own one."""
+        """PR 5: a user without an owned org may upgrade to team. The
+        eventual ``checkout.session.completed`` webhook creates the org and
+        the OrgMember row. The 409 is reserved for users who already own
+        one."""
         mock_team_customer.return_value = "cus_team_personal_upgrade"
         mock_create.return_value = "https://checkout.stripe.com/session"
 
@@ -260,23 +260,8 @@ class TestCheckoutSessionView:
             format="json",
         )
         assert resp.status_code == 409
-        assert resp.data["code"] == "account_type_mismatch"
+        assert resp.data["code"] == "org_already_owned"
         assert "already own" in resp.data["detail"].lower()
-
-    def test_org_member_cannot_checkout_personal_plan(self, org_member_client, plan_price):
-        """Org member account_type users are rejected when checking out a personal plan."""
-        resp = org_member_client.post(
-            "/api/v1/billing/checkout-sessions/",
-            {
-                "plan_price_id": str(plan_price.id),
-                "success_url": "https://localhost/success",
-                "cancel_url": "https://localhost/cancel",
-            },
-            format="json",
-        )
-        assert resp.status_code == 409
-        assert resp.data["code"] == "account_type_mismatch"
-        assert "personal plans" in resp.data["detail"].lower()
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.create_team_stripe_customer", new_callable=AsyncMock)
@@ -1135,13 +1120,12 @@ class TestTeamSubscriptionResolution:
         """Read access to the team sub is granted to ANY active org member —
         only mutations require is_billing=True."""
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         member_user = User.objects.create_user(
             email="plain@example.com",
             full_name="Plain Member",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member_user, role=OrgRole.MEMBER, is_billing=False)
         client = APIClient()
@@ -1173,12 +1157,11 @@ class TestConcurrentSubscriptions:
         user-scoped Stripe customer carrying an active personal sub."""
         from apps.billing.models import StripeCustomer, Subscription
         from apps.orgs.models import Org, OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         user = User.objects.create_user(
             email="concurrent@example.com",
             full_name="Concurrent",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="ConcurrentOrg", slug="concurrent-org", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
@@ -1315,12 +1298,11 @@ class TestConcurrentSubscriptions:
         The ``is_billing`` gate only applies to team-context mutations."""
         from apps.billing.models import StripeCustomer, Subscription
         from apps.orgs.models import Org, OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         owner = User.objects.create_user(
             email="other-owner@example.com",
             full_name="Other Owner",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="OtherOrg", slug="other-org", created_by=owner)
         OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
@@ -1329,7 +1311,6 @@ class TestConcurrentSubscriptions:
         member = User.objects.create_user(
             email="non-billing@example.com",
             full_name="Non Billing",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
         team_customer = StripeCustomer.objects.create(
@@ -1510,12 +1491,11 @@ class TestConcurrentSubscriptions:
         outcome is acceptable; the important behavior is that the personal
         sub is never wrongly hit by a team-context mutation."""
         from apps.billing.models import StripeCustomer, Subscription
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         user = User.objects.create_user(
             email="personal-only@example.com",
             full_name="Personal Only",
-            account_type=AccountType.PERSONAL,
         )
         personal_customer = StripeCustomer.objects.create(
             stripe_id="cus_personal_only", user=user, livemode=False
@@ -1554,13 +1534,12 @@ class TestBillingAuthorityOnMutations:
 
     def test_non_billing_member_delete_returns_403(self, team_org_setup):
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         member = User.objects.create_user(
             email="nb-del@example.com",
             full_name="NB Del",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
         client = APIClient()
@@ -1583,13 +1562,12 @@ class TestBillingAuthorityOnMutations:
 
     def test_non_billing_member_patch_returns_403(self, team_org_setup, team_plan_price):
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         member = User.objects.create_user(
             email="nb-patch@example.com",
             full_name="NB Patch",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
         client = APIClient()
@@ -1663,19 +1641,17 @@ class TestCancelNoticeEmail:
         self, _mock_cancel, mock_task, org_member_client, team_org_setup
     ):
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         extra_billing = User.objects.create_user(
             email="finance@example.com",
             full_name="Finance",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=extra_billing, role=OrgRole.MEMBER, is_billing=True)
         non_billing = User.objects.create_user(
             email="eng@example.com",
             full_name="Eng",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=non_billing, role=OrgRole.MEMBER, is_billing=False)
 
@@ -1714,12 +1690,11 @@ def _setup_org_member_client(role, *, is_billing: bool = False, label: str = "te
     helper without colliding on the unique slug if both classes ever run inside
     the same transaction (defensive)."""
     from apps.orgs.models import Org, OrgMember
-    from apps.users.models import AccountType, User
+    from apps.users.models import User
 
     user = User.objects.create_user(
         email=f"{label}-{role.value}@example.com",
         full_name=f"{role.value} User",
-        account_type=AccountType.ORG_MEMBER,
     )
     org = Org.objects.create(
         name=f"{label.title()} Org",
@@ -2043,14 +2018,13 @@ class TestCreditBalanceView:
         consistent with /subscriptions/me/ read semantics."""
         from apps.billing.models import CreditBalance
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         CreditBalance.objects.create(org=org, balance=42)
         member = User.objects.create_user(
             email="plain-credits@example.com",
             full_name="Plain",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
         client = APIClient()
@@ -2059,7 +2033,3 @@ class TestCreditBalanceView:
         resp = client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
         assert resp.data == {"balances": [{"balance": 42, "scope": "org"}]}
-
-    def test_org_member_without_membership_returns_404(self, org_member_client):
-        resp = org_member_client.get("/api/v1/billing/credits/me/")
-        assert resp.status_code == 404

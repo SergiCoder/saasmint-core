@@ -20,7 +20,7 @@ from apps.orgs.services import (
     generate_unique_slug,
     on_team_checkout_completed,
 )
-from apps.users.models import AccountType, User
+from apps.users.models import User
 
 # ---------------------------------------------------------------------------
 # generate_unique_slug
@@ -53,7 +53,6 @@ class TestGenerateUniqueSlug:
         user = User.objects.create_user(
             email="slug-test@example.com",
             full_name="Slug Test",
-            account_type=AccountType.ORG_MEMBER,
         )
         Org.objects.create(name="Taken", slug="taken", created_by=user)
         slug = generate_unique_slug("Taken")
@@ -63,7 +62,6 @@ class TestGenerateUniqueSlug:
         user = User.objects.create_user(
             email="slug-del@example.com",
             full_name="Slug Del",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="Deleted", slug="deleted", created_by=user)
         org.delete()
@@ -74,7 +72,6 @@ class TestGenerateUniqueSlug:
         user = User.objects.create_user(
             email="multi@example.com",
             full_name="Multi",
-            account_type=AccountType.ORG_MEMBER,
         )
         Org.objects.create(name="Org", slug="org", created_by=user)
         Org.objects.create(name="Org 2", slug="org-2", created_by=user)
@@ -93,7 +90,6 @@ class TestCreateOrgWithOwner:
         user = User.objects.create_user(
             email="owner@example.com",
             full_name="Owner",
-            account_type=AccountType.ORG_MEMBER,
         )
         org, member = _create_org_with_owner(user, "New Org")
         assert org.name == "New Org"
@@ -101,36 +97,20 @@ class TestCreateOrgWithOwner:
         assert member.role == OrgRole.OWNER
         assert member.is_billing is True
 
-    def test_flips_personal_user_to_org_member(self) -> None:
-        """PERSONAL→team upgrade flow: ``_create_org_with_owner`` is the
-        only place ``account_type`` flips from PERSONAL to ORG_MEMBER, and
-        it does so atomically with org+membership creation."""
+    def test_creates_owner_membership(self) -> None:
+        """A user without prior org membership becomes an owner of the new
+        org; the OrgMember row is the authoritative signal that this user
+        is now an org member."""
         user = User.objects.create_user(
             email="upgrade@example.com",
             full_name="Upgrade",
-            account_type=AccountType.PERSONAL,
         )
 
         org, member = _create_org_with_owner(user, "Upgrade Org")
 
-        user.refresh_from_db()
-        assert user.account_type == AccountType.ORG_MEMBER
+        assert OrgMember.objects.filter(user=user, org=org, role=OrgRole.OWNER).exists()
         assert org.created_by == user
         assert member.role == OrgRole.OWNER
-
-    def test_already_org_member_account_type_unchanged(self) -> None:
-        """Legacy register-org-owner path: user already ORG_MEMBER, the flip
-        is a no-op (no spurious UPDATE)."""
-        user = User.objects.create_user(
-            email="orgmember@example.com",
-            full_name="OrgMember",
-            account_type=AccountType.ORG_MEMBER,
-        )
-
-        _create_org_with_owner(user, "Existing OrgMember")
-
-        user.refresh_from_db()
-        assert user.account_type == AccountType.ORG_MEMBER
 
     def test_creates_org_scoped_stripe_customer(self) -> None:
         """Team checkout passes a fresh Stripe customer ID; the row is
@@ -141,7 +121,6 @@ class TestCreateOrgWithOwner:
         user = User.objects.create_user(
             email="freshcust@example.com",
             full_name="Fresh",
-            account_type=AccountType.PERSONAL,
         )
 
         org, _ = _create_org_with_owner(
@@ -164,7 +143,6 @@ class TestCreateOrgWithOwner:
         user = User.objects.create_user(
             email="dual-owner@example.com",
             full_name="Dual Owner",
-            account_type=AccountType.ORG_MEMBER,
         )
         org1 = Org.objects.create(name="Org1", slug="dual-owner-1", created_by=user)
         OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER)
@@ -179,7 +157,6 @@ class TestCreateOrgWithOwner:
         user = User.objects.create_user(
             email="dup@example.com",
             full_name="Dup",
-            account_type=AccountType.PERSONAL,
         )
 
         org1, member1 = _create_org_with_owner(
@@ -201,9 +178,9 @@ class TestCreateOrgWithOwner:
 
 @pytest.mark.django_db
 class TestOnTeamCheckoutCompleted:
-    """The webhook callback wires three things together: org creation,
-    account_type flip (covered in TestCreateOrgWithOwner), and the optional
-    auto-cancel of the user's existing personal subscription.
+    """The webhook callback wires two things together: org creation
+    (covered in TestCreateOrgWithOwner) and the optional auto-cancel of
+    the user's existing personal subscription.
 
     The PR 5 default ``keep_personal_subscription=False`` cancels personal
     at period end. ``True`` leaves it running (rule 5b)."""
@@ -215,7 +192,6 @@ class TestOnTeamCheckoutCompleted:
         user = User.objects.create_user(
             email="upgrader@example.com",
             full_name="Upgrader",
-            account_type=AccountType.PERSONAL,
         )
         personal_customer = StripeCustomer.objects.create(
             stripe_id="cus_personal", user=user, livemode=False
@@ -258,7 +234,6 @@ class TestOnTeamCheckoutCompleted:
         user = User.objects.create_user(
             email="keeper@example.com",
             full_name="Keeper",
-            account_type=AccountType.PERSONAL,
         )
         personal_customer = StripeCustomer.objects.create(
             stripe_id="cus_keep_personal", user=user, livemode=False
@@ -297,7 +272,6 @@ class TestOnTeamCheckoutCompleted:
         user = User.objects.create_user(
             email="legacy@example.com",
             full_name="Legacy",
-            account_type=AccountType.ORG_MEMBER,
         )
 
         async_to_sync(on_team_checkout_completed)(
@@ -320,7 +294,6 @@ class TestOnTeamCheckoutCompleted:
         user = User.objects.create_user(
             email="orphan@example.com",
             full_name="Orphan",
-            account_type=AccountType.PERSONAL,
         )
         StripeCustomer.objects.create(stripe_id="cus_orphan", user=user, livemode=False)
 
@@ -368,14 +341,12 @@ class TestDeleteOrg:
         user = User.objects.create_user(
             email="delorg@example.com",
             full_name="Del Org",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="DelOrg", slug="delorg", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
         member = User.objects.create_user(
             email="delmember@example.com",
             full_name="Del Member",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER)
         org_id = org.id
@@ -408,7 +379,6 @@ class TestDeleteOrgsCreatedByUser:
         user = User.objects.create_user(
             email="multiorg@example.com",
             full_name="Multi Org",
-            account_type=AccountType.ORG_MEMBER,
         )
         org1 = Org.objects.create(name="Org1", slug="org1", created_by=user)
         OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER)
@@ -440,7 +410,6 @@ class TestDecrementSubscriptionSeats:
         user = User.objects.create_user(
             email="seats@example.com",
             full_name="Seats",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="Seats Org", slug="seats-org", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER)
@@ -478,7 +447,6 @@ class TestCancelTeamSubscription:
         user = User.objects.create_user(
             email="nocust@example.com",
             full_name="No Cust",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="NoCust", slug="nocust", created_by=user)
         _cancel_team_subscription(org)  # should not raise
@@ -490,7 +458,6 @@ class TestCancelTeamSubscription:
         user = User.objects.create_user(
             email="cancelsub@example.com",
             full_name="Cancel Sub",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="CancelSub", slug="cancelsub", created_by=user)
         customer = StripeCustomer.objects.create(stripe_id="cus_cancel", org=org, livemode=False)
@@ -520,7 +487,6 @@ class TestCancelTeamSubscription:
         user = User.objects.create_user(
             email="failcancel@example.com",
             full_name="Fail Cancel",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="FailCancel", slug="failcancel", created_by=user)
         customer = StripeCustomer.objects.create(stripe_id="cus_fail", org=org, livemode=False)

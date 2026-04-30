@@ -14,7 +14,7 @@ from apps.orgs.tasks import (
     cancel_stripe_subs_task,
     delete_org_on_subscription_cancel_task,
 )
-from apps.users.models import AccountType, User
+from apps.users.models import User
 
 
 class TestCancelStripeSubsTaskIdempotency:
@@ -98,7 +98,6 @@ class TestDeleteOrgOnSubscriptionCancelTask:
         user = User.objects.create_user(
             email="cancel-delete@example.com",
             full_name="Cancel Delete",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="Active", slug="active", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER)
@@ -113,7 +112,6 @@ class TestDeleteOrgOnSubscriptionCancelTask:
         user = User.objects.create_user(
             email="cascadeinv@example.com",
             full_name="Cascade Inv",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="InvOrg", slug="invorg", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER)
@@ -134,12 +132,10 @@ class TestDeleteOrgOnSubscriptionCancelTask:
         owner = User.objects.create_user(
             email="cascade-owner@example.com",
             full_name="Owner",
-            account_type=AccountType.ORG_MEMBER,
         )
         single_org_member = User.objects.create_user(
             email="single@example.com",
             full_name="Single",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="SingleOrg", slug="singleorg", created_by=owner)
         OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)
@@ -154,12 +150,10 @@ class TestDeleteOrgOnSubscriptionCancelTask:
         owner = User.objects.create_user(
             email="multi-owner@example.com",
             full_name="Owner",
-            account_type=AccountType.ORG_MEMBER,
         )
         multi_member = User.objects.create_user(
             email="multi@example.com",
             full_name="Multi",
-            account_type=AccountType.ORG_MEMBER,
         )
         org_a = Org.objects.create(name="OrgA", slug="orga", created_by=owner)
         org_b = Org.objects.create(name="OrgB", slug="orgb", created_by=multi_member)
@@ -182,7 +176,6 @@ class TestDeleteOrgOnSubscriptionCancelTask:
         user = User.objects.create_user(
             email="idem@example.com",
             full_name="Idem",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="Idem", slug="idem", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER)

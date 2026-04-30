@@ -6,97 +6,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from apps.orgs.models import Org, OrgMember, OrgRole
-from apps.users.models import AccountType, RefreshToken, User
-from apps.users.tasks import (
-    cleanup_expired_refresh_tokens,
-    cleanup_orphaned_org_accounts,
-)
+from apps.users.models import RefreshToken, User
+from apps.users.tasks import cleanup_expired_refresh_tokens
 
 
 def _run(task) -> None:
     """Apply a Celery task eagerly (bypasses the worker)."""
     task.apply().get()
-
-
-@pytest.mark.django_db
-class TestCleanupOrphanedOrgAccounts:
-    def _backdate(self, user: User, hours: int) -> None:
-        User.objects.filter(pk=user.pk).update(
-            created_at=datetime.now(UTC) - timedelta(hours=hours)
-        )
-
-    def test_deletes_org_member_with_no_membership_older_than_24h(self):
-        orphan = User.objects.create_user(
-            email="orphan@example.com",
-            full_name="Orphan Member",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        self._backdate(orphan, hours=48)
-
-        _run(cleanup_orphaned_org_accounts)
-
-        assert not User.objects.filter(pk=orphan.pk).exists()
-
-    def test_keeps_org_member_created_within_cutoff(self):
-        recent = User.objects.create_user(
-            email="recent@example.com",
-            full_name="Recent Member",
-            account_type=AccountType.ORG_MEMBER,
-        )
-
-        _run(cleanup_orphaned_org_accounts)
-
-        assert User.objects.filter(pk=recent.pk).exists()
-
-    def test_keeps_org_member_with_membership(self):
-        user = User.objects.create_user(
-            email="member@example.com",
-            full_name="Active Member",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        self._backdate(user, hours=48)
-        org = Org.objects.create(name="Acme", slug="acme")
-        OrgMember.objects.create(org=org, user=user, role=OrgRole.MEMBER)
-
-        _run(cleanup_orphaned_org_accounts)
-
-        assert User.objects.filter(pk=user.pk).exists()
-
-    def test_keeps_personal_account_even_without_membership(self):
-        personal = User.objects.create_user(
-            email="personal@example.com",
-            full_name="Personal User",
-            account_type=AccountType.PERSONAL,
-        )
-        self._backdate(personal, hours=48)
-
-        _run(cleanup_orphaned_org_accounts)
-
-        assert User.objects.filter(pk=personal.pk).exists()
-
-    def test_noop_when_nothing_to_delete(self):
-        # Task should run cleanly with an empty user table.
-        _run(cleanup_orphaned_org_accounts)
-
-    def test_only_targets_orphans_past_cutoff(self):
-        keep = User.objects.create_user(
-            email="keep@example.com",
-            full_name="Keep",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        self._backdate(keep, hours=23)
-        drop = User.objects.create_user(
-            email="drop@example.com",
-            full_name="Drop",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        self._backdate(drop, hours=25)
-
-        _run(cleanup_orphaned_org_accounts)
-
-        assert User.objects.filter(pk=keep.pk).exists()
-        assert not User.objects.filter(pk=drop.pk).exists()
 
 
 @pytest.mark.django_db

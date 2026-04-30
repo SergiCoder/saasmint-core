@@ -27,14 +27,12 @@ class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ge
     list_display = (
         "email",
         "full_name",
-        "account_type",
         "subscription_status",
         "is_verified",
         "is_active",
         "created_at",
     )
     list_filter: ClassVar[tuple[object, ...]] = (
-        "account_type",
         "registration_method",
         "is_active",
         "is_staff",

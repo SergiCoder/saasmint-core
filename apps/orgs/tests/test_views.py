@@ -562,9 +562,8 @@ class TestInvitationAcceptView:
         assert resp.data["code"] == "verification_email_sent"
         assert "access_token" not in resp.data
         assert "refresh_token" not in resp.data
-        # New user created as org_member, not yet verified
+        # New user created and added as org member, not yet verified
         new_user = User.objects.get(email="newuser@example.com")
-        assert new_user.account_type == "org_member"
         assert new_user.is_verified is False
         assert OrgMember.objects.filter(org=org, user=new_user).exists()
         invitation.refresh_from_db()

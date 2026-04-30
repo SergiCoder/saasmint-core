@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from django.core.cache import cache
 
-from apps.users.models import AccountType, RegistrationMethod, SocialAccount, User
+from apps.users.models import RegistrationMethod, SocialAccount, User
 
 
 @pytest.mark.django_db
@@ -52,10 +52,6 @@ class TestUserModel:
     def test_str_returns_email(self):
         user = User.objects.create_user(email="str@example.com", full_name="Str User")
         assert str(user) == "str@example.com"
-
-    def test_default_account_type(self):
-        user = User.objects.create_user(email="default@example.com", full_name="Default User")
-        assert user.account_type == AccountType.PERSONAL
 
     def test_save_clears_cache_when_deactivated(self):
         user = User.objects.create_user(email="deact@example.com", full_name="Deact User")

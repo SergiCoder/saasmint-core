@@ -14,7 +14,6 @@ from django.views.decorators.http import require_POST
 from django.views.generic import TemplateView
 from hijack.views import AcquireUserView, ReleaseUserView
 from saasmint_core.domain.subscription import PlanContext
-from saasmint_core.domain.user import AccountType
 
 from apps.billing.repositories import (
     DjangoPlanRepository,
@@ -83,12 +82,13 @@ class DashboardView(TemplateView):
         user = await request.auser()
         if not user.is_authenticated:
             return HttpResponseRedirect(f"{settings.LOGIN_URL}?next={request.path}")
+        # Org-member status drives the plan-context filter. Resolve it first
+        # (single indexed EXISTS query) so the gather only fetches one plan
+        # list. The org_memberships fetch is a separate query because the
+        # template renders the full list, not just the boolean.
+        is_org_member = await OrgMember.objects.filter(user_id=user.id).aexists()
+        plan_context = PlanContext.TEAM if is_org_member else PlanContext.PERSONAL
         # Independent fetches — run concurrently to cut round-trip latency.
-        plan_context = (
-            PlanContext.TEAM
-            if user.account_type == AccountType.ORG_MEMBER
-            else PlanContext.PERSONAL
-        )
         subscription, plans, products, org_memberships = await asyncio.gather(
             DjangoSubscriptionRepository().get_active_for_user(user.id),
             DjangoPlanRepository().list_active_by_context(plan_context),

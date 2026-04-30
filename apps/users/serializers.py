@@ -33,7 +33,6 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "email",
             "full_name",
             "avatar_url",
-            "account_type",
             "preferred_locale",
             "preferred_currency",
             "phone",
