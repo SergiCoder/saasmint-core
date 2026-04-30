@@ -26,6 +26,18 @@ from tests.conftest import (
     make_subscription,
 )
 
+
+def _stripe_subscription_response(**fields: object) -> stripe.Subscription:
+    """Build a Stripe-SDK Subscription object for mocking modify/cancel returns.
+
+    Stripe's SDK methods echo back a ``stripe.Subscription`` (StripeObject
+    subclass), not a plain dict. Tests that assert the cancel/resume mirror
+    logic need attribute access (``stripe_sub.cancel_at``), so a bare dict
+    will not work as a mock return value.
+    """
+    return stripe.Subscription.construct_from(fields, "sk_test")
+
+
 # ── get_or_create_customer ────────────────────────────────────────────────────
 
 
@@ -388,18 +400,14 @@ async def test_cancel_subscription_at_period_end() -> None:
     sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_cancel")
     await repo.save(sub)
 
-    # Stripe's modify() echoes back the updated subscription as a
-    # ``stripe.Subscription`` object. We mirror its cancel_at into the local
-    # row synchronously so the frontend's PATCH-then-GET path doesn't race
-    # the customer.subscription.updated webhook.
-    stripe_response = stripe.Subscription.construct_from(
-        {
-            "id": "sub_cancel",
-            "status": "active",
-            "cancel_at": 1_780_000_000,
-            "canceled_at": None,
-        },
-        "sk_test",
+    # Stripe's modify() echoes back the updated subscription. We mirror its
+    # cancel_at into the local row synchronously so the frontend's PATCH-then-
+    # GET path doesn't race the customer.subscription.updated webhook.
+    stripe_response = _stripe_subscription_response(
+        id="sub_cancel",
+        status="active",
+        cancel_at=1_780_000_000,
+        canceled_at=None,
     )
     with patch("stripe.Subscription.modify", return_value=stripe_response) as mock_modify:
         await cancel_subscription(
@@ -424,14 +432,11 @@ async def test_cancel_subscription_immediately() -> None:
 
     # Immediate cancel (e.g. GDPR delete): Stripe transitions status to
     # canceled and sets canceled_at; mirror both onto the local row.
-    stripe_response = stripe.Subscription.construct_from(
-        {
-            "id": "sub_immed",
-            "status": "canceled",
-            "cancel_at": None,
-            "canceled_at": 1_780_000_000,
-        },
-        "sk_test",
+    stripe_response = _stripe_subscription_response(
+        id="sub_immed",
+        status="canceled",
+        cancel_at=None,
+        canceled_at=1_780_000_000,
     )
     with patch("stripe.Subscription.cancel", return_value=stripe_response) as mock_cancel:
         await cancel_subscription(
@@ -492,14 +497,11 @@ async def test_resume_subscription_clears_cancel_at() -> None:
     )
     await repo.save(sub)
 
-    stripe_response = stripe.Subscription.construct_from(
-        {
-            "id": "sub_resume",
-            "status": "active",
-            "cancel_at": None,
-            "canceled_at": None,
-        },
-        "sk_test",
+    stripe_response = _stripe_subscription_response(
+        id="sub_resume",
+        status="active",
+        cancel_at=None,
+        canceled_at=None,
     )
     with patch("stripe.Subscription.modify", return_value=stripe_response) as mock_modify:
         await resume_subscription(

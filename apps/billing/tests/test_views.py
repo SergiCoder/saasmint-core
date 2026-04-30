@@ -493,6 +493,25 @@ class TestSubscriptionView:
         assert resp.data["count"] == 1
         assert resp.data["results"][0]["status"] == "active"
 
+    def test_response_surfaces_cancel_at_when_scheduled(self, authed_client, subscription):
+        """End-to-end: a subscription scheduled to cancel (mirror of Stripe's
+        ``cancel_at`` set by the webhook) exposes the timestamp on the API
+        response. Unit-level coverage in ``test_serializers.py`` only asserts
+        the field is declared with default ``None`` on a fresh row; this test
+        proves the populated value reaches the wire through the GET endpoint."""
+        scheduled = datetime(2026, 2, 1, tzinfo=UTC)
+        subscription.cancel_at = scheduled
+        subscription.save(update_fields=["cancel_at"])
+
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        assert resp.data["count"] == 1
+        assert resp.data["results"][0]["cancel_at"] is not None
+        # DRF serializes datetimes to ISO-8601 strings; assert the field round-trips.
+        from rest_framework.fields import DateTimeField
+
+        assert resp.data["results"][0]["cancel_at"] == DateTimeField().to_representation(scheduled)
+
     def test_no_subscription_returns_empty_list(self, authed_client, user):
         """PR 5: free tier is now an empty list (was 404). Single-sub callers
         adapt by checking ``count == 0`` instead of catching the 404."""
@@ -1687,6 +1706,32 @@ def boost_product_price(boost_product):
     return boost_product.price
 
 
+def _setup_org_member_client(role, *, is_billing: bool = False, label: str = "team"):
+    """Create an ORG_MEMBER user + org + authed client for product-checkout
+    tests. Each test rolls back its own transaction (``@pytest.mark.django_db``)
+    so the email/slug only needs to be unique *within* a single test, not across
+    the suite. ``label`` lets two classes that exercise the same role share one
+    helper without colliding on the unique slug if both classes ever run inside
+    the same transaction (defensive)."""
+    from apps.orgs.models import Org, OrgMember
+    from apps.users.models import AccountType, User
+
+    user = User.objects.create_user(
+        email=f"{label}-{role.value}@example.com",
+        full_name=f"{role.value} User",
+        account_type=AccountType.ORG_MEMBER,
+    )
+    org = Org.objects.create(
+        name=f"{label.title()} Org",
+        slug=f"{label}-org-{role.value}",
+        created_by=user,
+    )
+    OrgMember.objects.create(org=org, user=user, role=role, is_billing=is_billing)
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return user, org, client
+
+
 @pytest.mark.django_db
 class TestProductCheckoutPersonal:
     @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
@@ -1734,19 +1779,7 @@ class TestProductCheckoutPersonal:
 @pytest.mark.django_db
 class TestProductCheckoutTeamOwnership:
     def _setup_org(self, role, is_billing=False):
-        from apps.orgs.models import Org, OrgMember
-        from apps.users.models import AccountType, User
-
-        user = User.objects.create_user(
-            email=f"{role.value}@example.com",
-            full_name=f"{role.value} User",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="Team Org", slug="team-org", created_by=user)
-        OrgMember.objects.create(org=org, user=user, role=role, is_billing=is_billing)
-        client = APIClient()
-        client.force_authenticate(user=user)
-        return user, org, client
+        return _setup_org_member_client(role, is_billing=is_billing, label="team")
 
     @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
@@ -1813,19 +1846,7 @@ class TestProductCheckoutContextSelector:
     after upgrade)."""
 
     def _setup_org(self, role, is_billing=False):
-        from apps.orgs.models import Org, OrgMember
-        from apps.users.models import AccountType, User
-
-        user = User.objects.create_user(
-            email=f"ctx-{role.value}@example.com",
-            full_name=f"{role.value} User",
-            account_type=AccountType.ORG_MEMBER,
-        )
-        org = Org.objects.create(name="Ctx Org", slug=f"ctx-org-{role.value}", created_by=user)
-        OrgMember.objects.create(org=org, user=user, role=role, is_billing=is_billing)
-        client = APIClient()
-        client.force_authenticate(user=user)
-        return user, org, client
+        return _setup_org_member_client(role, is_billing=is_billing, label="ctx")
 
     @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
