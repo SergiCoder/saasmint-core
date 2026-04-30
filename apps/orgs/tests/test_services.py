@@ -329,8 +329,9 @@ class TestPersistTeamSubscription:
     closes that race by retrieving the subscription and upserting the row
     directly after org creation."""
 
-    def _make_stripe_sub_payload(self, stripe_sub_id: str, stripe_customer_id: str, price_id: str):
-        """Mimic the dict-style accessors of a stripe.Subscription StripeObject."""
+    def _make_sub_dict(self, stripe_sub_id: str, stripe_customer_id: str, price_id: str) -> dict:
+        """Plain-dict shape — matches what the webhook dispatcher receives
+        (events are JSON-decoded by ``stripe.Webhook.construct_event``)."""
         period_start = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp())
         period_end = int(datetime(2026, 2, 1, tzinfo=UTC).timestamp())
         return {
@@ -352,6 +353,18 @@ class TestPersistTeamSubscription:
             "cancel_at": None,
         }
 
+    def _make_stripe_subscription(self, stripe_sub_id: str, stripe_customer_id: str, price_id: str):
+        """Real StripeObject — matches what ``stripe.Subscription.retrieve``
+        returns. Exercises the boundary conversion in ``_persist_team_subscription``,
+        which would otherwise crash with ``AttributeError: get`` because
+        StripeObject proxies ``.get(...)`` through ``__getattr__``."""
+        import stripe
+
+        return stripe.StripeObject.construct_from(
+            self._make_sub_dict(stripe_sub_id, stripe_customer_id, price_id),
+            "sk_test_unused",
+        )
+
     @patch("apps.orgs.services.stripe.Subscription.retrieve")
     def test_persists_team_subscription_after_org_creation(self, mock_retrieve) -> None:
         """The webhook handler must land the team Subscription row even if
@@ -369,7 +382,7 @@ class TestPersistTeamSubscription:
         )
         PlanPrice.objects.create(plan=team_plan, stripe_price_id="price_team_raced", amount=2500)
 
-        mock_retrieve.return_value = self._make_stripe_sub_payload(
+        mock_retrieve.return_value = self._make_stripe_subscription(
             "sub_team_raced", "cus_team_raced", "price_team_raced"
         )
 
@@ -409,21 +422,23 @@ class TestPersistTeamSubscription:
             name="Team Idem", context="team", interval="month", is_active=True
         )
         PlanPrice.objects.create(plan=team_plan, stripe_price_id="price_team_idem", amount=2500)
-        payload = self._make_stripe_sub_payload("sub_team_idem", "cus_team_idem", "price_team_idem")
-        mock_retrieve.return_value = payload
+        mock_retrieve.return_value = self._make_stripe_subscription(
+            "sub_team_idem", "cus_team_idem", "price_team_idem"
+        )
 
-        # First write via the team-checkout handler.
+        # First write via the team-checkout handler (StripeObject path).
         async_to_sync(on_team_checkout_completed)(
             user.id, "Idem Org", "cus_team_idem", False, "sub_team_idem", True
         )
 
         # Second write via the (delayed) ``customer.subscription.updated``
-        # path with a different quantity. Same stripe_id → row updates,
-        # not duplicates.
-        payload["items"]["data"][0]["quantity"] = 5
+        # webhook path with a different quantity. Same stripe_id → row
+        # updates, not duplicates. Webhook events arrive as plain dicts.
+        update_payload = self._make_sub_dict("sub_team_idem", "cus_team_idem", "price_team_idem")
+        update_payload["items"]["data"][0]["quantity"] = 5
         repos = get_webhook_repos()
         async_to_sync(sync_subscription_from_data)(
-            payload,
+            update_payload,
             customers=repos.customers,
             plans=repos.plans,
             subscriptions=repos.subscriptions,

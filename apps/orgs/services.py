@@ -135,11 +135,15 @@ async def _persist_team_subscription(stripe_subscription_id: str) -> None:
 
     sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
     repos = get_webhook_repos()
-    # ``sub`` is a ``stripe.Subscription`` (StripeObject) — its accessors
-    # (``[...]`` and ``.get(...)``) satisfy ``sync_subscription_from_data``'s
-    # reads without an explicit dict conversion.
+    # ``stripe.Subscription.retrieve`` returns a ``StripeObject``: it supports
+    # ``[...]`` indexing but does NOT inherit from ``dict``, so ``.get(...)``,
+    # ``.items()``, etc. are proxied through ``__getattr__`` and crash with
+    # ``AttributeError`` when the requested key is absent. The webhook-dispatch
+    # path receives plain dicts (json-decoded by ``stripe.Webhook.construct_event``)
+    # and ``sync_subscription_from_data`` is written against dict semantics, so
+    # we normalise at the boundary via ``to_dict()`` (recursive in this SDK).
     await sync_subscription_from_data(
-        sub,  # type: ignore[arg-type]  # StripeObject satisfies dict[str, Any] structurally for the accessors used
+        sub.to_dict(),
         customers=repos.customers,
         plans=repos.plans,
         subscriptions=repos.subscriptions,
