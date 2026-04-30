@@ -16,7 +16,7 @@ from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
-from apps.users.models import AccountType, User
+from apps.users.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +75,9 @@ async def on_team_checkout_completed(
 ) -> None:
     """Create an org and its Stripe customer after a team plan checkout.
 
-    Called from the checkout.session.completed webhook handler. Handles both
-    the legacy register-org-owner path (user already ORG_MEMBER) and the
-    PERSONAL→team upgrade path (user starts as PERSONAL, gets flipped to
-    ORG_MEMBER inside ``_create_org_with_owner``).
+    Called from the checkout.session.completed webhook handler. Org membership
+    is the only signal that distinguishes a team-billing user from a personal
+    one — successful team checkout creates the OrgMember row.
 
     When ``keep_personal_subscription`` is False (the default for the upgrade
     flow), the user's existing personal subscription — if any — is scheduled
@@ -151,16 +150,12 @@ def _create_org_with_owner(
     stripe_customer_id: str | None = None,
     livemode: bool = False,
 ) -> tuple[Org, OrgMember]:
-    """Atomically create an org, its owner membership, its Stripe customer, and flip account_type.
+    """Atomically create an org, its owner membership, and its Stripe customer.
 
-    All four state changes happen in a single transaction so partial-failure
-    can't leave an org without billing linkage or a user stuck mid-upgrade.
-
-    The ``account_type`` flip handles both entry paths into this function:
-    the PERSONAL→team upgrade flow (rule 16) starts with a PERSONAL user, the
-    legacy register-org-owner path starts with an already-ORG_MEMBER user,
-    and both must end at ORG_MEMBER + owned org. The flip is one-way: this
-    function never demotes ORG_MEMBER back to PERSONAL.
+    All three state changes happen in a single transaction so partial-failure
+    can't leave an org without billing linkage. The OrgMember row is the
+    authoritative signal that this user is now an org member — no separate
+    flag on User is needed.
 
     Duplicate-webhook short-circuit: a ``StripeCustomer`` row that already
     points to an org+OrgMember pair indicates a re-delivery and returns the
@@ -204,10 +199,6 @@ def _create_org_with_owner(
                 org=org,
                 livemode=livemode,
             )
-
-        if user.account_type != AccountType.ORG_MEMBER:
-            user.account_type = AccountType.ORG_MEMBER
-            user.save(update_fields=["account_type", "updated_at"])
 
     return org, member
 
@@ -253,7 +244,6 @@ def accept_invitation(
             email=invitation.email,
             password=password,
             full_name=full_name,
-            account_type=AccountType.ORG_MEMBER,
             is_verified=False,
         )
         OrgMember.objects.create(

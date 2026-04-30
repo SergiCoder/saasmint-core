@@ -8,7 +8,7 @@ import pytest
 from django.core.cache import cache
 
 from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
-from apps.users.models import AccountType, User
+from apps.users.models import User
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +104,6 @@ def org_member_user(db):
     return User.objects.create_user(
         email="orgowner@example.com",
         full_name="Org Owner",
-        account_type=AccountType.ORG_MEMBER,
     )
 
 

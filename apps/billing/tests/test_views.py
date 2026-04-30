@@ -61,8 +61,8 @@ class TestPlanListView:
     def test_personal_user_sees_all_plans(
         self, authed_client, plan, plan_price, team_plan, team_plan_price
     ):
-        # PERSONAL users can upgrade to a team plan via team-context checkout,
-        # so both contexts must be discoverable from the listing endpoint.
+        # Users without an owned org can upgrade to a team plan via team-context
+        # checkout, so both contexts must be discoverable from the listing endpoint.
         resp = authed_client.get("/api/v1/billing/plans/")
         assert resp.status_code == 200
         assert len(resp.data["results"]) == 2
@@ -71,7 +71,7 @@ class TestPlanListView:
     def test_org_member_sees_all_plans(
         self, org_member_client, plan, plan_price, team_plan, team_plan_price
     ):
-        # ORG_MEMBER users see the same catalogue as everyone else; the
+        # Org members see the same catalogue as everyone else; the
         # checkout endpoint enforces which contexts they can actually purchase.
         resp = org_member_client.get("/api/v1/billing/plans/")
         assert resp.status_code == 200
@@ -217,10 +217,10 @@ class TestCheckoutSessionView:
         team_plan,
         team_plan_price,
     ):
-        """PR 5: a PERSONAL user without an owned org may upgrade to team.
-        The eventual ``checkout.session.completed`` webhook flips their
-        ``account_type`` and creates the org. The 409 is reserved for users
-        who already own one."""
+        """PR 5: a user without an owned org may upgrade to team. The
+        eventual ``checkout.session.completed`` webhook creates the org and
+        the OrgMember row. The 409 is reserved for users who already own
+        one."""
         mock_team_customer.return_value = "cus_team_personal_upgrade"
         mock_create.return_value = "https://checkout.stripe.com/session"
 
@@ -260,11 +260,32 @@ class TestCheckoutSessionView:
             format="json",
         )
         assert resp.status_code == 409
-        assert resp.data["code"] == "account_type_mismatch"
+        assert resp.data["code"] == "org_already_owned"
         assert "already own" in resp.data["detail"].lower()
 
-    def test_org_member_cannot_checkout_personal_plan(self, org_member_client, plan_price):
-        """Org member account_type users are rejected when checking out a personal plan."""
+    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_org_member_can_checkout_personal_plan(
+        self,
+        mock_get_customer,
+        mock_create,
+        org_member_client,
+        org_member_user,
+        plan_price,
+        mock_stripe_customer,
+    ):
+        """Rule 5b: dropping ``User.account_type`` removes the gate that
+        previously rejected ORG_MEMBER callers from personal-plan checkout.
+        An org member (any role) may now hold a personal sub concurrently
+        with their team sub — the personal checkout succeeds and routes to
+        the user's own Stripe customer."""
+        from apps.orgs.models import Org, OrgMember, OrgRole
+
+        org = Org.objects.create(name="HoldsTeam", slug="holds-team", created_by=org_member_user)
+        OrgMember.objects.create(org=org, user=org_member_user, role=OrgRole.OWNER, is_billing=True)
+        mock_get_customer.return_value = mock_stripe_customer
+        mock_create.return_value = "https://checkout.stripe.com/personal-from-org-member"
+
         resp = org_member_client.post(
             "/api/v1/billing/checkout-sessions/",
             {
@@ -274,9 +295,12 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 409
-        assert resp.data["code"] == "account_type_mismatch"
-        assert "personal plans" in resp.data["detail"].lower()
+        assert resp.status_code == 200
+        assert resp.data["url"] == "https://checkout.stripe.com/personal-from-org-member"
+        # Personal-plan checkout must resolve to the caller's user-scoped
+        # customer, not the org's — even when the caller is an org owner.
+        assert mock_get_customer.call_args.kwargs.get("user_id") == org_member_user.id
+        assert "org_id" not in mock_get_customer.call_args.kwargs
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
     @patch("apps.billing.views.create_team_stripe_customer", new_callable=AsyncMock)
@@ -523,7 +547,7 @@ class TestSubscriptionView:
     def test_personal_user_with_customer_but_no_subscription_returns_empty_list(
         self, authed_client, stripe_customer
     ):
-        """``_get_active_subscriptions_for_user`` PERSONAL branch where the
+        """``_get_active_subscriptions_for_user`` non-org-member path: the
         user has a ``StripeCustomer`` row (so ``customer_id is not None`` and
         the ``stripe_customer_id``-indexed lookup is exercised) but no active
         Subscription exists on either the user or the customer. Both
@@ -1135,13 +1159,12 @@ class TestTeamSubscriptionResolution:
         """Read access to the team sub is granted to ANY active org member —
         only mutations require is_billing=True."""
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         member_user = User.objects.create_user(
             email="plain@example.com",
             full_name="Plain Member",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member_user, role=OrgRole.MEMBER, is_billing=False)
         client = APIClient()
@@ -1153,9 +1176,8 @@ class TestTeamSubscriptionResolution:
         assert str(resp.data["results"][0]["plan"]["id"]) == str(team_plan.id)
 
     def test_org_member_without_membership_returns_empty_list(self, org_member_client):
-        """An ``ORG_MEMBER`` user who isn't a member of any active org has no
-        team sub to surface and (per the legacy register-org-owner flow) no
-        personal sub either — empty list, no error."""
+        """A user with no OrgMember row and no personal sub: nothing to
+        surface — empty list, no error."""
         resp = org_member_client.get("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 200
         assert resp.data["count"] == 0
@@ -1164,21 +1186,20 @@ class TestTeamSubscriptionResolution:
 @pytest.mark.django_db
 class TestConcurrentSubscriptions:
     """Rule 5b (keep-personal opt-out during personal→team upgrade): an
-    ORG_MEMBER user can hold both a team sub (on the org's customer) and a
+    org-member user can hold both a team sub (on the org's customer) and a
     personal sub (on their user-scoped customer) at the same time. The
     /me/ endpoint must surface both."""
 
     def _setup_concurrent(self, team_plan, plan):
-        """Create an ORG_MEMBER user owning an org with a team sub AND a
+        """Create an org-member user owning an org with a team sub AND a
         user-scoped Stripe customer carrying an active personal sub."""
         from apps.billing.models import StripeCustomer, Subscription
         from apps.orgs.models import Org, OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         user = User.objects.create_user(
             email="concurrent@example.com",
             full_name="Concurrent",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="ConcurrentOrg", slug="concurrent-org", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
@@ -1245,7 +1266,7 @@ class TestConcurrentSubscriptions:
     def test_delete_default_context_targets_team_for_org_member(
         self, mock_cancel, _mock_task, plan, plan_price, team_plan, team_plan_price
     ):
-        """Backwards-compat: an ORG_MEMBER user with no ``?context=`` query
+        """Backwards-compat: an org-member user with no ``?context=`` query
         param defaults to the team sub (existing behavior)."""
         user, team_sub, _personal_sub = self._setup_concurrent(team_plan, plan)
         client = APIClient()
@@ -1295,7 +1316,7 @@ class TestConcurrentSubscriptions:
         """Empty-string ``?context=`` (e.g. an HTML form submitting an
         unset value) must be treated as no override —
         ``_validate_subscription_context`` returns ``None`` for ``""`` and
-        the default-resolver picks team for an ORG_MEMBER caller. Without
+        the default-resolver picks team for an org-member caller. Without
         the empty-string short-circuit the value would fail validation."""
         user, team_sub, _personal_sub = self._setup_concurrent(team_plan, plan)
         client = APIClient()
@@ -1315,12 +1336,11 @@ class TestConcurrentSubscriptions:
         The ``is_billing`` gate only applies to team-context mutations."""
         from apps.billing.models import StripeCustomer, Subscription
         from apps.orgs.models import Org, OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         owner = User.objects.create_user(
             email="other-owner@example.com",
             full_name="Other Owner",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="OtherOrg", slug="other-org", created_by=owner)
         OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
@@ -1329,7 +1349,6 @@ class TestConcurrentSubscriptions:
         member = User.objects.create_user(
             email="non-billing@example.com",
             full_name="Non Billing",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
         team_customer = StripeCustomer.objects.create(
@@ -1503,19 +1522,18 @@ class TestConcurrentSubscriptions:
     def test_delete_with_context_team_returns_404_when_only_personal_exists(
         self, _mock_cancel, _mock_task, plan, plan_price, team_plan, team_plan_price
     ):
-        """If a PERSONAL user (no org membership) somehow passes
+        """If a non-org-member user (no org membership) somehow passes
         ``?context=team``, ``_resolve_billing_customer`` cannot find a team
         customer and the request short-circuits to 404 — the
         ``_require_billing_authority`` gate also rejects it (403). Either
         outcome is acceptable; the important behavior is that the personal
         sub is never wrongly hit by a team-context mutation."""
         from apps.billing.models import StripeCustomer, Subscription
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         user = User.objects.create_user(
             email="personal-only@example.com",
             full_name="Personal Only",
-            account_type=AccountType.PERSONAL,
         )
         personal_customer = StripeCustomer.objects.create(
             stripe_id="cus_personal_only", user=user, livemode=False
@@ -1554,13 +1572,12 @@ class TestBillingAuthorityOnMutations:
 
     def test_non_billing_member_delete_returns_403(self, team_org_setup):
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         member = User.objects.create_user(
             email="nb-del@example.com",
             full_name="NB Del",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
         client = APIClient()
@@ -1583,13 +1600,12 @@ class TestBillingAuthorityOnMutations:
 
     def test_non_billing_member_patch_returns_403(self, team_org_setup, team_plan_price):
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         member = User.objects.create_user(
             email="nb-patch@example.com",
             full_name="NB Patch",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
         client = APIClient()
@@ -1663,19 +1679,17 @@ class TestCancelNoticeEmail:
         self, _mock_cancel, mock_task, org_member_client, team_org_setup
     ):
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         extra_billing = User.objects.create_user(
             email="finance@example.com",
             full_name="Finance",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=extra_billing, role=OrgRole.MEMBER, is_billing=True)
         non_billing = User.objects.create_user(
             email="eng@example.com",
             full_name="Eng",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=non_billing, role=OrgRole.MEMBER, is_billing=False)
 
@@ -1707,19 +1721,18 @@ def boost_product_price(boost_product):
 
 
 def _setup_org_member_client(role, *, is_billing: bool = False, label: str = "team"):
-    """Create an ORG_MEMBER user + org + authed client for product-checkout
+    """Create an org-member user + org + authed client for product-checkout
     tests. Each test rolls back its own transaction (``@pytest.mark.django_db``)
     so the email/slug only needs to be unique *within* a single test, not across
     the suite. ``label`` lets two classes that exercise the same role share one
     helper without colliding on the unique slug if both classes ever run inside
     the same transaction (defensive)."""
     from apps.orgs.models import Org, OrgMember
-    from apps.users.models import AccountType, User
+    from apps.users.models import User
 
     user = User.objects.create_user(
         email=f"{label}-{role.value}@example.com",
         full_name=f"{role.value} User",
-        account_type=AccountType.ORG_MEMBER,
     )
     org = Org.objects.create(
         name=f"{label.title()} Org",
@@ -1842,7 +1855,7 @@ class TestProductCheckoutTeamOwnership:
 @pytest.mark.django_db
 class TestProductCheckoutContextSelector:
     """``?context=personal|team`` selector for callers who can buy under both
-    scopes (rule 5a/5b — e.g. an ORG_MEMBER owner who kept their personal sub
+    scopes (rule 5a/5b — e.g. an org-member owner who kept their personal sub
     after upgrade)."""
 
     def _setup_org(self, role, is_billing=False):
@@ -2002,7 +2015,7 @@ class TestCreditBalanceView:
     def test_org_member_with_leftover_personal_balance_sees_both(
         self, org_member_user, team_org_setup
     ):
-        """Pre-upgrade personal credits remain visible after a PERSONAL→team
+        """Pre-upgrade personal credits remain visible after a personal→team
         upgrade (rule 16). The org balance is always emitted; the user balance
         is appended iff > 0."""
         from apps.billing.models import CreditBalance
@@ -2025,7 +2038,7 @@ class TestCreditBalanceView:
         self, org_member_user, team_org_setup
     ):
         """A zero-valued personal CreditBalance row is treated the same as no
-        row — we don't surface a noisy ``user`` entry for ORG_MEMBERs who
+        row — we don't surface a noisy ``user`` entry for org members who
         never had pre-upgrade credits."""
         from apps.billing.models import CreditBalance
 
@@ -2043,14 +2056,13 @@ class TestCreditBalanceView:
         consistent with /subscriptions/me/ read semantics."""
         from apps.billing.models import CreditBalance
         from apps.orgs.models import OrgMember, OrgRole
-        from apps.users.models import AccountType, User
+        from apps.users.models import User
 
         org, _, _ = team_org_setup
         CreditBalance.objects.create(org=org, balance=42)
         member = User.objects.create_user(
             email="plain-credits@example.com",
             full_name="Plain",
-            account_type=AccountType.ORG_MEMBER,
         )
         OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
         client = APIClient()
@@ -2059,7 +2071,3 @@ class TestCreditBalanceView:
         resp = client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
         assert resp.data == {"balances": [{"balance": 42, "scope": "org"}]}
-
-    def test_org_member_without_membership_returns_404(self, org_member_client):
-        resp = org_member_client.get("/api/v1/billing/credits/me/")
-        assert resp.status_code == 404

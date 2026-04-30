@@ -19,7 +19,7 @@
     </div>
     <div class="field">
       <label>Account type</label>
-      <span>{{ request.user.get_account_type_display }}</span>
+      <span>{% if org_memberships %}Org member{% else %}Personal{% endif %}</span>
     </div>
     <div class="field">
       <label>Locale</label>

@@ -8,7 +8,7 @@ import pytest
 from django.test import Client
 
 from apps.orgs.models import Org, OrgMember, OrgRole
-from apps.users.models import AccountType, User
+from apps.users.models import User
 
 
 @pytest.fixture
@@ -28,7 +28,6 @@ def org_owner(db):
     return User.objects.create_user(
         email="orgowner@example.com",
         full_name="Org Owner",
-        account_type=AccountType.ORG_MEMBER,
     )
 
 
@@ -47,7 +46,6 @@ def member(db):
     return User.objects.create_user(
         email="member@example.com",
         full_name="Member",
-        account_type=AccountType.ORG_MEMBER,
     )
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from saasmint_core.exceptions import (
-    AccountTypeConflictError,
     DomainError,
     InsufficientPermissionError,
     OrgMemberNotFoundError,
@@ -22,7 +21,6 @@ _ALL_EXCEPTIONS = [
     OrgNotFoundError,
     SubscriptionNotFoundError,
     SubscriptionAlreadyActiveError,
-    AccountTypeConflictError,
     InsufficientPermissionError,
     OrgMemberNotFoundError,
     WebhookVerificationError,

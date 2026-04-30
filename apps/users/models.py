@@ -19,11 +19,6 @@ from apps.users.managers import UserManager
 AUTH_USER_CACHE_KEY = "auth_user:{}"
 
 
-class AccountType(models.TextChoices):
-    PERSONAL = "personal", "Personal"
-    ORG_MEMBER = "org_member", "Org Member"
-
-
 class RegistrationMethod(models.TextChoices):
     EMAIL = "email", "Email"
     GOOGLE = "google", "Google"
@@ -36,11 +31,6 @@ class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True)
     full_name = models.CharField(max_length=255, validators=[MinLengthValidator(3)])
     avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no avatar set (distinguishable from empty string)
-    account_type = models.CharField(
-        max_length=20,
-        choices=AccountType.choices,
-        default=AccountType.PERSONAL,
-    )
     preferred_locale = models.CharField(max_length=10, default="en")
     preferred_currency = models.CharField(max_length=3, default="usd")
     phone_prefix = models.CharField(max_length=5, blank=True, null=True)  # noqa: DJ001  # nullable CharField intentional: NULL means prefix not set (e.g. "+34")

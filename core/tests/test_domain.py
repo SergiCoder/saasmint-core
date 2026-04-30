@@ -21,7 +21,7 @@ from saasmint_core.domain.subscription import (
     Subscription,
     SubscriptionStatus,
 )
-from saasmint_core.domain.user import AccountType, User
+from saasmint_core.domain.user import User
 
 NOW = datetime(2024, 1, 1, tzinfo=UTC)
 
@@ -37,7 +37,6 @@ def test_user_creation() -> None:
         created_at=NOW,
     )
     assert user.email == "alice@example.com"
-    assert user.account_type == AccountType.PERSONAL
     assert user.preferred_locale == "en"
     assert user.preferred_currency == "usd"
     assert user.is_verified is False
@@ -52,14 +51,12 @@ def test_user_with_all_fields() -> None:
         email="bob@example.com",
         full_name="Bob Smith",
         avatar_url="https://example.com/avatar.png",
-        account_type=AccountType.ORG_MEMBER,
         preferred_locale="es",
         preferred_currency="eur",
         is_verified=True,
         created_at=NOW,
     )
     assert user.id == uid
-    assert user.account_type == AccountType.ORG_MEMBER
     assert user.full_name == "Bob Smith"
 
 
@@ -67,11 +64,6 @@ def test_user_is_frozen() -> None:
     user = User(id=uuid4(), email="a@b.com", full_name="Test", created_at=NOW)
     with pytest.raises(ValidationError):
         user.email = "other@b.com"  # type: ignore[misc]  # intentional: testing that frozen dataclass raises ValidationError on mutation
-
-
-def test_account_type_values() -> None:
-    assert AccountType.PERSONAL == "personal"
-    assert AccountType.ORG_MEMBER == "org_member"
 
 
 def test_user_invalid_email() -> None:

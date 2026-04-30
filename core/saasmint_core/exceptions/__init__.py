@@ -21,10 +21,6 @@ class SubscriptionAlreadyActiveError(DomainError):
     """User already has an active subscription."""
 
 
-class AccountTypeConflictError(DomainError):
-    """User tried to switch billing context without cancelling existing subscription."""
-
-
 class InsufficientPermissionError(DomainError):
     """User does not have the required org role to perform this action."""
 

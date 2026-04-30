@@ -14,7 +14,6 @@ from django.views.decorators.http import require_POST
 from django.views.generic import TemplateView
 from hijack.views import AcquireUserView, ReleaseUserView
 from saasmint_core.domain.subscription import PlanContext
-from saasmint_core.domain.user import AccountType
 
 from apps.billing.repositories import (
     DjangoPlanRepository,
@@ -83,18 +82,19 @@ class DashboardView(TemplateView):
         user = await request.auser()
         if not user.is_authenticated:
             return HttpResponseRedirect(f"{settings.LOGIN_URL}?next={request.path}")
-        # Independent fetches — run concurrently to cut round-trip latency.
-        plan_context = (
-            PlanContext.TEAM
-            if user.account_type == AccountType.ORG_MEMBER
-            else PlanContext.PERSONAL
-        )
-        subscription, plans, products, org_memberships = await asyncio.gather(
+        # All four reads are independent — gather them in a single round-trip.
+        # Memberships drive the plan-context filter (TEAM vs PERSONAL) but the
+        # template needs the full list anyway, so we fetch the unioned active
+        # plan list and filter by context in Python afterwards rather than
+        # serializing a sequential EXISTS/membership lookup before the gather.
+        subscription, all_plans, products, org_memberships = await asyncio.gather(
             DjangoSubscriptionRepository().get_active_for_user(user.id),
-            DjangoPlanRepository().list_active_by_context(plan_context),
+            DjangoPlanRepository().list_active(),
             DjangoProductRepository().list_active(),
             _get_org_memberships(user),
         )
+        plan_context = PlanContext.TEAM if org_memberships else PlanContext.PERSONAL
+        plans = [p for p in all_plans if p.context == plan_context]
         # Look up the subscription's plan from the already-fetched list to avoid
         # an extra DB round-trip.
         plan = (
