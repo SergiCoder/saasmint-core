@@ -6,7 +6,7 @@ import logging
 from typing import ClassVar
 from uuid import UUID
 
-from asgiref.sync import async_to_sync
+from asgiref.sync import async_to_sync, sync_to_async
 from django.core.cache import cache
 from drf_spectacular.utils import (
     OpenApiParameter,
@@ -533,7 +533,9 @@ class PortalSessionView(BillingScopedView):
                 # Same gate as cancel/resume: only is_billing members may open
                 # the team portal (it exposes payment methods, invoices, and
                 # cancel-from-Stripe — not read-only).
-                _require_billing_authority(user, context=_SUBSCRIPTION_CONTEXT_TEAM)
+                await sync_to_async(_require_billing_authority)(
+                    user, context=_SUBSCRIPTION_CONTEXT_TEAM
+                )
                 customer = await _resolve_billing_customer(
                     user, context=_SUBSCRIPTION_CONTEXT_TEAM
                 )
