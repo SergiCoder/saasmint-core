@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import ClassVar
 from uuid import UUID
 
+import stripe
 from asgiref.sync import async_to_sync, sync_to_async
 from django.core.cache import cache
 from drf_spectacular.utils import (
@@ -23,6 +25,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.subscription import Subscription
+from saasmint_core.exceptions import (
+    AlreadyOnPlanError,
+    NoActiveSubscriptionError,
+    PlanContextMismatchError,
+)
 from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
@@ -493,7 +500,10 @@ class PortalSessionView(BillingScopedView):
             400: OpenApiResponse(
                 description=(
                     "The ``?context=`` query param is set to a value other than"
-                    " ``personal``/``team``."
+                    " ``personal``/``team``, or ``flow=subscription_update_confirm``"
+                    " was passed with a ``plan_price_id`` whose plan context does"
+                    " not match the resolved subscription context"
+                    " (``code=plan_context_mismatch``)."
                 )
             ),
             403: OpenApiResponse(
@@ -506,7 +516,17 @@ class PortalSessionView(BillingScopedView):
             404: OpenApiResponse(
                 description=(
                     "``?context=team``: caller has no team Stripe customer (i.e. no"
-                    " team subscription has been created)."
+                    " team subscription has been created); or ``plan_price_id`` does"
+                    " not exist / belongs to an inactive plan."
+                )
+            ),
+            409: OpenApiResponse(
+                description=(
+                    "``flow=subscription_update_confirm`` was requested but the"
+                    " resolved context has no active subscription"
+                    " (``code=no_active_subscription``), or the active subscription"
+                    " is already on the requested plan price"
+                    " (``code=already_on_plan``)."
                 )
             ),
         },
@@ -516,7 +536,11 @@ class PortalSessionView(BillingScopedView):
             " callers and ``personal`` otherwise — same routing as subscription"
             " mutations on ``/me/``. ``?context=team`` requires ``is_billing=True``"
             " and an existing team customer. ``?context=personal`` auto-creates"
-            " the user's Stripe customer when missing."
+            " the user's Stripe customer when missing.\n\n"
+            "Optional ``flow`` + ``plan_price_id`` body fields deep-link the portal"
+            " into a focused flow. Currently the only supported flow is"
+            " ``subscription_update_confirm``, which lands the user on Stripe's"
+            " plan-switch confirmation screen for the target ``plan_price_id``."
         ),
         tags=["billing"],
     )
@@ -524,11 +548,29 @@ class PortalSessionView(BillingScopedView):
         user = get_user(request)
         ser = PortalRequestSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
+        flow = ser.validated_data.get("flow")
+        plan_price_id = ser.validated_data.get("plan_price_id")
 
         context = _validate_subscription_context(request.query_params.get("context"))
 
+        # Resolve the target plan price up front (sync ORM) so we can fail fast
+        # with 404 / 400 before doing any Stripe work in the async closure.
+        target_plan_price: PlanPrice | None = None
+        if flow == "subscription_update_confirm":
+            target_plan_price = _get_active_plan_price(plan_price_id)
+
         async def _do() -> str:
             effective = context or await _default_subscription_context_async(user)
+            if target_plan_price is not None:
+                # Validate target plan's context matches the resolved billing
+                # context before we touch Stripe — a personal-context portal
+                # session can't switch to a team plan and vice versa.
+                if target_plan_price.plan.context != effective:
+                    raise PlanContextMismatchError(
+                        f"Target plan is for context '{target_plan_price.plan.context}', "
+                        f"but the resolved subscription context is '{effective}'."
+                    )
+
             if effective == _SUBSCRIPTION_CONTEXT_TEAM:
                 # Same gate as cancel/resume: only is_billing members may open
                 # the team portal (it exposes payment methods, invoices, and
@@ -542,6 +584,7 @@ class PortalSessionView(BillingScopedView):
                 if customer is None:
                     raise NotFound("No team Stripe customer found.")
                 stripe_customer_id = customer.stripe_id
+                customer_local_id = customer.id
             else:
                 # Personal scope: auto-create the user's own customer if missing.
                 # Mixing scopes (creating a personal customer for a team-portal
@@ -554,14 +597,67 @@ class PortalSessionView(BillingScopedView):
                     customer_repo=get_billing_repos().customers,
                 )
                 stripe_customer_id = personal.stripe_id
+                customer_local_id = personal.id
+
+            flow_data: dict[str, object] | None = None
+            if target_plan_price is not None:
+                flow_data = await _build_subscription_update_confirm_flow_data(
+                    customer_local_id=customer_local_id,
+                    target_plan_price=target_plan_price,
+                )
+
             return await create_billing_portal_session(
                 stripe_customer_id=stripe_customer_id,
                 locale=user.preferred_locale,
                 return_url=ser.validated_data["return_url"],
+                flow_data=flow_data,
             )
 
         url = async_to_sync(_do)()
         return Response({"url": url})
+
+
+async def _build_subscription_update_confirm_flow_data(
+    *,
+    customer_local_id: UUID,
+    target_plan_price: PlanPrice,
+) -> dict[str, object]:
+    """Resolve the active sub + first item id and assemble Stripe ``flow_data``.
+
+    Raises :class:`NoActiveSubscriptionError` (409) when no active sub exists
+    in the resolved context, and :class:`AlreadyOnPlanError` (409) when the
+    sub is already on the target price (Stripe would otherwise no-op the
+    confirm screen, which is a confusing UX).
+    """
+    repos = get_billing_repos()
+    sub = await repos.subscriptions.get_active_for_customer(customer_local_id)
+    if sub is None or sub.stripe_id is None:
+        raise NoActiveSubscriptionError(
+            "No active subscription found in the resolved context."
+        )
+
+    stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, sub.stripe_id)
+    first_item = stripe_sub["items"]["data"][0]
+    item_id = str(first_item["id"])
+    current_price_id = str(first_item["price"]["id"])
+    current_quantity = int(first_item["quantity"])
+
+    if current_price_id == target_plan_price.stripe_price_id:
+        raise AlreadyOnPlanError("Subscription is already on the requested plan.")
+
+    return {
+        "type": "subscription_update_confirm",
+        "subscription_update_confirm": {
+            "subscription": sub.stripe_id,
+            "items": [
+                {
+                    "id": item_id,
+                    "price": target_plan_price.stripe_price_id,
+                    "quantity": current_quantity,
+                }
+            ],
+        },
+    }
 
 
 def _resolve_product_purchase_context(user: User, context: str | None) -> UUID | None:
@@ -746,7 +842,9 @@ def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
     # ``stripe_customer`` is select_related so ``_refetch_subscription_after_mutation``
     # can discriminate team vs personal subs via ``sub.stripe_customer.org_id``
     # without firing an FK lookup per sub.
-    base = SubscriptionModel.objects.select_related("plan__price", "stripe_customer").filter(
+    base = SubscriptionModel.objects.select_related(
+        "plan__price", "scheduled_plan__price", "stripe_customer"
+    ).filter(
         status__in=ACTIVE_SUBSCRIPTION_STATUSES
     )
     subs: list[SubscriptionModel] = []
@@ -954,9 +1052,15 @@ class SubscriptionView(BillingScopedView):
                         subscription_repo=repos.subscriptions,
                     )
             elif plan_price:
+                # Passing ``new_price_amount`` opts into the deferred-downgrade
+                # path: ``change_plan`` compares against the current Stripe
+                # price unit amount and creates a SubscriptionSchedule when
+                # the new price is lower. Upgrades and same-amount switches
+                # still apply immediately so the user pays the prorated diff.
                 await change_plan(
                     stripe_subscription_id=stripe_sub_id,
                     new_stripe_price_id=plan_price.stripe_price_id,
+                    new_price_amount=plan_price.amount,
                     prorate=data["prorate"],
                     quantity=data.get("quantity"),
                 )
@@ -1034,6 +1138,65 @@ class SubscriptionView(BillingScopedView):
             SubscriptionSerializer(sub, context=_currency_context(request)).data,
             status=status.HTTP_202_ACCEPTED,
         )
+
+
+class ScheduledChangeView(BillingScopedView):
+    """DELETE /api/v1/billing/subscriptions/me/scheduled-change/ — cancel a pending downgrade.
+
+    Idempotent. Releases any active Stripe ``SubscriptionSchedule`` attached
+    to the caller's active sub in the resolved context, restoring "no
+    pending change" state. Safe to call when no schedule exists — returns
+    the current sub unchanged. The corresponding
+    ``subscription_schedule.released`` webhook also clears the local mirror;
+    the view writes the cleared state up front so the immediate refetch
+    reflects it without webhook lag.
+    """
+
+    @extend_schema(
+        parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
+        request=None,
+        responses={
+            200: SubscriptionSerializer,
+            400: OpenApiResponse(
+                description=(
+                    "The ``?context=`` query param is set to a value other than"
+                    " ``personal``/``team``."
+                )
+            ),
+            403: OpenApiResponse(
+                description=(
+                    "``?context=team``: caller is missing ``is_billing=True`` on"
+                    " their active org membership."
+                )
+            ),
+            404: OpenApiResponse(
+                description="No active subscription in the resolved context."
+            ),
+        },
+        description=(
+            "Cancel a pending plan-switch (deferred downgrade) on the active"
+            " subscription. Idempotent — returns the unchanged subscription"
+            " when no schedule exists. Same context-routing and is_billing"
+            " gate as PATCH/DELETE on ``/me/``."
+        ),
+        tags=["billing"],
+    )
+    def delete(self, request: Request) -> Response:
+        from saasmint_core.services.billing import release_pending_schedule_for_customer
+
+        user = get_user(request)
+        context, _org_id = _resolve_mutation_context(request, user)
+
+        async def _do() -> None:
+            customer, _, _ = await _get_customer_and_paid_subscription(user, context=context)
+            await release_pending_schedule_for_customer(
+                stripe_customer_id=customer.id,
+                subscription_repo=get_billing_repos().subscriptions,
+            )
+
+        async_to_sync(_do)()
+        sub = _refetch_subscription_after_mutation(user, context=context)
+        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
 
 def _refetch_subscription_after_mutation(user: User, *, context: str) -> SubscriptionModel:

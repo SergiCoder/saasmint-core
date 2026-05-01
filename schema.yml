@@ -452,11 +452,10 @@ paths:
   /api/v1/billing/portal-sessions/:
     post:
       operationId: billing_portal_sessions_create
-      description: Create a Stripe Customer Portal session. The portal scope is selected
-        by ``?context=personal|team``; defaults to ``team`` for org-member callers
-        and ``personal`` otherwise — same routing as subscription mutations on ``/me/``.
-        ``?context=team`` requires ``is_billing=True`` and an existing team customer.
-        ``?context=personal`` auto-creates the user's Stripe customer when missing.
+      description: |-
+        Create a Stripe Customer Portal session. The portal scope is selected by ``?context=personal|team``; defaults to ``team`` for org-member callers and ``personal`` otherwise — same routing as subscription mutations on ``/me/``. ``?context=team`` requires ``is_billing=True`` and an existing team customer. ``?context=personal`` auto-creates the user's Stripe customer when missing.
+
+        Optional ``flow`` + ``plan_price_id`` body fields deep-link the portal into a focused flow. Currently the only supported flow is ``subscription_update_confirm``, which lands the user on Stripe's plan-switch confirmation screen for the target ``plan_price_id``.
       parameters:
       - in: query
         name: context
@@ -496,13 +495,20 @@ paths:
           description: ''
         '400':
           description: The ``?context=`` query param is set to a value other than
-            ``personal``/``team``.
+            ``personal``/``team``, or ``flow=subscription_update_confirm`` was passed
+            with a ``plan_price_id`` whose plan context does not match the resolved
+            subscription context (``code=plan_context_mismatch``).
         '403':
           description: '``?context=team``: caller is missing ``is_billing=True`` on
             their active org membership — only billing members may open the team portal.'
         '404':
           description: '``?context=team``: caller has no team Stripe customer (i.e.
-            no team subscription has been created).'
+            no team subscription has been created); or ``plan_price_id`` does not
+            exist / belongs to an inactive plan.'
+        '409':
+          description: '``flow=subscription_update_confirm`` was requested but the
+            resolved context has no active subscription (``code=no_active_subscription``),
+            or the active subscription is already on the requested plan price (``code=already_on_plan``).'
   /api/v1/billing/product-checkout-sessions/:
     post:
       operationId: billing_product_checkout_sessions_create
@@ -710,6 +716,50 @@ paths:
             subscription. ``?context=personal`` does not enforce this gate.'
         '404':
           description: No Stripe customer or active paid subscription for the caller.
+  /api/v1/billing/subscriptions/me/scheduled-change/:
+    delete:
+      operationId: billing_subscriptions_me_scheduled_change_destroy
+      description: Cancel a pending plan-switch (deferred downgrade) on the active
+        subscription. Idempotent — returns the unchanged subscription when no schedule
+        exists. Same context-routing and is_billing gate as PATCH/DELETE on ``/me/``.
+      parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for org-member callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
+      tags:
+      - billing
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+        '400':
+          description: The ``?context=`` query param is set to a value other than
+            ``personal``/``team``.
+        '403':
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership.'
+        '404':
+          description: No active subscription in the resolved context.
   /api/v1/currencies/:
     get:
       operationId: currencies_retrieve
@@ -1372,6 +1422,11 @@ components:
       required:
       - balance
       - scope
+    FlowEnum:
+      enum:
+      - subscription_update_confirm
+      type: string
+      description: '* `subscription_update_confirm` - subscription_update_confirm'
     ForgotPasswordRequest:
       type: object
       properties:
@@ -1557,6 +1612,9 @@ components:
       required:
       - code
       - detail
+    NullEnum:
+      enum:
+      - null
     OAuthExchangeRequestRequest:
       type: object
       properties:
@@ -1880,6 +1938,15 @@ components:
           type: string
           format: uri
           minLength: 1
+        flow:
+          nullable: true
+          oneOf:
+          - $ref: '#/components/schemas/FlowEnum'
+          - $ref: '#/components/schemas/NullEnum'
+        plan_price_id:
+          type: string
+          format: uuid
+          nullable: true
       required:
       - return_url
     PortalResponse:
@@ -2128,6 +2195,15 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        scheduled_plan:
+          allOf:
+          - $ref: '#/components/schemas/Plan'
+          readOnly: true
+        scheduled_change_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -2141,6 +2217,8 @@ components:
       - id
       - plan
       - quantity
+      - scheduled_change_at
+      - scheduled_plan
       - status
       - trial_ends_at
     SubscriptionListResponse:

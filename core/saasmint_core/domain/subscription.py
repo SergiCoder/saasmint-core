@@ -87,4 +87,10 @@ class Subscription(BaseModel):
     current_period_end: datetime
     canceled_at: datetime | None = None
     cancel_at: datetime | None = None
+    # Mirror of an active Stripe SubscriptionSchedule's pending plan switch.
+    # Both fields are written together by the schedule webhook handlers and
+    # cleared together when the schedule completes, releases, or is canceled.
+    # ``None`` ⇔ no pending plan change.
+    scheduled_plan_id: UUID | None = None
+    scheduled_change_at: datetime | None = None
     created_at: datetime

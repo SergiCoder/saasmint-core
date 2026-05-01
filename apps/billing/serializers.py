@@ -138,6 +138,7 @@ class ProductSerializer(serializers.ModelSerializer[Product]):
 
 class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
     plan = PlanSerializer(read_only=True)
+    scheduled_plan = PlanSerializer(read_only=True)
 
     class Meta:
         model = Subscription
@@ -151,6 +152,8 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "current_period_end",
             "canceled_at",
             "cancel_at",
+            "scheduled_plan",
+            "scheduled_change_at",
             "created_at",
         )
         read_only_fields = fields
@@ -176,9 +179,29 @@ class CheckoutRequestSerializer(serializers.Serializer[object]):
 
 class PortalRequestSerializer(serializers.Serializer[object]):
     return_url = serializers.URLField()
+    flow = serializers.ChoiceField(
+        choices=["subscription_update_confirm"],
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    plan_price_id = serializers.UUIDField(required=False, allow_null=True, default=None)
 
     def validate_return_url(self, value: str) -> str:
         return _validate_redirect_url(value)
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        flow = attrs.get("flow")
+        plan_price_id = attrs.get("plan_price_id")
+        if flow == "subscription_update_confirm" and plan_price_id is None:
+            raise serializers.ValidationError(
+                {"plan_price_id": ["Required when flow='subscription_update_confirm'."]}
+            )
+        if plan_price_id is not None and flow is None:
+            raise serializers.ValidationError(
+                {"flow": ["Required when plan_price_id is provided."]}
+            )
+        return attrs
 
 
 class ProductCheckoutRequestSerializer(serializers.Serializer[object]):

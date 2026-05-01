@@ -106,6 +106,8 @@ class DjangoSubscriptionRepository:
             current_period_end=obj.current_period_end,
             canceled_at=obj.canceled_at,
             cancel_at=obj.cancel_at,
+            scheduled_plan_id=obj.scheduled_plan_id,
+            scheduled_change_at=obj.scheduled_change_at,
             created_at=obj.created_at,
         )
 
@@ -169,6 +171,8 @@ class DjangoSubscriptionRepository:
                 "current_period_end": subscription.current_period_end,
                 "canceled_at": subscription.canceled_at,
                 "cancel_at": subscription.cancel_at,
+                "scheduled_plan_id": subscription.scheduled_plan_id,
+                "scheduled_change_at": subscription.scheduled_change_at,
             },
         )
         return subscription
