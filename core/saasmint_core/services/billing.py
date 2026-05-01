@@ -221,7 +221,13 @@ async def cancel_subscription(
     # control. ``release`` ends the schedule without altering the current
     # phase: the sub stays on its current price and we then apply the
     # cancel as normal.
-    await _release_pending_schedule(active.stripe_id)
+    #
+    # Skip the Stripe retrieve entirely when the local mirror shows no
+    # pending schedule — ``scheduled_plan_id`` is only non-null when the
+    # ``subscription_schedule.created/updated`` webhook has written a
+    # pending change, so the fast-path is safe for the common case.
+    if active.scheduled_plan_id is not None:
+        await _release_pending_schedule(active.stripe_id)
 
     if at_period_end:
         # 2026-03-25.dahlia replaces `cancel_at_period_end=True` with

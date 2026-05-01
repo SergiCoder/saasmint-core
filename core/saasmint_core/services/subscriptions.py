@@ -130,6 +130,17 @@ async def _schedule_downgrade_at_period_end(
             "cannot schedule a deferred downgrade"
         )
 
+    # Same fallback logic as current_period_end: read from item first, then
+    # subscription level for older API versions.
+    period_start = first_item.get("current_period_start")
+    if period_start is None:
+        period_start = sub.get("current_period_start")  # type: ignore[attr-defined]
+    if not isinstance(period_start, int):
+        raise ValueError(
+            f"Subscription {sub['id']} missing integer current_period_start; "
+            "cannot schedule a deferred downgrade"
+        )
+
     current_price_id = str(first_item["price"]["id"])
 
     schedule = await asyncio.to_thread(
@@ -145,7 +156,7 @@ async def _schedule_downgrade_at_period_end(
                 "items": [
                     {"price": current_price_id, "quantity": quantity},
                 ],
-                "start_date": int(first_item["current_period_start"]),
+                "start_date": period_start,
                 "end_date": period_end,
                 "proration_behavior": "none",
             },

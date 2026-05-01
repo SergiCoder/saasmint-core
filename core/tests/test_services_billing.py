@@ -391,6 +391,33 @@ async def test_create_billing_portal_session() -> None:
     assert url == "https://billing.stripe.com/p/session_abc"
 
 
+@pytest.mark.anyio
+async def test_create_billing_portal_session_with_flow_data() -> None:
+    """When ``flow_data`` is provided it must be forwarded to Stripe's
+    Session.create call — the branch that adds the key to ``params``."""
+    mock_session = MagicMock()
+    mock_session.url = "https://billing.stripe.com/p/session_flow"
+    flow_data = {
+        "type": "subscription_update_confirm",
+        "subscription_update_confirm": {
+            "subscription": "sub_xyz",
+            "items": [{"id": "si_xyz", "price": "price_xyz", "quantity": 1}],
+        },
+    }
+
+    with patch("stripe.billing_portal.Session.create", return_value=mock_session) as mock_create:
+        url = await create_billing_portal_session(
+            stripe_customer_id="cus_abc",
+            locale="en",
+            return_url="https://example.com/account",
+            flow_data=flow_data,
+        )
+
+    assert url == "https://billing.stripe.com/p/session_flow"
+    _, kwargs = mock_create.call_args
+    assert kwargs["flow_data"] == flow_data
+
+
 # ── cancel_subscription ───────────────────────────────────────────────────────
 
 
@@ -579,7 +606,14 @@ async def test_cancel_subscription_releases_active_schedule_first() -> None:
     ``Subscription.modify`` — otherwise Stripe rejects the cancel."""
     repo = InMemorySubscriptionRepository()
     customer_id = uuid4()
-    sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_with_sched")
+    # scheduled_plan_id must be non-None: cancel_subscription uses the local
+    # mirror as a fast-path — when it's None no Stripe retrieve is issued
+    # (common case: no pending schedule). Set it so the full release path runs.
+    sub = make_subscription(
+        stripe_customer_id=customer_id,
+        stripe_id="sub_with_sched",
+        scheduled_plan_id=uuid4(),
+    )
     await repo.save(sub)
 
     stripe_response = _stripe_subscription_response(
@@ -612,7 +646,14 @@ async def test_cancel_subscription_skips_terminal_schedules() -> None:
     further release calls on them. Cancel must skip those and proceed."""
     repo = InMemorySubscriptionRepository()
     customer_id = uuid4()
-    sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_done_sched")
+    # scheduled_plan_id must be non-None so the fast-path doesn't short-circuit
+    # before we even try the retrieve. In production a terminal schedule would
+    # still have a non-null mirror until the cleared webhook lands.
+    sub = make_subscription(
+        stripe_customer_id=customer_id,
+        stripe_id="sub_done_sched",
+        scheduled_plan_id=uuid4(),
+    )
     await repo.save(sub)
 
     stripe_response = _stripe_subscription_response(

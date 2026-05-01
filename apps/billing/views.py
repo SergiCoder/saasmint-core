@@ -842,7 +842,9 @@ def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
     # ``stripe_customer`` is select_related so ``_refetch_subscription_after_mutation``
     # can discriminate team vs personal subs via ``sub.stripe_customer.org_id``
     # without firing an FK lookup per sub.
-    base = SubscriptionModel.objects.select_related("plan__price", "stripe_customer").filter(
+    base = SubscriptionModel.objects.select_related(
+        "plan__price", "scheduled_plan__price", "stripe_customer"
+    ).filter(
         status__in=ACTIVE_SUBSCRIPTION_STATUSES
     )
     subs: list[SubscriptionModel] = []

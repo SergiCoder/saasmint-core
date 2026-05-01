@@ -660,6 +660,22 @@ class TestPortalSessionDeepLinkFlow:
     the plan-switch confirm screen. Verifies the ``flow_data`` payload sent
     to Stripe and the error envelope on each failure mode."""
 
+    def _domain_customer_from_fixture(self, stripe_customer: object) -> DomainStripeCustomer:
+        """Build a ``DomainStripeCustomer`` whose ids match the DB fixture.
+
+        Several tests need ``get_or_create_customer`` to return a customer
+        whose local UUID matches the fixture row so that
+        ``get_active_for_customer`` can find the associated subscription.
+        """
+        return DomainStripeCustomer(
+            id=stripe_customer.id,  # type: ignore[union-attr]
+            stripe_id=stripe_customer.stripe_id,  # type: ignore[union-attr]
+            user_id=stripe_customer.user_id,  # type: ignore[union-attr]
+            org_id=None,
+            livemode=False,
+            created_at=datetime.now(UTC),
+        )
+
     def _make_stripe_sub(self, *, stripe_id: str, item_id: str, price_id: str, quantity: int):
         """Build a mock object shaped like the Stripe Subscription resource
         (only the fields ``_build_subscription_update_confirm_flow_data``
@@ -693,8 +709,6 @@ class TestPortalSessionDeepLinkFlow:
         """Personal happy path: target plan price's stripe_price_id, the
         first sub item id, and the current quantity are all forwarded into
         ``flow_data.subscription_update_confirm``."""
-        from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
-
         from apps.billing.models import Plan as PlanModel
         from apps.billing.models import PlanPrice
 
@@ -712,14 +726,7 @@ class TestPortalSessionDeepLinkFlow:
         # The view calls ``get_or_create_customer`` for personal scope; return
         # a domain customer whose UUID matches the DB-backed StripeCustomer so
         # ``get_active_for_customer`` finds the subscription fixture.
-        mock_get_customer.return_value = DomainStripeCustomer(
-            id=stripe_customer.id,
-            stripe_id=stripe_customer.stripe_id,
-            user_id=stripe_customer.user_id,
-            org_id=None,
-            livemode=False,
-            created_at=datetime.now(UTC),
-        )
+        mock_get_customer.return_value = self._domain_customer_from_fixture(stripe_customer)
         mock_retrieve.return_value = self._make_stripe_sub(
             stripe_id=subscription.stripe_id,
             item_id="si_123",
@@ -859,6 +866,34 @@ class TestPortalSessionDeepLinkFlow:
         )
         assert resp.status_code == 400
 
+    def test_flow_without_plan_price_id_returns_400(self, authed_client):
+        """``flow=subscription_update_confirm`` requires ``plan_price_id``;
+        omitting it should fail serializer cross-validation."""
+        resp = authed_client.post(
+            "/api/v1/billing/portal-sessions/",
+            {
+                "return_url": "https://localhost/dashboard",
+                "flow": "subscription_update_confirm",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "plan_price_id" in str(resp.data)
+
+    def test_plan_price_id_without_flow_returns_400(self, authed_client, plan_price):
+        """Providing ``plan_price_id`` without ``flow`` is ambiguous and must
+        be rejected by the serializer cross-validation."""
+        resp = authed_client.post(
+            "/api/v1/billing/portal-sessions/",
+            {
+                "return_url": "https://localhost/dashboard",
+                "plan_price_id": str(plan_price.id),
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert "flow" in str(resp.data)
+
     def test_unknown_plan_price_returns_404(self, authed_client):
         resp = authed_client.post(
             "/api/v1/billing/portal-sessions/",
@@ -903,16 +938,7 @@ class TestPortalSessionDeepLinkFlow:
     ):
         """Personal-context portal session targeting a team plan price must
         400 — the plan doesn't fit the Stripe customer's scope."""
-        from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
-
-        mock_get_customer.return_value = DomainStripeCustomer(
-            id=stripe_customer.id,
-            stripe_id=stripe_customer.stripe_id,
-            user_id=stripe_customer.user_id,
-            org_id=None,
-            livemode=False,
-            created_at=datetime.now(UTC),
-        )
+        mock_get_customer.return_value = self._domain_customer_from_fixture(stripe_customer)
 
         resp = authed_client.post(
             "/api/v1/billing/portal-sessions/",
@@ -940,16 +966,7 @@ class TestPortalSessionDeepLinkFlow:
         """Target ``plan_price_id`` whose ``stripe_price_id`` matches the
         active sub's current price → 409 ``already_on_plan``. Stripe would
         otherwise show an empty confirm screen."""
-        from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
-
-        mock_get_customer.return_value = DomainStripeCustomer(
-            id=stripe_customer.id,
-            stripe_id=stripe_customer.stripe_id,
-            user_id=stripe_customer.user_id,
-            org_id=None,
-            livemode=False,
-            created_at=datetime.now(UTC),
-        )
+        mock_get_customer.return_value = self._domain_customer_from_fixture(stripe_customer)
         mock_retrieve.return_value = self._make_stripe_sub(
             stripe_id=subscription.stripe_id,
             item_id="si_same",
