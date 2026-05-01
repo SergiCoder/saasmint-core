@@ -138,6 +138,7 @@ class ProductSerializer(serializers.ModelSerializer[Product]):
 
 class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
     plan = PlanSerializer(read_only=True)
+    scheduled_plan = PlanSerializer(read_only=True)
 
     class Meta:
         model = Subscription
@@ -151,6 +152,8 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "current_period_end",
             "canceled_at",
             "cancel_at",
+            "scheduled_plan",
+            "scheduled_change_at",
             "created_at",
         )
         read_only_fields = fields

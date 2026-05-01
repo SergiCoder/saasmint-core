@@ -17,6 +17,7 @@ from saasmint_core.services.billing import (
     create_product_checkout_session,
     create_team_stripe_customer,
     get_or_create_customer,
+    release_pending_schedule_for_customer,
     resume_subscription,
 )
 from tests.conftest import (
@@ -409,7 +410,12 @@ async def test_cancel_subscription_at_period_end() -> None:
         cancel_at=1_780_000_000,
         canceled_at=None,
     )
-    with patch("stripe.Subscription.modify", return_value=stripe_response) as mock_modify:
+    no_schedule = MagicMock()
+    no_schedule.schedule = None
+    with (
+        patch("stripe.Subscription.retrieve", return_value=no_schedule),
+        patch("stripe.Subscription.modify", return_value=stripe_response) as mock_modify,
+    ):
         await cancel_subscription(
             stripe_customer_id=customer_id,
             at_period_end=True,
@@ -438,7 +444,12 @@ async def test_cancel_subscription_immediately() -> None:
         cancel_at=None,
         canceled_at=1_780_000_000,
     )
-    with patch("stripe.Subscription.cancel", return_value=stripe_response) as mock_cancel:
+    no_schedule = MagicMock()
+    no_schedule.schedule = None
+    with (
+        patch("stripe.Subscription.retrieve", return_value=no_schedule),
+        patch("stripe.Subscription.cancel", return_value=stripe_response) as mock_cancel,
+    ):
         await cancel_subscription(
             stripe_customer_id=customer_id,
             at_period_end=False,
@@ -537,5 +548,166 @@ async def test_resume_subscription_free_sub_raises() -> None:
     with pytest.raises(SubscriptionNotFoundError):
         await resume_subscription(
             stripe_customer_id=customer_id,
+            subscription_repo=repo,
+        )
+
+
+# ── schedule release ─────────────────────────────────────────────────────────
+
+
+def _stripe_sub_with_schedule(schedule_id: str | None) -> MagicMock:
+    """Mock a ``stripe.Subscription`` retrieve result for the schedule path.
+
+    ``_release_pending_schedule`` reads ``sub.schedule`` (the schedule id
+    pinning the sub, or ``None``) — that's the only attribute we need."""
+    m = MagicMock()
+    m.schedule = schedule_id
+    return m
+
+
+def _stripe_schedule(schedule_id: str, *, status: str) -> MagicMock:
+    m = MagicMock()
+    m.id = schedule_id
+    m.status = status
+    return m
+
+
+@pytest.mark.anyio
+async def test_cancel_subscription_releases_active_schedule_first() -> None:
+    """If a SubscriptionSchedule is pinning the sub (deferred-downgrade
+    awaiting period end), cancel must release it before calling
+    ``Subscription.modify`` — otherwise Stripe rejects the cancel."""
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_with_sched")
+    await repo.save(sub)
+
+    stripe_response = _stripe_subscription_response(
+        id="sub_with_sched", status="active", cancel_at=1_780_000_000, canceled_at=None
+    )
+    with (
+        patch(
+            "stripe.Subscription.retrieve",
+            return_value=_stripe_sub_with_schedule("sub_sched_1"),
+        ),
+        patch(
+            "stripe.SubscriptionSchedule.retrieve",
+            return_value=_stripe_schedule("sub_sched_1", status="active"),
+        ),
+        patch("stripe.SubscriptionSchedule.release") as mock_release,
+        patch("stripe.Subscription.modify", return_value=stripe_response),
+    ):
+        await cancel_subscription(
+            stripe_customer_id=customer_id,
+            at_period_end=True,
+            subscription_repo=repo,
+        )
+
+    mock_release.assert_called_once_with("sub_sched_1")
+
+
+@pytest.mark.anyio
+async def test_cancel_subscription_skips_terminal_schedules() -> None:
+    """Released/canceled/completed schedules are terminal — Stripe rejects
+    further release calls on them. Cancel must skip those and proceed."""
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_done_sched")
+    await repo.save(sub)
+
+    stripe_response = _stripe_subscription_response(
+        id="sub_done_sched", status="active", cancel_at=1_780_000_000, canceled_at=None
+    )
+    with (
+        patch(
+            "stripe.Subscription.retrieve",
+            return_value=_stripe_sub_with_schedule("sub_sched_done"),
+        ),
+        patch(
+            "stripe.SubscriptionSchedule.retrieve",
+            return_value=_stripe_schedule("sub_sched_done", status="released"),
+        ),
+        patch("stripe.SubscriptionSchedule.release") as mock_release,
+        patch("stripe.Subscription.modify", return_value=stripe_response),
+    ):
+        await cancel_subscription(
+            stripe_customer_id=customer_id,
+            at_period_end=True,
+            subscription_repo=repo,
+        )
+
+    mock_release.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_release_pending_schedule_for_customer_clears_local_mirror() -> None:
+    """``release_pending_schedule_for_customer`` releases the Stripe schedule
+    AND clears the local ``scheduled_plan_id`` / ``scheduled_change_at``
+    fields up front so the immediate refetch reflects the cleared state
+    without webhook lag."""
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    sub = make_subscription(
+        stripe_customer_id=customer_id,
+        stripe_id="sub_pending",
+        scheduled_plan_id=uuid4(),
+        scheduled_change_at=datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    await repo.save(sub)
+
+    with (
+        patch(
+            "stripe.Subscription.retrieve",
+            return_value=_stripe_sub_with_schedule("sub_sched_pending"),
+        ),
+        patch(
+            "stripe.SubscriptionSchedule.retrieve",
+            return_value=_stripe_schedule("sub_sched_pending", status="active"),
+        ),
+        patch("stripe.SubscriptionSchedule.release") as mock_release,
+    ):
+        await release_pending_schedule_for_customer(
+            stripe_customer_id=customer_id,
+            subscription_repo=repo,
+        )
+
+    mock_release.assert_called_once_with("sub_sched_pending")
+    saved = await repo.get_active_for_customer(customer_id)
+    assert saved is not None
+    assert saved.scheduled_plan_id is None
+    assert saved.scheduled_change_at is None
+
+
+@pytest.mark.anyio
+async def test_release_pending_schedule_for_customer_no_schedule_is_idempotent() -> None:
+    """Calling release on a sub that has no schedule attached is a no-op
+    (no Stripe call beyond the retrieve, no local change). Lets the API
+    endpoint be safely called even when nothing is scheduled."""
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    sub = make_subscription(stripe_customer_id=customer_id, stripe_id="sub_clean")
+    await repo.save(sub)
+
+    with (
+        patch(
+            "stripe.Subscription.retrieve",
+            return_value=_stripe_sub_with_schedule(None),
+        ),
+        patch("stripe.SubscriptionSchedule.release") as mock_release,
+    ):
+        await release_pending_schedule_for_customer(
+            stripe_customer_id=customer_id,
+            subscription_repo=repo,
+        )
+
+    mock_release.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_release_pending_schedule_for_customer_no_active_sub_raises() -> None:
+    repo = InMemorySubscriptionRepository()
+    with pytest.raises(SubscriptionNotFoundError):
+        await release_pending_schedule_for_customer(
+            stripe_customer_id=uuid4(),
             subscription_repo=repo,
         )

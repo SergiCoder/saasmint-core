@@ -716,6 +716,50 @@ paths:
             subscription. ``?context=personal`` does not enforce this gate.'
         '404':
           description: No Stripe customer or active paid subscription for the caller.
+  /api/v1/billing/subscriptions/me/scheduled-change/:
+    delete:
+      operationId: billing_subscriptions_me_scheduled_change_destroy
+      description: Cancel a pending plan-switch (deferred downgrade) on the active
+        subscription. Idempotent — returns the unchanged subscription when no schedule
+        exists. Same context-routing and is_billing gate as PATCH/DELETE on ``/me/``.
+      parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for org-member callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
+      tags:
+      - billing
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+        '400':
+          description: The ``?context=`` query param is set to a value other than
+            ``personal``/``team``.
+        '403':
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership.'
+        '404':
+          description: No active subscription in the resolved context.
   /api/v1/currencies/:
     get:
       operationId: currencies_retrieve
@@ -2151,6 +2195,15 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        scheduled_plan:
+          allOf:
+          - $ref: '#/components/schemas/Plan'
+          readOnly: true
+        scheduled_change_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -2164,6 +2217,8 @@ components:
       - id
       - plan
       - quantity
+      - scheduled_change_at
+      - scheduled_plan
       - status
       - trial_ends_at
     SubscriptionListResponse:

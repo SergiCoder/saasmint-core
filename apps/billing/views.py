@@ -1050,9 +1050,15 @@ class SubscriptionView(BillingScopedView):
                         subscription_repo=repos.subscriptions,
                     )
             elif plan_price:
+                # Passing ``new_price_amount`` opts into the deferred-downgrade
+                # path: ``change_plan`` compares against the current Stripe
+                # price unit amount and creates a SubscriptionSchedule when
+                # the new price is lower. Upgrades and same-amount switches
+                # still apply immediately so the user pays the prorated diff.
                 await change_plan(
                     stripe_subscription_id=stripe_sub_id,
                     new_stripe_price_id=plan_price.stripe_price_id,
+                    new_price_amount=plan_price.amount,
                     prorate=data["prorate"],
                     quantity=data.get("quantity"),
                 )
@@ -1130,6 +1136,65 @@ class SubscriptionView(BillingScopedView):
             SubscriptionSerializer(sub, context=_currency_context(request)).data,
             status=status.HTTP_202_ACCEPTED,
         )
+
+
+class ScheduledChangeView(BillingScopedView):
+    """DELETE /api/v1/billing/subscriptions/me/scheduled-change/ — cancel a pending downgrade.
+
+    Idempotent. Releases any active Stripe ``SubscriptionSchedule`` attached
+    to the caller's active sub in the resolved context, restoring "no
+    pending change" state. Safe to call when no schedule exists — returns
+    the current sub unchanged. The corresponding
+    ``subscription_schedule.released`` webhook also clears the local mirror;
+    the view writes the cleared state up front so the immediate refetch
+    reflects it without webhook lag.
+    """
+
+    @extend_schema(
+        parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
+        request=None,
+        responses={
+            200: SubscriptionSerializer,
+            400: OpenApiResponse(
+                description=(
+                    "The ``?context=`` query param is set to a value other than"
+                    " ``personal``/``team``."
+                )
+            ),
+            403: OpenApiResponse(
+                description=(
+                    "``?context=team``: caller is missing ``is_billing=True`` on"
+                    " their active org membership."
+                )
+            ),
+            404: OpenApiResponse(
+                description="No active subscription in the resolved context."
+            ),
+        },
+        description=(
+            "Cancel a pending plan-switch (deferred downgrade) on the active"
+            " subscription. Idempotent — returns the unchanged subscription"
+            " when no schedule exists. Same context-routing and is_billing"
+            " gate as PATCH/DELETE on ``/me/``."
+        ),
+        tags=["billing"],
+    )
+    def delete(self, request: Request) -> Response:
+        from saasmint_core.services.billing import release_pending_schedule_for_customer
+
+        user = get_user(request)
+        context, _org_id = _resolve_mutation_context(request, user)
+
+        async def _do() -> None:
+            customer, _, _ = await _get_customer_and_paid_subscription(user, context=context)
+            await release_pending_schedule_for_customer(
+                stripe_customer_id=customer.id,
+                subscription_repo=get_billing_repos().subscriptions,
+            )
+
+        async_to_sync(_do)()
+        sub = _refetch_subscription_after_mutation(user, context=context)
+        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
 
 def _refetch_subscription_after_mutation(user: User, *, context: str) -> SubscriptionModel:

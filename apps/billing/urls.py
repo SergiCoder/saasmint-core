@@ -9,6 +9,7 @@ from apps.billing.views import (
     PortalSessionView,
     ProductCheckoutSessionView,
     ProductListView,
+    ScheduledChangeView,
     SubscriptionView,
 )
 
@@ -23,5 +24,10 @@ urlpatterns = [
     ),
     path("portal-sessions/", PortalSessionView.as_view(), name="billing-portal"),
     path("subscriptions/me/", SubscriptionView.as_view(), name="billing-subscription"),
+    path(
+        "subscriptions/me/scheduled-change/",
+        ScheduledChangeView.as_view(),
+        name="billing-subscription-scheduled-change",
+    ),
     path("credits/me/", CreditBalanceView.as_view(), name="billing-credits"),
 ]

@@ -2560,3 +2560,121 @@ class TestCreditBalanceView:
         resp = client.get("/api/v1/billing/credits/me/")
         assert resp.status_code == 200
         assert resp.data == {"balances": [{"balance": 42, "scope": "org"}]}
+
+
+@pytest.mark.django_db
+class TestPatchSubscriptionDeferredDowngrade:
+    """The PATCH endpoint now passes ``new_price_amount`` to ``change_plan``
+    so the service can route downgrades to a deferred SubscriptionSchedule.
+    The defer logic itself is covered in core; here we only verify the view
+    forwards the amount correctly."""
+
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_patch_forwards_new_price_amount_to_change_plan(
+        self, mock_change, authed_client, subscription, plan_price
+    ):
+        resp = authed_client.patch(
+            "/api/v1/billing/subscriptions/me/",
+            {"plan_price_id": str(plan_price.id)},
+            format="json",
+        )
+        assert resp.status_code == 200
+        # plan_price fixture is amount=999. Without this kwarg, change_plan
+        # falls back to its legacy immediate-modify path and downgrades would
+        # never defer.
+        assert mock_change.call_args.kwargs["new_price_amount"] == 999
+
+
+@pytest.mark.django_db
+class TestSubscriptionSerializerExposesSchedule:
+    """``GET /billing/subscriptions/me/`` exposes the scheduled-change mirror
+    so the frontend can render the "downgrading on <date>" badge."""
+
+    def test_no_schedule_returns_null_fields(self, authed_client, subscription):
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        result = resp.data["results"][0]
+        assert result["scheduled_plan"] is None
+        assert result["scheduled_change_at"] is None
+
+    def test_schedule_set_returns_target_plan_and_timestamp(
+        self, authed_client, subscription, team_plan
+    ):
+        """When ``scheduled_plan`` + ``scheduled_change_at`` are populated
+        (mirror written by the schedule webhook), the serializer surfaces
+        the nested target plan and the ISO timestamp."""
+        from apps.billing.models import Subscription
+
+        Subscription.objects.filter(id=subscription.id).update(
+            scheduled_plan=team_plan,
+            scheduled_change_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        result = resp.data["results"][0]
+        assert result["scheduled_plan"]["id"] == str(team_plan.id)
+        assert result["scheduled_change_at"].startswith("2026-06-01")
+
+
+@pytest.mark.django_db
+class TestScheduledChangeView:
+    """``DELETE /billing/subscriptions/me/scheduled-change/`` releases an
+    active SubscriptionSchedule so the user keeps their current plan."""
+
+    def test_delete_calls_release_for_personal_context(
+        self, authed_client, subscription
+    ):
+        """Default routing: a non-org-member user hits the personal path,
+        and the view delegates to ``release_pending_schedule_for_customer``."""
+        # The view does a lazy import — patch the symbol on the source module.
+        with patch(
+            "saasmint_core.services.billing.release_pending_schedule_for_customer",
+            new_callable=AsyncMock,
+        ) as mock_release:
+            resp = authed_client.delete(
+                "/api/v1/billing/subscriptions/me/scheduled-change/"
+            )
+        assert resp.status_code == 200
+        mock_release.assert_called_once()
+
+    def test_delete_404_when_no_active_subscription(self, authed_client):
+        """No customer / no sub → 404, no Stripe call attempted."""
+        resp = authed_client.delete(
+            "/api/v1/billing/subscriptions/me/scheduled-change/"
+        )
+        assert resp.status_code == 404
+
+    def test_delete_team_context_403_for_non_billing_member(self, team_plan_price):
+        """Same is_billing gate as the other team-context mutations: a
+        non-billing member cannot release the team sub's schedule."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        member = User.objects.create_user(
+            email="member-rel@example.com", full_name="Plain Member"
+        )
+        org = Org.objects.create(name="RelOrg", slug="rel-org", created_by=member)
+        OrgMember.objects.create(
+            org=org, user=member, role=OrgRole.MEMBER, is_billing=False
+        )
+        customer = StripeCustomer.objects.create(
+            stripe_id="cus_rel_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_rel_team",
+            stripe_customer=customer,
+            status="active",
+            plan=team_plan_price.plan,
+            quantity=2,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        client = APIClient()
+        client.force_authenticate(user=member)
+
+        resp = client.delete(
+            "/api/v1/billing/subscriptions/me/scheduled-change/?context=team"
+        )
+        assert resp.status_code == 403

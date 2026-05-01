@@ -214,6 +214,15 @@ async def cancel_subscription(
     if active is None or active.stripe_id is None:
         raise SubscriptionNotFoundError("No active subscription found to cancel.")
 
+    # If a SubscriptionSchedule is pinning this sub (deferred-downgrade
+    # awaiting period end), Stripe rejects ``Subscription.modify`` and
+    # ``Subscription.cancel`` calls on it — schedules own the lifecycle.
+    # Release the schedule first so the cancel call has unobstructed
+    # control. ``release`` ends the schedule without altering the current
+    # phase: the sub stays on its current price and we then apply the
+    # cancel as normal.
+    await _release_pending_schedule(active.stripe_id)
+
     if at_period_end:
         # 2026-03-25.dahlia replaces `cancel_at_period_end=True` with
         # `cancel_at="min_period_end"`. For single-item subs (the only shape
@@ -225,6 +234,68 @@ async def cancel_subscription(
     else:
         stripe_sub = await asyncio.to_thread(stripe.Subscription.cancel, active.stripe_id)
         await _mirror_cancel_state_from_stripe(active, stripe_sub, subscription_repo)
+
+
+async def _release_pending_schedule(stripe_subscription_id: str) -> str | None:
+    """Release any active SubscriptionSchedule attached to *stripe_subscription_id*.
+
+    Reads the ``schedule`` field on the Stripe subscription (set when a
+    schedule is pinning the sub) and releases it if it's in a releasable
+    state. Returns the released schedule id, or ``None`` when no schedule
+    is attached. Idempotent — re-running after a release is a no-op. The
+    corresponding ``subscription_schedule.released`` webhook clears the
+    local ``scheduled_plan_id``/``scheduled_change_at`` mirror.
+    """
+    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
+    # ``schedule`` is None when the sub isn't pinned by a schedule, otherwise
+    # the schedule id. Stripe's stub types this as ``str | None``.
+    schedule_id = sub.schedule
+    if not schedule_id:
+        return None
+
+    schedule = await asyncio.to_thread(
+        stripe.SubscriptionSchedule.retrieve, str(schedule_id)
+    )
+    # Only ``not_started`` and ``active`` schedules are releasable. Released
+    # / canceled / completed schedules are terminal and Stripe rejects further
+    # release calls on them.
+    if schedule.status not in ("not_started", "active"):
+        return None
+
+    released_id = str(schedule.id)
+    await asyncio.to_thread(stripe.SubscriptionSchedule.release, released_id)
+    return released_id
+
+
+async def release_pending_schedule_for_customer(
+    *,
+    stripe_customer_id: UUID,
+    subscription_repo: SubscriptionRepository,
+) -> None:
+    """Release the SubscriptionSchedule attached to a customer's active sub.
+
+    Used by ``DELETE /billing/subscriptions/me/scheduled-change/`` so users
+    can keep their current plan instead of going through with a previously
+    scheduled downgrade. Raises :class:`SubscriptionNotFoundError` when no
+    active sub exists; silently no-ops when the sub has no pending schedule
+    (the release endpoint is safe to call even after the schedule has
+    already cleared).
+    """
+    active = await subscription_repo.get_active_for_customer(stripe_customer_id)
+    if active is None or active.stripe_id is None:
+        raise SubscriptionNotFoundError("No active subscription found.")
+
+    await _release_pending_schedule(active.stripe_id)
+    # Mirror the cleared state locally so PATCH-then-GET sees the cleared
+    # fields without waiting for the ``subscription_schedule.released``
+    # webhook to land. The webhook arrives later and re-saves the same
+    # cleared state idempotently.
+    if active.scheduled_plan_id is not None or active.scheduled_change_at is not None:
+        await subscription_repo.save(
+            active.model_copy(
+                update={"scheduled_plan_id": None, "scheduled_change_at": None}
+            )
+        )
 
 
 async def resume_subscription(

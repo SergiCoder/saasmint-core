@@ -157,6 +157,19 @@ class Subscription(models.Model):
     # still ``active`` is "scheduled to cancel"; once the cutover happens the
     # webhook flips status to ``canceled`` and sets ``canceled_at``.
     cancel_at = models.DateTimeField(null=True, blank=True)
+    # Pending plan switch from an active Stripe SubscriptionSchedule. Written
+    # by ``subscription_schedule.created/updated`` and cleared by
+    # ``.released/.canceled/.aborted``. PROTECT keeps the FK from silently
+    # dropping a schedule reference if a Plan is removed — that should be a
+    # surfaced integrity error, not a hidden state divergence.
+    scheduled_plan = models.ForeignKey(
+        Plan,
+        on_delete=models.PROTECT,
+        related_name="scheduled_subscriptions",
+        null=True,
+        blank=True,
+    )
+    scheduled_change_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
