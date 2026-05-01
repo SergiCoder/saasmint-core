@@ -21,6 +21,18 @@ class SubscriptionAlreadyActiveError(DomainError):
     """User already has an active subscription."""
 
 
+class NoActiveSubscriptionError(DomainError):
+    """No active subscription exists in the resolved billing context."""
+
+
+class PlanContextMismatchError(DomainError):
+    """Target plan's context does not match the resolved subscription's context."""
+
+
+class AlreadyOnPlanError(DomainError):
+    """The active subscription is already on the requested plan price."""
+
+
 class InsufficientPermissionError(DomainError):
     """User does not have the required org role to perform this action."""
 

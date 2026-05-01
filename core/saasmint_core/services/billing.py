@@ -170,13 +170,23 @@ async def create_billing_portal_session(
     stripe_customer_id: str,
     locale: str = "en",
     return_url: str,
+    flow_data: dict[str, Any] | None = None,
 ) -> str:
-    """Create a Stripe Customer Portal session and return the URL."""
+    """Create a Stripe Customer Portal session and return the URL.
+
+    When ``flow_data`` is provided, the portal deep-links into a focused
+    flow (e.g. ``subscription_update_confirm``) instead of the home page.
+    """
+    params: dict[str, Any] = {
+        "customer": stripe_customer_id,
+        "locale": locale,
+        "return_url": return_url,
+    }
+    if flow_data is not None:
+        params["flow_data"] = flow_data
     session = await asyncio.to_thread(
         stripe.billing_portal.Session.create,
-        customer=stripe_customer_id,
-        locale=locale,  # type: ignore[arg-type]  # Stripe stub overload doesn't match str argument
-        return_url=return_url,
+        **params,
     )
     return session.url
 
