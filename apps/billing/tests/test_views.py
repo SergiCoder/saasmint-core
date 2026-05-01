@@ -510,6 +510,151 @@ class TestPortalSessionView:
 
 
 @pytest.mark.django_db
+class TestPortalSessionContextRouting:
+    """``?context=personal|team`` routes the portal session to the right
+    Stripe customer (rule 5a/5b). Without this, a concurrent biller clicking
+    ``Manage billing`` on the team card would silently land on their personal
+    customer and never see the team sub."""
+
+    def _setup_team_member(self, *, role, is_billing: bool, label: str):
+        """Create a user + org + team customer + authed client. ``label``
+        keeps emails/slugs unique across tests in this class."""
+        from apps.billing.models import StripeCustomer
+        from apps.orgs.models import Org, OrgMember
+        from apps.users.models import User
+
+        user = User.objects.create_user(
+            email=f"portal-{label}@example.com", full_name=f"Portal {label}"
+        )
+        org = Org.objects.create(name=f"PortalOrg{label}", slug=f"portal-{label}", created_by=user)
+        OrgMember.objects.create(org=org, user=user, role=role, is_billing=is_billing)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id=f"cus_team_portal_{label}", org=org, livemode=False
+        )
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return user, org, team_customer, client
+
+    @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
+    def test_team_context_routes_to_team_customer(self, mock_portal):
+        """``?context=team`` for an is_billing owner opens the team
+        portal — the team customer's stripe_id is forwarded, not the
+        user's personal customer."""
+        from apps.orgs.models import OrgRole
+
+        _, _, team_customer, client = self._setup_team_member(
+            role=OrgRole.OWNER, is_billing=True, label="owner"
+        )
+        mock_portal.return_value = "https://billing.stripe.com/team-portal"
+
+        resp = client.post(
+            "/api/v1/billing/portal-sessions/?context=team",
+            {"return_url": "https://localhost/dashboard"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["url"] == "https://billing.stripe.com/team-portal"
+        assert mock_portal.call_args.kwargs["stripe_customer_id"] == team_customer.stripe_id
+
+    def test_team_context_403_for_non_billing_member(self):
+        """An admin or member without ``is_billing=True`` cannot open the
+        team portal — same gate as cancel/resume on the team sub."""
+        from apps.orgs.models import OrgRole
+
+        _, _, _, client = self._setup_team_member(
+            role=OrgRole.ADMIN, is_billing=False, label="admin"
+        )
+
+        resp = client.post(
+            "/api/v1/billing/portal-sessions/?context=team",
+            {"return_url": "https://localhost/dashboard"},
+            format="json",
+        )
+        assert resp.status_code == 403
+
+    def test_team_context_404_when_no_team_customer(self):
+        """An is_billing owner whose org has no ``StripeCustomer`` row yet
+        (subscription wasn't created) gets 404 — we must not auto-mint a
+        personal customer for a team-context request."""
+        from apps.billing.models import StripeCustomer
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        user = User.objects.create_user(
+            email="portal-no-cust@example.com", full_name="No Cust"
+        )
+        org = Org.objects.create(name="NoCustOrg", slug="portal-no-cust", created_by=user)
+        OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
+        # No StripeCustomer row for this org.
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.post(
+            "/api/v1/billing/portal-sessions/?context=team",
+            {"return_url": "https://localhost/dashboard"},
+            format="json",
+        )
+        assert resp.status_code == 404
+        # Sanity: no personal customer was leaked into the wrong scope.
+        assert not StripeCustomer.objects.filter(user=user).exists()
+
+    @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
+    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
+    def test_personal_context_explicit_routes_to_personal_customer(
+        self, mock_get_customer, mock_portal, mock_stripe_customer
+    ):
+        """An org member explicitly passing ``?context=personal`` opens
+        their own personal portal even when a team customer also exists
+        (rule 5b — concurrent biller managing their personal sub)."""
+        from apps.orgs.models import OrgRole
+
+        user, _, _, client = self._setup_team_member(
+            role=OrgRole.OWNER, is_billing=True, label="concurrent"
+        )
+        mock_get_customer.return_value = mock_stripe_customer
+        mock_portal.return_value = "https://billing.stripe.com/personal-portal"
+
+        resp = client.post(
+            "/api/v1/billing/portal-sessions/?context=personal",
+            {"return_url": "https://localhost/dashboard"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["url"] == "https://billing.stripe.com/personal-portal"
+        # get_or_create_customer was called with user_id (personal scope),
+        # not org_id — confirms no scope mixing.
+        assert mock_get_customer.call_args.kwargs["user_id"] == user.id
+
+    @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
+    def test_default_routing_for_org_member_picks_team(self, mock_portal):
+        """Same default as cancel/resume: an org member without
+        ``?context=`` lands on the team portal."""
+        from apps.orgs.models import OrgRole
+
+        _, _, team_customer, client = self._setup_team_member(
+            role=OrgRole.OWNER, is_billing=True, label="default"
+        )
+        mock_portal.return_value = "https://billing.stripe.com/team-default"
+
+        resp = client.post(
+            "/api/v1/billing/portal-sessions/",
+            {"return_url": "https://localhost/dashboard"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert mock_portal.call_args.kwargs["stripe_customer_id"] == team_customer.stripe_id
+
+    def test_invalid_context_value_returns_400(self, authed_client):
+        """``?context=`` accepts only ``personal`` / ``team`` / empty."""
+        resp = authed_client.post(
+            "/api/v1/billing/portal-sessions/?context=enterprise",
+            {"return_url": "https://localhost/dashboard"},
+            format="json",
+        )
+        assert resp.status_code == 400
+
+
+@pytest.mark.django_db
 class TestSubscriptionView:
     def test_returns_active_subscription(self, authed_client, subscription):
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")

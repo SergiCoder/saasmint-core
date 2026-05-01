@@ -486,8 +486,38 @@ class PortalSessionView(BillingScopedView):
     """POST /api/v1/billing/portal-sessions — create a Stripe Customer Portal session."""
 
     @extend_schema(
+        parameters=[_SUBSCRIPTION_CONTEXT_PARAM],
         request=PortalRequestSerializer,
-        responses={200: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()})},
+        responses={
+            200: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()}),
+            400: OpenApiResponse(
+                description=(
+                    "The ``?context=`` query param is set to a value other than"
+                    " ``personal``/``team``."
+                )
+            ),
+            403: OpenApiResponse(
+                description=(
+                    "``?context=team``: caller is missing ``is_billing=True`` on their"
+                    " active org membership — only billing members may open the team"
+                    " portal."
+                )
+            ),
+            404: OpenApiResponse(
+                description=(
+                    "``?context=team``: caller has no team Stripe customer (i.e. no"
+                    " team subscription has been created)."
+                )
+            ),
+        },
+        description=(
+            "Create a Stripe Customer Portal session. The portal scope is selected"
+            " by ``?context=personal|team``; defaults to ``team`` for org-member"
+            " callers and ``personal`` otherwise — same routing as subscription"
+            " mutations on ``/me/``. ``?context=team`` requires ``is_billing=True``"
+            " and an existing team customer. ``?context=personal`` auto-creates"
+            " the user's Stripe customer when missing."
+        ),
         tags=["billing"],
     )
     def post(self, request: Request) -> Response:
@@ -495,16 +525,35 @@ class PortalSessionView(BillingScopedView):
         ser = PortalRequestSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
+        context = _validate_subscription_context(request.query_params.get("context"))
+
         async def _do() -> str:
-            customer = await get_or_create_customer(
-                user_id=user.id,
-                email=str(user.email),
-                name=user.full_name,
-                locale=user.preferred_locale,
-                customer_repo=get_billing_repos().customers,
-            )
+            effective = context or await _default_subscription_context_async(user)
+            if effective == _SUBSCRIPTION_CONTEXT_TEAM:
+                # Same gate as cancel/resume: only is_billing members may open
+                # the team portal (it exposes payment methods, invoices, and
+                # cancel-from-Stripe — not read-only).
+                _require_billing_authority(user, context=_SUBSCRIPTION_CONTEXT_TEAM)
+                customer = await _resolve_billing_customer(
+                    user, context=_SUBSCRIPTION_CONTEXT_TEAM
+                )
+                if customer is None:
+                    raise NotFound("No team Stripe customer found.")
+                stripe_customer_id = customer.stripe_id
+            else:
+                # Personal scope: auto-create the user's own customer if missing.
+                # Mixing scopes (creating a personal customer for a team-portal
+                # request) would silently leak a stub row into the wrong scope.
+                personal = await get_or_create_customer(
+                    user_id=user.id,
+                    email=str(user.email),
+                    name=user.full_name,
+                    locale=user.preferred_locale,
+                    customer_repo=get_billing_repos().customers,
+                )
+                stripe_customer_id = personal.stripe_id
             return await create_billing_portal_session(
-                stripe_customer_id=customer.stripe_id,
+                stripe_customer_id=stripe_customer_id,
                 locale=user.preferred_locale,
                 return_url=ser.validated_data["return_url"],
             )
