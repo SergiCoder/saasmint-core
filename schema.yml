@@ -452,8 +452,24 @@ paths:
   /api/v1/billing/portal-sessions/:
     post:
       operationId: billing_portal_sessions_create
-      description: POST /api/v1/billing/portal-sessions — create a Stripe Customer
-        Portal session.
+      description: Create a Stripe Customer Portal session. The portal scope is selected
+        by ``?context=personal|team``; defaults to ``team`` for org-member callers
+        and ``personal`` otherwise — same routing as subscription mutations on ``/me/``.
+        ``?context=team`` requires ``is_billing=True`` and an existing team customer.
+        ``?context=personal`` auto-creates the user's Stripe customer when missing.
+      parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for org-member callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
       tags:
       - billing
       requestBody:
@@ -478,6 +494,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/PortalResponse'
           description: ''
+        '400':
+          description: The ``?context=`` query param is set to a value other than
+            ``personal``/``team``.
+        '403':
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership — only billing members may open the team portal.'
+        '404':
+          description: '``?context=team``: caller has no team Stripe customer (i.e.
+            no team subscription has been created).'
   /api/v1/billing/product-checkout-sessions/:
     post:
       operationId: billing_product_checkout_sessions_create
