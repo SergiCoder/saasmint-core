@@ -488,7 +488,7 @@ def _validate_seat_limit(org: Org) -> None:
         org=org, status=InvitationStatus.PENDING
     ).count()
 
-    if current_members + pending_invitations >= sub.quantity:
+    if current_members + pending_invitations >= sub.seat_limit:
         raise _SeatLimitReached
 
 

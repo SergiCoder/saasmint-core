@@ -55,7 +55,7 @@ class TestSubscriptionSerializer:
     def test_serializes_fields(self, subscription):
         data = SubscriptionSerializer(subscription).data
         assert data["status"] == "active"
-        assert data["quantity"] == 1
+        assert data["seat_limit"] == 1
         assert "current_period_start" in data
         assert "current_period_end" in data
         assert "created_at" in data
@@ -109,7 +109,7 @@ class TestCheckoutRequestSerializer:
         )
         assert not ser.is_valid()
 
-    def test_quantity_defaults_to_1(self, settings):
+    def test_seat_limit_defaults_to_1(self, settings):
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         ser = CheckoutRequestSerializer(
             data={
@@ -119,20 +119,20 @@ class TestCheckoutRequestSerializer:
             }
         )
         ser.is_valid()
-        assert ser.validated_data["quantity"] == 1
+        assert ser.validated_data["seat_limit"] == 1
 
-    def test_quantity_min_value(self, settings):
+    def test_seat_limit_min_value(self, settings):
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
         ser = CheckoutRequestSerializer(
             data={
                 "plan_price_id": _PLAN_PRICE_UUID,
-                "quantity": 0,
+                "seat_limit": 0,
                 "success_url": "https://example.com/success",
                 "cancel_url": "https://example.com/cancel",
             }
         )
         assert not ser.is_valid()
-        assert "quantity" in ser.errors
+        assert "seat_limit" in ser.errors
 
     def test_allowed_host_wildcard_excluded(self, settings):
         settings.CORS_ALLOW_ALL_ORIGINS = False
@@ -205,40 +205,42 @@ class TestUpdateSubscriptionSerializer:
         assert ser.validated_data["prorate"] is False
 
     def test_valid_seat_update(self):
-        ser = UpdateSubscriptionSerializer(data={"quantity": 5})
+        ser = UpdateSubscriptionSerializer(data={"seat_limit": 5})
         assert ser.is_valid(), ser.errors
 
     def test_both_fields(self):
-        ser = UpdateSubscriptionSerializer(data={"plan_price_id": _PLAN_PRICE_UUID, "quantity": 5})
+        ser = UpdateSubscriptionSerializer(
+            data={"plan_price_id": _PLAN_PRICE_UUID, "seat_limit": 5}
+        )
         assert ser.is_valid(), ser.errors
 
     def test_empty_body_rejected(self):
         ser = UpdateSubscriptionSerializer(data={})
         assert not ser.is_valid()
 
-    def test_invalid_quantity(self):
-        ser = UpdateSubscriptionSerializer(data={"quantity": 0})
+    def test_invalid_seat_limit(self):
+        ser = UpdateSubscriptionSerializer(data={"seat_limit": 0})
         assert not ser.is_valid()
-        assert "quantity" in ser.errors
+        assert "seat_limit" in ser.errors
 
-    def test_quantity_at_min_boundary(self):
-        ser = UpdateSubscriptionSerializer(data={"quantity": 1})
+    def test_seat_limit_at_min_boundary(self):
+        ser = UpdateSubscriptionSerializer(data={"seat_limit": 1})
         assert ser.is_valid(), ser.errors
-        assert ser.validated_data["quantity"] == 1
+        assert ser.validated_data["seat_limit"] == 1
 
-    def test_negative_quantity_rejected(self):
-        ser = UpdateSubscriptionSerializer(data={"quantity": -1})
+    def test_negative_seat_limit_rejected(self):
+        ser = UpdateSubscriptionSerializer(data={"seat_limit": -1})
         assert not ser.is_valid()
-        assert "quantity" in ser.errors
+        assert "seat_limit" in ser.errors
 
-    def test_quantity_at_max_boundary(self):
-        ser = UpdateSubscriptionSerializer(data={"quantity": 10000})
+    def test_seat_limit_at_max_boundary(self):
+        ser = UpdateSubscriptionSerializer(data={"seat_limit": 10000})
         assert ser.is_valid(), ser.errors
 
-    def test_quantity_above_max_rejected(self):
-        ser = UpdateSubscriptionSerializer(data={"quantity": 10001})
+    def test_seat_limit_above_max_rejected(self):
+        ser = UpdateSubscriptionSerializer(data={"seat_limit": 10001})
         assert not ser.is_valid()
-        assert "quantity" in ser.errors
+        assert "seat_limit" in ser.errors
 
     def test_only_prorate_without_action_rejected(self):
         ser = UpdateSubscriptionSerializer(data={"prorate": True})
@@ -260,18 +262,18 @@ class TestUpdateSubscriptionSerializer:
         )
         assert not ser.is_valid()
 
-    def test_cancel_at_period_end_with_quantity_rejected(self):
-        ser = UpdateSubscriptionSerializer(data={"quantity": 3, "cancel_at_period_end": False})
+    def test_cancel_at_period_end_with_seat_limit_rejected(self):
+        ser = UpdateSubscriptionSerializer(data={"seat_limit": 3, "cancel_at_period_end": False})
         assert not ser.is_valid()
 
     def test_both_fields_preserves_values(self):
         ser = UpdateSubscriptionSerializer(
-            data={"plan_price_id": _PLAN_PRICE_UUID, "quantity": 3, "prorate": False}
+            data={"plan_price_id": _PLAN_PRICE_UUID, "seat_limit": 3, "prorate": False}
         )
         assert ser.is_valid(), ser.errors
         # UUIDField parses the string into a uuid.UUID instance
         assert ser.validated_data["plan_price_id"] == UUID(_PLAN_PRICE_UUID)
-        assert ser.validated_data["quantity"] == 3
+        assert ser.validated_data["seat_limit"] == 3
         assert ser.validated_data["prorate"] is False
 
 

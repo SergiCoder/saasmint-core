@@ -278,7 +278,7 @@ async def sync_subscription_from_data(
         user_id=customer.user_id,  # None for org subs; mirrored so user-scoped queries work
         status=SubscriptionStatus(str(sub_data["status"])),
         plan_id=plan_price.plan_id,
-        quantity=int(first_item.get("quantity") or 1),
+        seat_limit=int(first_item.get("quantity") or 1),
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
         current_period_start=datetime.fromtimestamp(period_start, tz=UTC),
         current_period_end=datetime.fromtimestamp(period_end, tz=UTC),

@@ -209,7 +209,7 @@ class TestOnTeamCheckoutCompleted:
             user=user,
             status="active",
             plan=personal_plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -254,7 +254,7 @@ class TestOnTeamCheckoutCompleted:
             user=user,
             status="active",
             plan=personal_plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -401,7 +401,7 @@ class TestPersistTeamSubscription:
         assert sub.stripe_customer_id == customer.id
         assert sub.user_id is None  # team sub — no user mirror
         assert sub.plan_id == team_plan.id
-        assert sub.quantity == 2
+        assert sub.seat_limit == 2
         mock_retrieve.assert_called_once_with("sub_team_raced")
 
     @patch("apps.orgs.services.stripe.Subscription.retrieve")
@@ -446,7 +446,7 @@ class TestPersistTeamSubscription:
 
         rows = Subscription.objects.filter(stripe_id="sub_team_idem")
         assert rows.count() == 1
-        assert rows.first().quantity == 5
+        assert rows.first().seat_limit == 5
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +558,7 @@ class TestDecrementSubscriptionSeats:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            quantity=3,
+            seat_limit=3,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -605,7 +605,7 @@ class TestCancelTeamSubscription:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -634,7 +634,7 @@ class TestCancelTeamSubscription:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )

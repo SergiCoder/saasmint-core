@@ -390,7 +390,7 @@ async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
     await process_stored_event(event, stripe_id, repos)
 
     sub = next(iter(subscription_repo._store.values()))
-    assert sub.quantity == 1
+    assert sub.seat_limit == 1
 
 
 @pytest.mark.anyio
@@ -424,7 +424,7 @@ async def test_sync_subscription_with_explicit_quantity() -> None:
     await process_stored_event(event, stripe_id, repos)
 
     sub = next(iter(subscription_repo._store.values()))
-    assert sub.quantity == 5
+    assert sub.seat_limit == 5
 
 
 @pytest.mark.anyio

@@ -1335,7 +1335,7 @@ components:
         plan_price_id:
           type: string
           format: uuid
-        quantity:
+        seat_limit:
           type: integer
           maximum: 10000
           minimum: 1
@@ -1759,7 +1759,7 @@ components:
         prorate:
           type: boolean
           default: true
-        quantity:
+        seat_limit:
           type: integer
           maximum: 10000
           minimum: 1
@@ -2145,8 +2145,16 @@ components:
           allOf:
           - $ref: '#/components/schemas/Plan'
           readOnly: true
-        quantity:
+        seat_limit:
           type: integer
+          readOnly: true
+        seats_used:
+          type: integer
+          description: |-
+            Return the seat count currently in use.
+
+            Personal subs are always 1 (the owning user). Team subs count
+            ``OrgMember`` rows on the org tied to the sub's StripeCustomer.
           readOnly: true
         trial_ends_at:
           type: string
@@ -2192,9 +2200,10 @@ components:
       - current_period_start
       - id
       - plan
-      - quantity
       - scheduled_change_at
       - scheduled_plan
+      - seat_limit
+      - seats_used
       - status
       - trial_ends_at
     SubscriptionListResponse:

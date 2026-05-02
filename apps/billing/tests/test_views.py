@@ -150,7 +150,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "trial_period_days": 14,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
@@ -228,7 +228,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "My Org",
@@ -252,7 +252,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Second Org",
@@ -320,7 +320,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 # no org_name
@@ -350,7 +350,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "My Team Org",
@@ -381,7 +381,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Keep Personal",
@@ -823,7 +823,7 @@ class TestUpdateSubscription:
     def test_updates_seats(self, mock_seats, authed_client, team_subscription):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 5},
+            {"seat_limit": 5},
             format="json",
         )
         assert resp.status_code == 200
@@ -837,7 +837,7 @@ class TestUpdateSubscription:
         with patch("apps.billing.views.change_plan", new_callable=AsyncMock) as mock_change:
             authed_client.patch(
                 "/api/v1/billing/subscriptions/me/",
-                {"quantity": 3},
+                {"seat_limit": 3},
                 format="json",
             )
             mock_change.assert_not_called()
@@ -848,7 +848,7 @@ class TestUpdateSubscription:
         """Personal plans must not accept multi-seat updates via the seat-only path."""
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 5},
+            {"seat_limit": 5},
             format="json",
         )
         assert resp.status_code == 400
@@ -861,7 +861,7 @@ class TestUpdateSubscription:
         """Team plans accept a single seat (solo org owner starting a team)."""
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 1},
+            {"seat_limit": 1},
             format="json",
         )
         assert resp.status_code == 200
@@ -870,7 +870,7 @@ class TestUpdateSubscription:
     def test_invalid_quantity_returns_400(self, authed_client, subscription):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 0},
+            {"seat_limit": 0},
             format="json",
         )
         assert resp.status_code == 400
@@ -882,7 +882,7 @@ class TestUpdateSubscription:
     def test_no_customer_returns_404(self, authed_client, user):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 5},
+            {"seat_limit": 5},
             format="json",
         )
         assert resp.status_code == 404
@@ -890,7 +890,7 @@ class TestUpdateSubscription:
     def test_customer_without_subscription_returns_404(self, authed_client, stripe_customer):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 5},
+            {"seat_limit": 5},
             format="json",
         )
         assert resp.status_code == 404
@@ -901,7 +901,7 @@ class TestUpdateSubscription:
     ):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+            {"plan_price_id": str(team_plan_price.id), "seat_limit": 3},
             format="json",
         )
         assert resp.status_code == 200
@@ -917,7 +917,7 @@ class TestUpdateSubscription:
         with patch("apps.billing.views.update_seat_count", new_callable=AsyncMock) as mock_seats:
             authed_client.patch(
                 "/api/v1/billing/subscriptions/me/",
-                {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+                {"plan_price_id": str(team_plan_price.id), "seat_limit": 3},
                 format="json",
             )
             mock_seats.assert_not_called()
@@ -987,7 +987,7 @@ class TestUpdateSubscription:
 
     def test_unauthenticated_rejected(self):
         client = APIClient()
-        resp = client.patch("/api/v1/billing/subscriptions/me/", {"quantity": 5}, format="json")
+        resp = client.patch("/api/v1/billing/subscriptions/me/", {"seat_limit": 5}, format="json")
         assert resp.status_code in (401, 403)
 
 
@@ -1055,7 +1055,7 @@ class TestQuantityValidationOnCheckout:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
             },
@@ -1081,7 +1081,7 @@ class TestQuantityValidationOnCheckout:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
-                "quantity": 1,
+                "seat_limit": 1,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Mini Org",
@@ -1109,7 +1109,7 @@ class TestQuantityValidationOnCheckout:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Min Org",
@@ -1129,7 +1129,7 @@ class TestUpdateSubscriptionQuantityValidation:
     ):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"plan_price_id": str(plan_price.id), "quantity": 2},
+            {"plan_price_id": str(plan_price.id), "seat_limit": 2},
             format="json",
         )
         assert resp.status_code == 400
@@ -1280,7 +1280,7 @@ def team_org_setup(org_member_user, team_plan, team_plan_price):
         stripe_customer=customer,
         status="active",
         plan=team_plan,
-        quantity=3,
+        seat_limit=3,
         current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
         current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
     )
@@ -1357,7 +1357,7 @@ class TestConcurrentSubscriptions:
             stripe_customer=team_customer,
             status="active",
             plan=team_plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -1370,7 +1370,7 @@ class TestConcurrentSubscriptions:
             user=user,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2025, 12, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 1, 1, tzinfo=UTC),
         )
@@ -1505,7 +1505,7 @@ class TestConcurrentSubscriptions:
             stripe_customer=team_customer,
             status="active",
             plan=team_plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -1518,7 +1518,7 @@ class TestConcurrentSubscriptions:
             user=member,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2025, 12, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 1, 1, tzinfo=UTC),
         )
@@ -1690,7 +1690,7 @@ class TestConcurrentSubscriptions:
             user=user,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -1738,7 +1738,7 @@ class TestBillingAuthorityOnMutations:
     ):
         resp = org_member_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+            {"plan_price_id": str(team_plan_price.id), "seat_limit": 3},
             format="json",
         )
         assert resp.status_code == 200
@@ -1759,7 +1759,7 @@ class TestBillingAuthorityOnMutations:
 
         resp = client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+            {"plan_price_id": str(team_plan_price.id), "seat_limit": 3},
             format="json",
         )
         assert resp.status_code == 403
@@ -2324,7 +2324,7 @@ class TestScheduledChangeView:
             stripe_customer=customer,
             status="active",
             plan=team_plan_price.plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )

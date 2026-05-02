@@ -81,7 +81,7 @@ class TestDashboardViewContext:
             stripe_customer=stripe_customer,
             status="canceled",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -101,7 +101,7 @@ class TestDashboardViewContext:
             stripe_customer=stripe_customer,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2025, 11, 1, tzinfo=UTC),
             current_period_end=datetime(2025, 12, 1, tzinfo=UTC),
         )
@@ -110,7 +110,7 @@ class TestDashboardViewContext:
             stripe_customer=stripe_customer,
             status="active",
             plan=plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -153,7 +153,7 @@ class TestDashboardTemplateSubscriptionBadges:
             stripe_customer=stripe_customer,
             status="trialing",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -173,7 +173,7 @@ class TestDashboardTemplateSubscriptionBadges:
             stripe_customer=stripe_customer,
             status="past_due",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -193,7 +193,7 @@ class TestDashboardTemplateSubscriptionBadges:
             stripe_customer=stripe_customer,
             status="trialing",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
             trial_ends_at=datetime(2026, 1, 15, tzinfo=UTC),

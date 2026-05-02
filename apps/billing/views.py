@@ -411,7 +411,7 @@ class CheckoutSessionView(BillingScopedView):
         data = ser.validated_data
 
         plan_price = _get_active_plan_price(data["plan_price_id"])
-        quantity = _validate_quantity_for_plan(plan_price, data["quantity"])
+        quantity = _validate_quantity_for_plan(plan_price, data["seat_limit"])
 
         is_team = plan_price.plan.context == PlanContext.TEAM
 
@@ -940,8 +940,8 @@ class SubscriptionView(BillingScopedView):
             _get_active_plan_price(data["plan_price_id"]) if "plan_price_id" in data else None
         )
 
-        if plan_price and "quantity" in data:
-            _validate_quantity_for_plan(plan_price, data["quantity"])
+        if plan_price and "seat_limit" in data:
+            _validate_quantity_for_plan(plan_price, data["seat_limit"])
 
         async def _do() -> None:
             repos = get_billing_repos()
@@ -971,17 +971,19 @@ class SubscriptionView(BillingScopedView):
                     new_stripe_price_id=plan_price.stripe_price_id,
                     new_price_amount=plan_price.amount,
                     prorate=data["prorate"],
-                    quantity=data.get("quantity"),
+                    quantity=data.get("seat_limit"),
                 )
-            elif "quantity" in data:
+            elif "seat_limit" in data:
                 # Seat-only update: enforce per-context seat rules against the
                 # current subscription's plan, otherwise a personal sub could
                 # be bumped to N seats and a team sub down to 1.
                 current_plan = await PlanModel.objects.only("context").aget(id=sub.plan_id)
-                _validate_quantity_for_context(PlanContext(current_plan.context), data["quantity"])
+                _validate_quantity_for_context(
+                    PlanContext(current_plan.context), data["seat_limit"]
+                )
                 await update_seat_count(
                     stripe_subscription_id=stripe_sub_id,
-                    quantity=data["quantity"],
+                    quantity=data["seat_limit"],
                 )
 
         async_to_sync(_do)()
