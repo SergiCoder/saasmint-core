@@ -30,7 +30,7 @@ async def test_change_plan_with_proration() -> None:
 
     mock_modify.assert_called_once_with(
         "sub_abc",
-        items=[{"id": "si_abc", "price": "price_new"}],
+        items=[{"id": "si_abc", "price": "price_new", "quantity": 1}],
         proration_behavior="create_prorations",
     )
 
@@ -54,8 +54,36 @@ async def test_change_plan_without_proration() -> None:
 
     mock_modify.assert_called_once_with(
         "sub_abc",
-        items=[{"id": "si_def", "price": "price_new"}],
+        items=[{"id": "si_def", "price": "price_new", "quantity": 1}],
         proration_behavior="none",
+    )
+
+
+@pytest.mark.anyio
+async def test_change_plan_preserves_current_seat_count_when_quantity_omitted() -> None:
+    """Regression: when the caller doesn't pass ``quantity``, the current
+    seat count from the Stripe item must be carried into the modify call.
+    Otherwise Stripe defaults the item to 1 and silently wipes seats on a
+    plan switch."""
+    mock_sub = MagicMock()
+    mock_sub.__getitem__ = MagicMock(
+        side_effect=lambda k: {"items": {"data": [{"id": "si_keep", "quantity": 7}]}}[k]
+    )
+
+    with (
+        patch("stripe.Subscription.retrieve", return_value=mock_sub),
+        patch("stripe.Subscription.modify") as mock_modify,
+    ):
+        await change_plan(
+            stripe_subscription_id="sub_abc",
+            new_stripe_price_id="price_new",
+            prorate=True,
+        )
+
+    mock_modify.assert_called_once_with(
+        "sub_abc",
+        items=[{"id": "si_keep", "price": "price_new", "quantity": 7}],
+        proration_behavior="create_prorations",
     )
 
 

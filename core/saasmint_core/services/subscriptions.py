@@ -103,9 +103,15 @@ async def change_plan(
 
     proration: Literal["create_prorations", "none"] = "create_prorations" if prorate else "none"
 
-    item: SubscriptionModifyParamsItem = {"id": item_id, "price": new_stripe_price_id}
-    if quantity is not None:
-        item["quantity"] = quantity
+    # Always carry the current seat count forward. Stripe's Subscription.modify
+    # treats a missing ``quantity`` on an item update as 1 — silently wiping
+    # the seats on a plan switch when the caller didn't pass one explicitly.
+    effective_quantity = quantity if quantity is not None else current_quantity
+    item: SubscriptionModifyParamsItem = {
+        "id": item_id,
+        "price": new_stripe_price_id,
+        "quantity": effective_quantity,
+    }
 
     await asyncio.to_thread(
         stripe.Subscription.modify,
