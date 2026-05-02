@@ -497,6 +497,60 @@ class TestDeleteOrg:
         assert not User.objects.filter(id=member_id).exists()
         assert not OrgMember.objects.filter(org_id=org_id).exists()
 
+    @patch("apps.orgs.services._cancel_team_subscription")
+    def test_spares_user_with_active_personal_subscription(self, mock_cancel):
+        """A member whose only org is this one but who also has an active
+        personal subscription must keep their account — otherwise we'd nuke
+        a user still paying for their own personal plan."""
+        from datetime import UTC, datetime
+
+        from apps.billing.models import (
+            Plan,
+            PlanContext,
+            PlanInterval,
+            PlanPrice,
+            PlanTier,
+            StripeCustomer,
+            Subscription,
+        )
+
+        user = User.objects.create_user(email="solo@example.com", full_name="Solo")
+        org = Org.objects.create(name="SoloOrg", slug="solo-org", created_by=user)
+        OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
+
+        personal_customer = StripeCustomer.objects.create(
+            stripe_id="cus_personal_solo", user=user, livemode=False
+        )
+        personal_plan = Plan.objects.create(
+            name="Personal Basic Monthly",
+            context=PlanContext.PERSONAL,
+            tier=PlanTier.BASIC,
+            interval=PlanInterval.MONTH,
+            is_active=True,
+        )
+        PlanPrice.objects.create(
+            plan=personal_plan, stripe_price_id="price_personal_solo", amount=999
+        )
+        Subscription.objects.create(
+            stripe_id="sub_personal_solo",
+            stripe_customer=personal_customer,
+            user=user,
+            status="active",
+            plan=personal_plan,
+            seat_limit=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        user_id = user.id
+        org_id = org.id
+
+        delete_org(org)
+
+        assert not Org.objects.filter(id=org_id).exists()
+        assert not OrgMember.objects.filter(org_id=org_id).exists()
+        # User is preserved — their personal subscription is still active.
+        assert User.objects.filter(id=user_id).exists()
+
 
 # ---------------------------------------------------------------------------
 # delete_orgs_created_by_user

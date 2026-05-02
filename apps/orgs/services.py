@@ -314,21 +314,33 @@ def _delete_org_db_only(org: Org) -> None:
             status=InvitationStatus.CANCELLED
         )
 
-        # Delete only users whose *only* membership is in this org — users
-        # who also belong to another org must keep their account, otherwise
-        # deleting org A would wipe accounts still active in org B.
-        # The NOT EXISTS subquery is evaluated in the DB so we don't need to
-        # materialize thousands of UUIDs into Python for the IN clause.
+        # Delete only users whose *only* membership is in this org **and**
+        # who don't have an active personal subscription — otherwise
+        # deleting org A would wipe accounts still active in org B, or
+        # silently nuke a user who's still paying for their own personal plan.
+        # The NOT EXISTS subqueries are evaluated in the DB so we don't need
+        # to materialize thousands of UUIDs into Python for the IN clause.
+        from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+        from apps.billing.models import Subscription as SubscriptionModel
+
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id=org_id
         )
-        single_org_member_user_ids = (
+        personal_subs = SubscriptionModel.objects.filter(
+            user_id=OuterRef("user_id"),
+            stripe_customer__user_id=OuterRef("user_id"),
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+        )
+        deletable_user_ids = (
             OrgMember.objects.filter(org=org)
-            .annotate(has_other=Exists(other_memberships))
-            .filter(has_other=False)
+            .annotate(
+                has_other=Exists(other_memberships),
+                has_personal_sub=Exists(personal_subs),
+            )
+            .filter(has_other=False, has_personal_sub=False)
             .values("user_id")
         )
-        User.objects.filter(id__in=Subquery(single_org_member_user_ids)).delete()
+        User.objects.filter(id__in=Subquery(deletable_user_ids)).delete()
         OrgMember.objects.filter(org=org).delete()
 
         org.delete()
