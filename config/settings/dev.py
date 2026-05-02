@@ -1,5 +1,7 @@
 """Development settings — debug on, CORS open, relaxed security."""
 
+from typing import cast
+
 from config.settings.base import *  # noqa: F403  # star import intentional for settings inheritance pattern
 
 DEBUG = True
@@ -27,3 +29,13 @@ CSRF_COOKIE_SECURE = True
 # without running ``collectstatic`` or rebuilding the container.
 WHITENOISE_USE_FINDERS = True
 WHITENOISE_AUTOREFRESH = True
+
+# Dev-only throttle bump: Next.js hot-reload + an attached debugger fan out
+# many requests per page render, easily blowing through the prod ``user``
+# rate (1000/hour) within a normal coding session. Lift it here so dev
+# doesn't get locked out for the rest of the hour; prod stays tight.
+_throttle_rates = cast(
+    "dict[str, str]",
+    REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"],  # noqa: F405
+)
+_throttle_rates["user"] = "5000/hour"
