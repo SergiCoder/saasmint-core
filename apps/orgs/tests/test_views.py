@@ -289,10 +289,8 @@ class TestOrgMemberDetailViewPATCH:
 
 @pytest.mark.django_db
 class TestOrgMemberDetailViewDELETE:
-    @patch("apps.orgs.services.decrement_subscription_seats")
     def test_owner_removes_member_and_deletes_account(
         self,
-        mock_seats,
         authed_client,
         org,
         owner_membership,
@@ -310,10 +308,8 @@ class TestOrgMemberDetailViewDELETE:
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{user.id}/")
         assert resp.status_code == 403
 
-    @patch("apps.orgs.services.decrement_subscription_seats")
     def test_admin_removes_member(
         self,
-        mock_seats,
         admin_client,
         org,
         owner_membership,

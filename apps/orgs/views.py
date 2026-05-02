@@ -304,17 +304,10 @@ class OrgMemberDetailView(OrgsScopedView):
             target_role=CoreOrgRole(target.role),
         )
 
-        from apps.orgs.tasks import decrement_subscription_seats_task
-
         target_user = target.user
         with transaction.atomic():
             target.delete()
             target_user.delete()
-            # Stripe call must run only after DB commit; otherwise a rollback
-            # would leave Stripe seat count out of sync with actual members.
-            # Offload to Celery so the 500-1500ms Stripe round-trip doesn't
-            # sit in the request path.
-            transaction.on_commit(lambda: decrement_subscription_seats_task.delay(str(org_id)))
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 

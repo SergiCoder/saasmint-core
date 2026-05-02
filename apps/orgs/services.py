@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from apps.billing.models import Subscription as SubscriptionModel
 
 import stripe
-from asgiref.sync import async_to_sync, sync_to_async
+from asgiref.sync import sync_to_async
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 
@@ -418,38 +418,6 @@ def _get_active_stripe_sub(org_id: UUID) -> SubscriptionModel | None:
         .order_by("-created_at")
         .first()
     )
-
-
-def decrement_subscription_seats(org_id: UUID) -> None:
-    """Decrement the team subscription's seat count to match member count."""
-    from saasmint_core.services.subscriptions import update_seat_count
-
-    sub = _get_active_stripe_sub(org_id)
-    if sub is None or sub.stripe_id is None:
-        return
-
-    # Lock the OrgMember rows while we compute the new seat count so two
-    # concurrent member removals can't both read the pre-decrement total
-    # and then push the same (stale) count to Stripe. Snapshot the count
-    # inside the txn and push to Stripe only after commit to avoid holding
-    # DB locks across the external API call.
-    with transaction.atomic():
-        new_quantity = OrgMember.objects.select_for_update().filter(org_id=org_id).count()
-
-    if new_quantity < 1:
-        return
-
-    try:
-        async_to_sync(update_seat_count)(
-            stripe_subscription_id=sub.stripe_id,
-            quantity=new_quantity,
-        )
-    except (stripe.StripeError, ValueError):
-        logger.exception(
-            "Failed to update seat count to %d for sub %s",
-            new_quantity,
-            sub.stripe_id,
-        )
 
 
 def _cancel_team_subscription(org: Org) -> None:

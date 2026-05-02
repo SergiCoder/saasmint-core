@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
@@ -13,7 +13,6 @@ from apps.orgs.models import Org, OrgMember, OrgRole
 from apps.orgs.services import (
     _cancel_team_subscription,
     _create_org_with_owner,
-    decrement_subscription_seats,
     delete_org,
     delete_org_on_subscription_cancel,
     delete_orgs_created_by_user,
@@ -581,50 +580,6 @@ class TestDeleteOrgsCreatedByUser:
 
         assert not Org.objects.filter(id=org1_id).exists()
         assert not Org.objects.filter(id=org2_id).exists()
-
-
-# ---------------------------------------------------------------------------
-# decrement_subscription_seats
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestDecrementSubscriptionSeats:
-    def test_no_stripe_customer_is_noop(self):
-        """No error when org has no Stripe customer."""
-        decrement_subscription_seats(uuid4())
-
-    @patch("apps.orgs.services.async_to_sync")
-    def test_calls_update_seat_count(self, mock_async_to_sync):
-        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
-
-        user = User.objects.create_user(
-            email="seats@example.com",
-            full_name="Seats",
-        )
-        org = Org.objects.create(name="Seats Org", slug="seats-org", created_by=user)
-        OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER)
-        customer = StripeCustomer.objects.create(stripe_id="cus_seats", org=org, livemode=False)
-        plan = Plan.objects.create(name="Team", context="team", interval="month", is_active=True)
-        PlanPrice.objects.create(plan=plan, stripe_price_id="price_seats", amount=1500)
-        Subscription.objects.create(
-            stripe_id="sub_seats",
-            stripe_customer=customer,
-            status="active",
-            plan=plan,
-            seat_limit=3,
-            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
-        )
-
-        mock_update = MagicMock()
-        mock_async_to_sync.return_value = mock_update
-
-        decrement_subscription_seats(org.id)
-
-        mock_update.assert_called_once()
-        call_kwargs = mock_update.call_args
-        assert call_kwargs.kwargs["quantity"] == 1  # 1 member (owner)
 
 
 # ---------------------------------------------------------------------------

@@ -21,14 +21,6 @@ def send_invitation_email_task(email: str, token: str, org_name: str, inviter_na
 
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
-def decrement_subscription_seats_task(org_id: str) -> None:
-    """Decrement a team subscription's seat count after a member was removed."""
-    from apps.orgs.services import decrement_subscription_seats
-
-    decrement_subscription_seats(UUID(org_id))
-
-
-@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
 def delete_org_on_subscription_cancel_task(org_id: str) -> None:
     """Hard-delete an org and its cascade off the webhook request path.
 
