@@ -18,6 +18,21 @@ from stripe.params._subscription_modify_params import (
 ChangePlanResult = Literal["applied_now", "scheduled_for_period_end"]
 
 
+def _safe_get(obj: object, key: str) -> object:
+    """Return ``obj[key]`` or ``None`` if missing.
+
+    ``stripe.StripeObject`` instances support ``__getitem__`` but not ``.get``
+    — calling ``.get`` triggers ``__getattr__`` which raises ``AttributeError``
+    instead of returning a default. Plain dicts also work via this helper.
+    """
+    if obj is None:
+        return None
+    try:
+        return obj[key]  # type: ignore[index]
+    except (KeyError, TypeError):
+        return None
+
+
 async def change_plan(
     *,
     stripe_subscription_id: str,
@@ -58,17 +73,16 @@ async def change_plan(
     sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
     first_item = sub["items"]["data"][0]
     item_id = str(first_item["id"])
-    current_quantity = int(first_item.get("quantity") or 1)
+    raw_quantity = _safe_get(first_item, "quantity")
+    current_quantity = int(raw_quantity) if isinstance(raw_quantity, int) else 1
 
     # Only inspect ``price.unit_amount`` when the caller actually opted into
     # downgrade detection. Legacy callers pass dicts like {"id": ...} with no
     # ``price`` key — keep that path KeyError-free.
     is_downgrade = False
     if new_price_amount is not None:
-        price_obj = first_item.get("price")
-        current_amount = (
-            price_obj.get("unit_amount") if isinstance(price_obj, dict) else None
-        )
+        price_obj = _safe_get(first_item, "price")
+        current_amount = _safe_get(price_obj, "unit_amount") if price_obj is not None else None
         is_downgrade = (
             isinstance(current_amount, int) and new_price_amount < current_amount
         )
@@ -117,13 +131,13 @@ async def _schedule_downgrade_at_period_end(
     matching the current state, which we then ``modify`` to append phase 2.
     """
     first_item = sub["items"]["data"][0]
-    period_end = first_item.get("current_period_end")
+    period_end = _safe_get(first_item, "current_period_end")
     if period_end is None:
         # Older Stripe API versions placed period bounds at the subscription
         # level rather than the item. ``stripe.Subscription`` is subscriptable
         # at runtime even though the stub doesn't declare ``__getitem__`` for
         # the period field — fall back via dict access.
-        period_end = sub.get("current_period_end")  # type: ignore[attr-defined]
+        period_end = _safe_get(sub, "current_period_end")
     if not isinstance(period_end, int):
         raise ValueError(
             f"Subscription {sub['id']} missing integer current_period_end; "
@@ -132,9 +146,9 @@ async def _schedule_downgrade_at_period_end(
 
     # Same fallback logic as current_period_end: read from item first, then
     # subscription level for older API versions.
-    period_start = first_item.get("current_period_start")
+    period_start = _safe_get(first_item, "current_period_start")
     if period_start is None:
-        period_start = sub.get("current_period_start")  # type: ignore[attr-defined]
+        period_start = _safe_get(sub, "current_period_start")
     if not isinstance(period_start, int):
         raise ValueError(
             f"Subscription {sub['id']} missing integer current_period_start; "
