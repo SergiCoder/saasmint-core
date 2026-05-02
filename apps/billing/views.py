@@ -23,6 +23,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.subscription import Subscription
+from saasmint_core.exceptions import SeatsBelowMemberCountError
 from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
@@ -173,6 +174,23 @@ def _validate_quantity_for_context(context: PlanContext, quantity: int) -> int:
 
 def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
     return _validate_quantity_for_context(PlanContext(plan_price.plan.context), quantity)
+
+
+async def _reject_seat_limit_below_member_count(org_id: UUID, seat_limit: int) -> None:
+    """Reject a seat reduction that would leave the org over its sub's seat cap.
+
+    Members must be removed before the seat count can be reduced below the
+    current head-count — otherwise we'd commit to a state where the sub bills
+    for fewer seats than are actually filled.
+    """
+    from apps.orgs.models import OrgMember
+
+    member_count = await OrgMember.objects.filter(org_id=org_id).acount()
+    if seat_limit < member_count:
+        raise SeatsBelowMemberCountError(
+            f"Cannot reduce seats to {seat_limit}: org has {member_count} members."
+            f" Remove {member_count - seat_limit} member(s) first."
+        )
 
 
 _SUBSCRIPTION_CONTEXT_TEAM = "team"
@@ -966,6 +984,8 @@ class SubscriptionView(BillingScopedView):
                 # price unit amount and creates a SubscriptionSchedule when
                 # the new price is lower. Upgrades and same-amount switches
                 # still apply immediately so the user pays the prorated diff.
+                if "seat_limit" in data and org_id is not None:
+                    await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
                 await change_plan(
                     stripe_subscription_id=stripe_sub_id,
                     new_stripe_price_id=plan_price.stripe_price_id,
@@ -981,6 +1001,8 @@ class SubscriptionView(BillingScopedView):
                 _validate_quantity_for_context(
                     PlanContext(current_plan.context), data["seat_limit"]
                 )
+                if org_id is not None:
+                    await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
                 await update_seat_count(
                     stripe_subscription_id=stripe_sub_id,
                     quantity=data["seat_limit"],

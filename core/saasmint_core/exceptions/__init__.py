@@ -33,6 +33,10 @@ class AlreadyOnPlanError(DomainError):
     """The active subscription is already on the requested plan price."""
 
 
+class SeatsBelowMemberCountError(DomainError):
+    """Requested seat count is below the org's current member count."""
+
+
 class InsufficientPermissionError(DomainError):
     """User does not have the required org role to perform this action."""
 

@@ -923,6 +923,123 @@ class TestUpdateSubscription:
             mock_seats.assert_not_called()
         mock_change.assert_called_once()
 
+    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
+    def test_seat_only_reduction_below_member_count_rejected(
+        self, mock_seats, team_plan, team_plan_price
+    ):
+        """Reducing seats below the org's current head-count must 400 with
+        ``code=seats_below_member_count`` — otherwise the sub would bill for
+        fewer seats than members actually filled."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="seat-floor@example.com", full_name="Floor")
+        org = Org.objects.create(name="FloorOrg", slug="floor-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+        for i in range(2):
+            extra = User.objects.create_user(email=f"m{i}@floor.com", full_name=f"M{i}")
+            OrgMember.objects.create(org=org, user=extra, role=OrgRole.MEMBER)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_floor_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_floor_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,
+            seat_limit=5,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        # 3 members; attempt to drop seats to 2 → reject.
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=team",
+            {"seat_limit": 2},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert resp.data["code"] == "seats_below_member_count"
+        mock_seats.assert_not_called()
+
+    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
+    def test_seat_only_reduction_at_member_count_allowed(
+        self, mock_seats, team_plan, team_plan_price
+    ):
+        """Reducing to exactly the current member count is allowed — every
+        seat is still filled, none are over-committed."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="seat-eq@example.com", full_name="Eq")
+        org = Org.objects.create(name="EqOrg", slug="eq-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_eq_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_eq_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,
+            seat_limit=5,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        # 1 member (the owner); drop to 1 → allowed.
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=team",
+            {"seat_limit": 1},
+            format="json",
+        )
+        assert resp.status_code == 200
+        mock_seats.assert_called_once()
+
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_combined_plan_seat_reduction_below_member_count_rejected(
+        self, mock_change, team_plan, team_plan_price
+    ):
+        """Same guard applies on the combined plan+seat path — a downgrade
+        with seats below member count must 400 before any Stripe call."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="seat-combo@example.com", full_name="Combo")
+        org = Org.objects.create(name="ComboOrg", slug="combo-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+        for i in range(2):
+            extra = User.objects.create_user(email=f"c{i}@combo.com", full_name=f"C{i}")
+            OrgMember.objects.create(org=org, user=extra, role=OrgRole.MEMBER)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_combo_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_combo_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,
+            seat_limit=5,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        # 3 members; combined patch attempting seats=2 → reject.
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=team",
+            {"plan_price_id": str(team_plan_price.id), "seat_limit": 2},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert resp.data["code"] == "seats_below_member_count"
+        mock_change.assert_not_called()
+
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_prorate_kwarg_passed_to_change_plan(
         self, mock_change, authed_client, subscription, plan_price
