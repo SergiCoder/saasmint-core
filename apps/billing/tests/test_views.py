@@ -2400,9 +2400,10 @@ class TestScheduledChangeView:
     ):
         """Default routing: a non-org-member user hits the personal path,
         and the view delegates to ``release_pending_schedule_for_customer``."""
-        # The view does a lazy import — patch the symbol on the source module.
+        # Patch the bound name in views.py — the view imports it at module
+        # scope, so patching the source module wouldn't intercept the call.
         with patch(
-            "saasmint_core.services.billing.release_pending_schedule_for_customer",
+            "apps.billing.views.release_pending_schedule_for_customer",
             new_callable=AsyncMock,
         ) as mock_release:
             resp = authed_client.delete(
