@@ -654,7 +654,6 @@ class TestPortalSessionContextRouting:
         assert resp.status_code == 400
 
 
-
 @pytest.mark.django_db
 class TestSubscriptionView:
     def test_returns_active_subscription(self, authed_client, subscription):
