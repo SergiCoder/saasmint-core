@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "saasmint-core"
-version = "0.7.0"
+version = "0.11.0"
 description = "Django backend for SaasMint"
 requires-python = ">=3.12"
 dependencies = [
@@ -60,7 +60,7 @@ override-dependencies = [
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.test"
-testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests", "apps/orgs/tests", "apps/dashboard/tests", "apps/admin_panel/tests", "config/tests", "scripts/tests"]
+testpaths = ["core/tests", "apps/users/tests", "apps/billing/tests", "apps/orgs/tests", "apps/dashboard/tests", "apps/admin_panel/tests", "apps/marketing/tests", "config/tests", "scripts/tests"]
 filterwarnings = [
     "ignore:No directory at.*staticfiles:UserWarning",
     "ignore:Error when trying to teardown test databases:pytest.PytestWarning",

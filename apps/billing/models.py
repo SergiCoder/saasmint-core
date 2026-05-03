@@ -146,11 +146,30 @@ class Subscription(models.Model):
         max_length=30, choices=SubscriptionStatus.choices, default=SubscriptionStatus.INCOMPLETE
     )
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="subscriptions")
-    quantity = models.IntegerField(default=1)
+    seat_limit = models.IntegerField(default=1)
     trial_ends_at = models.DateTimeField(null=True, blank=True)
     current_period_start = models.DateTimeField()
     current_period_end = models.DateTimeField()
     canceled_at = models.DateTimeField(null=True, blank=True)
+    # Mirror of Stripe's ``cancel_at`` — the scheduled cancellation timestamp.
+    # NULL means no cancel is scheduled. Distinct from ``canceled_at`` (which
+    # is when the cancellation *fired*): a sub with cancel_at set and status
+    # still ``active`` is "scheduled to cancel"; once the cutover happens the
+    # webhook flips status to ``canceled`` and sets ``canceled_at``.
+    cancel_at = models.DateTimeField(null=True, blank=True)
+    # Pending plan switch from an active Stripe SubscriptionSchedule. Written
+    # by ``subscription_schedule.created/updated`` and cleared by
+    # ``.released/.canceled/.aborted``. PROTECT keeps the FK from silently
+    # dropping a schedule reference if a Plan is removed — that should be a
+    # surfaced integrity error, not a hidden state divergence.
+    scheduled_plan = models.ForeignKey(
+        Plan,
+        on_delete=models.PROTECT,
+        related_name="scheduled_subscriptions",
+        null=True,
+        blank=True,
+    )
+    scheduled_change_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

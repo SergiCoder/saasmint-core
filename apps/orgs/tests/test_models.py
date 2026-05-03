@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import pytest
 from django.db import IntegrityError
 
@@ -16,7 +14,6 @@ class TestOrg:
         assert str(org) == "Test Org"
 
     def test_defaults(self, org):
-        assert org.deleted_at is None
         assert org.logo_url is None
 
     def test_slug_unique(self, user):
@@ -24,12 +21,12 @@ class TestOrg:
         with pytest.raises(IntegrityError):
             Org.objects.create(name="Second", slug="unique-slug", created_by=user)
 
-    def test_soft_delete(self, org):
-        now = datetime.now(UTC)
-        org.deleted_at = now
-        org.save(update_fields=["deleted_at"])
-        org.refresh_from_db()
-        assert org.deleted_at is not None
+    def test_slug_freed_after_hard_delete(self, user):
+        """Hard-deleting an org frees its slug for reuse."""
+        org1 = Org.objects.create(name="First", slug="reuse-slug", created_by=user)
+        org1.delete()
+        org2 = Org.objects.create(name="Second", slug="reuse-slug", created_by=user)
+        assert org2.slug == "reuse-slug"
 
     def test_created_by_set_null_on_delete(self, org, user):
         """Deleting the user sets Org.created_by to NULL (SET_NULL)."""
@@ -67,17 +64,6 @@ class TestOrgMember:
         member_id = member.id
         other_user.delete()
         assert not OrgMember.objects.filter(id=member_id).exists()
-
-    def test_slug_reusable_after_soft_delete(self, user):
-        """Conditional unique allows reusing a slug once the original org is soft-deleted."""
-        from datetime import UTC, datetime
-
-        org1 = Org.objects.create(name="First", slug="reuse-slug", created_by=user)
-        org1.deleted_at = datetime.now(UTC)
-        org1.save(update_fields=["deleted_at"])
-        # Should not raise — the slug is free for active orgs
-        org2 = Org.objects.create(name="Second", slug="reuse-slug", created_by=user)
-        assert org2.slug == "reuse-slug"
 
 
 class TestOrgRole:
@@ -169,6 +155,3 @@ class TestInvitation:
         org_id = org.id
         org.delete()
         assert not Invitation.objects.filter(org_id=org_id).exists()
-
-    def test_is_active_default_true(self, org):
-        assert org.is_active is True

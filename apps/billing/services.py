@@ -12,19 +12,13 @@ from apps.billing.models import (
     ACTIVE_SUBSCRIPTION_STATUSES,
     CreditBalance,
     CreditTransaction,
-    PlanContext,
     Product,
     Subscription,
 )
 from apps.orgs.models import Org
-from apps.users.models import AccountType, User
+from apps.users.models import User
 
 logger = logging.getLogger(__name__)
-
-
-def plan_context_for(user: User) -> PlanContext:
-    """Return the PlanContext a user is billed under based on account type."""
-    return PlanContext.TEAM if user.account_type == AccountType.ORG_MEMBER else PlanContext.PERSONAL
 
 
 def get_active_team_subscription(org_id: UUID) -> Subscription | None:

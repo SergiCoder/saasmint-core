@@ -8,7 +8,7 @@ import pytest
 from django.core.cache import cache
 
 from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
-from apps.users.models import AccountType, User
+from apps.users.models import User
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +80,7 @@ def subscription(stripe_customer, plan, plan_price):
         stripe_customer=stripe_customer,
         status="active",
         plan=plan,
-        quantity=1,
+        seat_limit=1,
         current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
         current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
     )
@@ -93,7 +93,7 @@ def team_subscription(stripe_customer, team_plan, team_plan_price):
         stripe_customer=stripe_customer,
         status="active",
         plan=team_plan,
-        quantity=2,
+        seat_limit=2,
         current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
         current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
     )
@@ -104,7 +104,6 @@ def org_member_user(db):
     return User.objects.create_user(
         email="orgowner@example.com",
         full_name="Org Owner",
-        account_type=AccountType.ORG_MEMBER,
     )
 
 

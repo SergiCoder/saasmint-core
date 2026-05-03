@@ -79,7 +79,6 @@ DJANGO_SETTINGS_MODULE=config.settings.dev
 DJANGO_SECRET_KEY=CHANGE_ME_generate_with_python_c_import_secrets_secrets_token_urlsafe_64
 JWT_SIGNING_KEY=CHANGE_ME_separate_rotation_from_django_secret_key_token_urlsafe_64
 SCHEMA_PUBLIC=false
-DEBUG=true
 DJANGO_PORT=8001
 DJANGO_STATIC_ROOT=/app/staticfiles
 ALLOWED_HOSTS=["api.saasmint.net"]

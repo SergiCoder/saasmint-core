@@ -8,7 +8,7 @@ import pytest
 from django.test import Client
 
 from apps.orgs.models import Org, OrgMember, OrgRole
-from apps.users.models import AccountType, User
+from apps.users.models import User
 
 
 @pytest.fixture
@@ -28,7 +28,6 @@ def org_owner(db):
     return User.objects.create_user(
         email="orgowner@example.com",
         full_name="Org Owner",
-        account_type=AccountType.ORG_MEMBER,
     )
 
 
@@ -47,7 +46,6 @@ def member(db):
     return User.objects.create_user(
         email="member@example.com",
         full_name="Member",
-        account_type=AccountType.ORG_MEMBER,
     )
 
 
@@ -102,23 +100,6 @@ class TestOrgAdminDeleteAction:
         assert not User.objects.filter(id=owner_id).exists()
         assert not User.objects.filter(id=member_id).exists()
         assert not OrgMember.objects.filter(org_id=org_id).exists()
-
-    @patch("apps.orgs.services._cancel_team_subscription")
-    def test_deletes_previously_soft_deleted_org(
-        self, mock_cancel_sub, admin_client_django, org, owner_membership, org_owner
-    ):
-        from django.utils import timezone
-
-        org.deleted_at = timezone.now()
-        org.save(update_fields=["deleted_at"])
-        org_id = org.id
-
-        admin_client_django.post(
-            "/admin/orgs/org/",
-            _action_payload([str(org_id)], confirm=True),
-        )
-        # Org should be hard-deleted even though it was already soft-deleted
-        assert not Org.objects.filter(id=org_id).exists()
 
     def test_builtin_delete_is_disabled(self, admin_client_django, org, owner_membership):
         """The detail-page Delete button should be blocked (403)."""

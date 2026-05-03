@@ -65,10 +65,11 @@ async def delete_account(
     """
     _user, customer = await _load_user_and_customer(user_id, user_repo, customer_repo)
 
-    # Cancel any paid Stripe subscription
+    # Cancel any paid Stripe subscription. prorate=False — account deletion is
+    # a terminal action; we don't refund the unused time.
     active_sub = await subscription_repo.get_active_for_user(user_id)
     if active_sub is not None and active_sub.stripe_id is not None:
-        await _stripe_request(stripe.Subscription.cancel, active_sub.stripe_id)
+        await _stripe_request(stripe.Subscription.cancel, active_sub.stripe_id, prorate=False)
 
     if customer:
         await _stripe_request(stripe.Customer.delete, customer.stripe_id)

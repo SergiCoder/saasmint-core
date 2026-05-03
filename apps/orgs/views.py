@@ -20,7 +20,7 @@ from drf_spectacular.utils import (
 )
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
-from rest_framework.exceptions import APIException, NotFound, PermissionDenied
+from rest_framework.exceptions import APIException, PermissionDenied
 from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
@@ -65,11 +65,6 @@ class _Conflict(APIException):
 class _InvitationExpired(_Gone):
     default_detail = "This invitation has expired."
     default_code = "invitation_expired"
-
-
-class _InvitationOrgGone(NotFound):
-    default_detail = "This organization no longer exists."
-    default_code = "org_not_found"
 
 
 class _InvitationEmailExists(_Conflict):
@@ -135,11 +130,9 @@ def _get_org_and_member(
     Raises OrgNotFoundError or InsufficientPermissionError as appropriate.
     """
     try:
-        member = OrgMember.objects.select_related("org").get(
-            org_id=org_id, org__deleted_at__isnull=True, org__is_active=True, user_id=user_id
-        )
+        member = OrgMember.objects.select_related("org").get(org_id=org_id, user_id=user_id)
     except OrgMember.DoesNotExist:
-        if not Org.objects.filter(id=org_id, deleted_at__isnull=True, is_active=True).exists():
+        if not Org.objects.filter(id=org_id).exists():
             raise OrgNotFoundError(org_id) from None
         raise InsufficientPermissionError("Access denied.") from None
     if allowed_roles is not None and OrgRole(member.role) not in allowed_roles:
@@ -167,8 +160,6 @@ class OrgListView(OrgsScopedView):
         user = get_user(request)
         orgs = Org.objects.filter(
             id__in=OrgMember.objects.filter(user=user).values("org_id"),
-            deleted_at__isnull=True,
-            is_active=True,
         ).order_by("name")
         paginator = _default_paginator()
         page = paginator.paginate_queryset(orgs, request)
@@ -256,9 +247,7 @@ class OrgMemberDetailView(OrgsScopedView):
     def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
-        target = get_object_or_404(
-            OrgMember, org_id=org_id, user_id=member_user_id, org__deleted_at__isnull=True
-        )
+        target = get_object_or_404(OrgMember, org_id=org_id, user_id=member_user_id)
 
         check_can_manage_member(
             caller_role=CoreOrgRole(caller.role),
@@ -303,7 +292,6 @@ class OrgMemberDetailView(OrgsScopedView):
             OrgMember.objects.select_related("user"),
             org_id=org_id,
             user_id=member_user_id,
-            org__deleted_at__isnull=True,
         )
 
         # Cannot remove the owner
@@ -316,17 +304,10 @@ class OrgMemberDetailView(OrgsScopedView):
             target_role=CoreOrgRole(target.role),
         )
 
-        from apps.orgs.tasks import decrement_subscription_seats_task
-
         target_user = target.user
         with transaction.atomic():
             target.delete()
             target_user.delete()
-            # Stripe call must run only after DB commit; otherwise a rollback
-            # would leave Stripe seat count out of sync with actual members.
-            # Offload to Celery so the 500-1500ms Stripe round-trip doesn't
-            # sit in the request path.
-            transaction.on_commit(lambda: decrement_subscription_seats_task.delay(str(org_id)))
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -353,9 +334,7 @@ class OrgOwnerView(OrgsScopedView):
 
         target_user_id = ser.validated_data["user_id"]
 
-        target = get_object_or_404(
-            OrgMember, org_id=org_id, user_id=target_user_id, org__deleted_at__isnull=True
-        )
+        target = get_object_or_404(OrgMember, org_id=org_id, user_id=target_user_id)
 
         if target.role != OrgRole.ADMIN:
             raise InsufficientPermissionError("Ownership can only be transferred to an admin.")
@@ -502,7 +481,7 @@ def _validate_seat_limit(org: Org) -> None:
         org=org, status=InvitationStatus.PENDING
     ).count()
 
-    if current_members + pending_invitations >= sub.quantity:
+    if current_members + pending_invitations >= sub.seat_limit:
         raise _SeatLimitReached
 
 
@@ -587,8 +566,6 @@ class InvitationAcceptView(OrgsScopedView):
             raise _InvitationExpired
 
         org = invitation.org
-        if org.deleted_at is not None or not org.is_active:
-            raise _InvitationOrgGone
 
         # Email must not already be registered
         if email_is_registered(invitation.email):

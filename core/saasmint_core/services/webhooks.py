@@ -21,8 +21,9 @@ from saasmint_core.repositories.subscription import SubscriptionRepository
 logger = logging.getLogger(__name__)
 
 # Callback type for team checkout completion.
-# Args: user_id, org_name, stripe_customer_id, livemode, stripe_subscription_id
-OnTeamCheckoutCompleted = Callable[[UUID, str, str, bool, str | None], Awaitable[None]]
+# Args: user_id, org_name, stripe_customer_id, livemode, stripe_subscription_id,
+#       keep_personal_subscription
+OnTeamCheckoutCompleted = Callable[[UUID, str, str, bool, str | None, bool], Awaitable[None]]
 
 # Callback type for org deactivation after subscription cancellation.
 # Args: org_id
@@ -86,6 +87,17 @@ async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
             await _sync_subscription(event["data"]["object"], repos)
         case "customer.subscription.deleted":
             await _on_subscription_deleted(event["data"]["object"], repos)
+        case (
+            "subscription_schedule.created"
+            | "subscription_schedule.updated"
+        ):
+            await _on_subscription_schedule_upserted(event["data"]["object"], repos)
+        case (
+            "subscription_schedule.released"
+            | "subscription_schedule.canceled"
+            | "subscription_schedule.aborted"
+        ):
+            await _on_subscription_schedule_cleared(event["data"]["object"], repos)
         case "invoice.payment_succeeded":
             await _on_invoice_paid(event["data"]["object"])
         case "invoice.payment_failed":
@@ -132,9 +144,19 @@ async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRep
 
     livemode: bool = session_data.get("livemode", False)
 
+    # Stripe metadata is always string-typed — coerce back to bool. Default to
+    # False (auto-cancel personal at period end) so a missing field on a
+    # legacy session matches the new default behavior.
+    keep_personal_subscription = metadata.get("keep_personal_subscription") == "true"
+
     if repos.on_team_checkout_completed is not None:
         await repos.on_team_checkout_completed(
-            user_id, org_name, str(stripe_customer_id), livemode, subscription_id
+            user_id,
+            org_name,
+            str(stripe_customer_id),
+            livemode,
+            subscription_id,
+            keep_personal_subscription,
         )
     else:
         logger.warning(
@@ -185,7 +207,31 @@ async def _on_product_checkout_completed(session_data: dict[str, Any], repos: We
 
 
 async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
-    """Upsert a Stripe subscription into the local DB from raw event data."""
+    """Webhook-dispatch wrapper around :func:`sync_subscription_from_data`."""
+    await sync_subscription_from_data(
+        sub_data,
+        customers=repos.customers,
+        plans=repos.plans,
+        subscriptions=repos.subscriptions,
+    )
+
+
+async def sync_subscription_from_data(
+    sub_data: dict[str, Any],
+    *,
+    customers: StripeCustomerRepository,
+    plans: PlanRepository,
+    subscriptions: SubscriptionRepository,
+) -> None:
+    """Upsert a Stripe subscription into the local DB from raw subscription data.
+
+    Idempotent on ``stripe_id`` — replays from the ``customer.subscription.*``
+    webhooks find the existing row and update it. Callable both from the
+    webhook dispatcher and from out-of-band callers (e.g. the team-checkout
+    completion handler, which races ``customer.subscription.created`` and
+    must persist the row directly to avoid losing it when the subscription
+    event arrives before its ``StripeCustomer`` row exists).
+    """
     from saasmint_core.exceptions import WebhookDataError
 
     stripe_customer_str = str(sub_data["customer"])
@@ -213,9 +259,9 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         )
 
     customer, plan_price, existing = await asyncio.gather(
-        repos.customers.get_by_stripe_id(stripe_customer_str),
-        repos.plans.get_price_by_stripe_id(price_id),
-        repos.subscriptions.get_by_stripe_id(stripe_sub_id),
+        customers.get_by_stripe_id(stripe_customer_str),
+        plans.get_price_by_stripe_id(price_id),
+        subscriptions.get_by_stripe_id(stripe_sub_id),
     )
 
     if customer is None:
@@ -232,15 +278,28 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
         user_id=customer.user_id,  # None for org subs; mirrored so user-scoped queries work
         status=SubscriptionStatus(str(sub_data["status"])),
         plan_id=plan_price.plan_id,
-        quantity=int(first_item.get("quantity") or 1),
+        seat_limit=int(first_item.get("quantity") or 1),
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
         current_period_start=datetime.fromtimestamp(period_start, tz=UTC),
         current_period_end=datetime.fromtimestamp(period_end, tz=UTC),
         canceled_at=_ts_to_dt(sub_data.get("canceled_at")),
+        # Stripe API 2026-03-25.dahlia: ``cancel_at`` is the scheduled cutover
+        # timestamp (None when no cancel is queued). Cleared by the user
+        # resuming the sub or by it actually firing — Stripe re-emits an
+        # ``updated`` event in either case so the local mirror converges.
+        cancel_at=_ts_to_dt(sub_data.get("cancel_at")),
+        # Preserve the pending-schedule mirror written by
+        # ``subscription_schedule.created/updated``. A ``customer.subscription.updated``
+        # event fires alongside every schedule event and would otherwise wipe
+        # these fields back to None, breaking the deferred-downgrade badge.
+        # ``subscription_schedule.released/canceled/aborted`` are the only
+        # events that should clear them — not a subscription sync.
+        scheduled_plan_id=existing.scheduled_plan_id if existing else None,
+        scheduled_change_at=existing.scheduled_change_at if existing else None,
         created_at=existing.created_at if existing else datetime.now(UTC),
     )
 
-    await repos.subscriptions.save(subscription)
+    await subscriptions.save(subscription)
 
 
 async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos) -> None:
@@ -275,6 +334,151 @@ async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos
                     "Org subscription %s canceled but no deactivation callback registered",
                     stripe_sub_id,
                 )
+
+
+def _parse_schedule_pending_change(
+    schedule_data: dict[str, Any],
+) -> tuple[str, datetime] | None:
+    """Extract the (next_stripe_price_id, change_at) pair from schedule phases.
+
+    Returns ``None`` and logs when the data is absent or malformed — single-phase
+    schedules, missing items, missing price id, or missing boundary timestamp.
+    Callers treat ``None`` as "nothing to mirror."
+    """
+    schedule_id = schedule_data.get("id")
+    phases = schedule_data.get("phases") or []
+    if len(phases) < 2:
+        logger.debug(
+            "subscription_schedule %s has %d phase(s); no pending change to mirror",
+            schedule_id,
+            len(phases),
+        )
+        return None
+
+    current_phase = phases[0]
+    next_phase = phases[1]
+    next_items = next_phase.get("items") or []
+    if not next_items:
+        logger.warning("subscription_schedule %s next phase has no items", schedule_id)
+        return None
+
+    next_price = next_items[0].get("price")
+    next_price_id: str | None = (
+        next_price.get("id") if isinstance(next_price, dict) else next_price
+    )
+    if not next_price_id:
+        logger.warning("subscription_schedule %s next phase missing price id", schedule_id)
+        return None
+
+    change_at_ts = current_phase.get("end_date") or next_phase.get("start_date")
+    change_at = _ts_to_dt(change_at_ts)
+    if change_at is None:
+        logger.warning(
+            "subscription_schedule %s missing phase boundary timestamp", schedule_id
+        )
+        return None
+
+    return str(next_price_id), change_at
+
+
+async def _on_subscription_schedule_upserted(
+    schedule_data: dict[str, Any], repos: WebhookRepos
+) -> None:
+    """Mirror a pending plan-switch from a Stripe SubscriptionSchedule.
+
+    We only persist a "pending change" when the schedule has at least two
+    phases: the current phase ending at ``end_date`` and a future phase
+    starting at the same instant with a different price. Single-phase
+    schedules (rare — only created if someone scripts one directly) carry
+    no UX-relevant pending change, so we skip them.
+
+    The local row is keyed by ``schedule_data["subscription"]``: schedules
+    we don't recognise (e.g. for a sub created in the dashboard but never
+    mirrored locally) are logged and skipped — raising would put the event
+    in permanent failure for state we can't act on.
+    """
+    stripe_sub_id = schedule_data.get("subscription")
+    if not stripe_sub_id:
+        # Standalone schedules with no attached subscription cannot affect a
+        # local sub row — there is nothing for us to mirror.
+        logger.debug("subscription_schedule event without ``subscription`` field — skipping")
+        return
+
+    pending = _parse_schedule_pending_change(schedule_data)
+    if pending is None:
+        return
+
+    next_price_id, change_at = pending
+
+    plan_price = await repos.plans.get_price_by_stripe_id(next_price_id)
+    if plan_price is None:
+        # Unknown target price: treat as a transient catalog mismatch (e.g.
+        # schedule created in dashboard pointing at a price we haven't synced
+        # yet). Skipping is safer than failing — we'd rather miss the badge
+        # than block the event queue.
+        logger.warning(
+            "subscription_schedule %s targets unknown price %s",
+            schedule_data.get("id"),
+            next_price_id,
+        )
+        return
+
+    existing = await repos.subscriptions.get_by_stripe_id(str(stripe_sub_id))
+    if existing is None:
+        logger.warning(
+            "subscription_schedule %s for unknown subscription %s — skipping",
+            schedule_data.get("id"),
+            stripe_sub_id,
+        )
+        return
+
+    # No-op when the mirror is already correct — webhook replays land here a
+    # lot, and re-saving would churn ``updated_at``-style audit fields if any
+    # are added later.
+    if (
+        existing.scheduled_plan_id == plan_price.plan_id
+        and existing.scheduled_change_at == change_at
+    ):
+        return
+
+    await repos.subscriptions.save(
+        existing.model_copy(
+            update={
+                "scheduled_plan_id": plan_price.plan_id,
+                "scheduled_change_at": change_at,
+            }
+        )
+    )
+
+
+async def _on_subscription_schedule_cleared(
+    schedule_data: dict[str, Any], repos: WebhookRepos
+) -> None:
+    """Clear the pending plan-switch mirror on schedule release/cancel/abort.
+
+    ``released`` fires when the schedule completes naturally (phase 2 took
+    effect — the regular ``customer.subscription.updated`` event already
+    mirrored the new price/period; we only need to clear the pending fields
+    here). ``canceled`` fires when the schedule is canceled before it took
+    effect, and ``aborted`` when Stripe gives up (e.g. a dunning failure on
+    phase 2). All three converge to the same local outcome: no pending
+    change.
+    """
+    stripe_sub_id = schedule_data.get("subscription")
+    if not stripe_sub_id:
+        return
+
+    existing = await repos.subscriptions.get_by_stripe_id(str(stripe_sub_id))
+    if existing is None:
+        return
+    if existing.scheduled_plan_id is None and existing.scheduled_change_at is None:
+        return
+
+    await repos.subscriptions.save(
+        existing.model_copy(
+            update={"scheduled_plan_id": None, "scheduled_change_at": None}
+        )
+    )
 
 
 async def _on_invoice_paid(invoice_data: dict[str, Any]) -> None:

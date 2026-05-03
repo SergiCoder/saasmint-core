@@ -313,39 +313,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
           description: ''
-  /api/v1/auth/register/org-owner/:
-    post:
-      operationId: auth_register_org_owner_create
-      description: |-
-        POST /api/v1/auth/register/org-owner — register as an org owner.
-
-        Creates a user with account_type=ORG_MEMBER; the user must complete team
-        checkout to create an org and subscription.
-      tags:
-      - auth
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterRequest'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/RegisterRequest'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/RegisterRequest'
-        required: true
-      security:
-      - JWT: []
-      - cookieAuth: []
-      - {}
-      responses:
-        '201':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TokenResponse'
-          description: ''
   /api/v1/auth/reset-password/:
     post:
       operationId: auth_reset_password_create
@@ -433,12 +400,22 @@ paths:
               schema:
                 $ref: '#/components/schemas/CheckoutResponse'
           description: ''
+        '400':
+          description: Request body failed validation (e.g. ``org_name`` missing for
+            a team-context plan, invalid quantity for the plan's context).
+        '404':
+          description: Invalid plan price.
+        '409':
+          description: Caller already owns an organization and cannot start a second
+            team checkout (rule 8) — ``code=org_already_owned``.
   /api/v1/billing/credits/me/:
     get:
       operationId: billing_credits_me_retrieve
-      description: Return the caller's current credit balance. PERSONAL users see
-        their own balance; ORG_MEMBER users see their org's balance (readable by any
-        active member).
+      description: Return the caller's current credit balances as a list. Non-org-member
+        users see a single entry with their own balance. Org members see their org's
+        balance (readable by any active member), plus a ``user``-scoped entry iff
+        a personal balance survives from before a personal→team upgrade (rule 16)
+        — this entry is omitted when the user has no leftover personal credits.
       tags:
       - billing
       security:
@@ -475,8 +452,23 @@ paths:
   /api/v1/billing/portal-sessions/:
     post:
       operationId: billing_portal_sessions_create
-      description: POST /api/v1/billing/portal-sessions — create a Stripe Customer
-        Portal session.
+      description: |-
+        Create a Stripe Customer Portal session. The portal scope is selected by ``?context=personal|team``; defaults to ``team`` for org-member callers and ``personal`` otherwise — same routing as subscription mutations on ``/me/``. ``?context=team`` requires ``is_billing=True`` and an existing team customer. ``?context=personal`` auto-creates the user's Stripe customer when missing.
+
+        Plan switches are **not** handled here: the portal applies them immediately with proration, which conflicts with our deferred downgrade rule. Use ``PATCH /subscriptions/me/`` instead.
+      parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for org-member callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
       tags:
       - billing
       requestBody:
@@ -501,12 +493,36 @@ paths:
               schema:
                 $ref: '#/components/schemas/PortalResponse'
           description: ''
+        '400':
+          description: The ``?context=`` query param is set to a value other than
+            ``personal``/``team``.
+        '403':
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership — only billing members may open the team portal.'
+        '404':
+          description: '``?context=team``: caller has no team Stripe customer (i.e.
+            no team subscription has been created).'
   /api/v1/billing/product-checkout-sessions/:
     post:
       operationId: billing_product_checkout_sessions_create
       description: Create a Stripe Checkout Session (``mode=payment``) for a one-time
-        product purchase (credit pack). PERSONAL users buy for themselves; ORG_MEMBER
-        owners buy for the org. Admins and regular members are rejected with 403.
+        product purchase (credit pack). The buyer scope is selected by ``?context=personal|team``;
+        defaults to ``team`` for org members and ``personal`` otherwise. ``personal``
+        is universally allowed (anyone can buy credits for themselves); ``team`` is
+        restricted to org owners.
+      parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: 'Pick the buyer scope when the caller can purchase under both
+          (rule 5a/5b). ``personal`` credits the user''s own balance; ``team`` credits
+          the org. Default: ``team`` for org members, ``personal`` otherwise. ``team``
+          requires ``role=OWNER`` on the active org. Non-org-member callers cannot
+          pick ``team``.'
       tags:
       - billing
       requestBody:
@@ -531,9 +547,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProductCheckoutResponse'
           description: ''
+        '400':
+          description: Invalid ``?context=`` value, or non-org-member caller requested
+            ``?context=team``.
         '403':
-          description: Caller is an ORG_MEMBER without ``role=OWNER`` on their active
-            org.
+          description: '``?context=team``: caller is not the org owner. Admins and
+            regular members can still buy ``?context=personal``.'
         '404':
           description: Invalid product price.
   /api/v1/billing/products/:
@@ -563,8 +582,11 @@ paths:
   /api/v1/billing/subscriptions/me/:
     get:
       operationId: billing_subscriptions_me_retrieve
-      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
-        subscription.
+      description: List every active subscription the caller has billing visibility
+        into. Empty ``results`` indicates the free tier. Up to two rows can appear
+        when a user holds both a personal and a team subscription concurrently (rule
+        5a — paid personal user accepts a team invite — or rule 5b — keep-personal
+        opt-out during a personal→team upgrade).
       parameters:
       - in: query
         name: currency
@@ -581,17 +603,30 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Subscription'
+                $ref: '#/components/schemas/SubscriptionListResponse'
           description: ''
-        '404':
-          description: Caller has no active subscription. Returned for users on the
-            free tier (no Stripe-backed subscription) and for ORG_MEMBER users without
-            an active org membership.
     patch:
       operationId: billing_subscriptions_me_partial_update
-      description: GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current
-        subscription.
+      description: |-
+        GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current subscriptions.
+
+        GET returns every active subscription the caller has billing visibility
+        into (0, 1, or 2 — see :func:`_get_active_subscriptions_for_user`).
+        PATCH/DELETE accept a ``?context=personal|team`` query param to pick
+        which subscription to mutate when the caller has both concurrently.
       parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for org-member callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
       - in: query
         name: currency
         schema:
@@ -620,17 +655,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '400':
+          description: Request body failed validation, or the ``?context=`` query
+            param is set to a value other than ``personal``/``team``.
         '403':
-          description: Caller is an ORG_MEMBER without `is_billing=True` on their
-            active org membership — only billing members may modify the team subscription.
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership — only billing members may modify the team
+            subscription. ``?context=personal`` does not enforce this gate.'
         '404':
           description: No Stripe customer or active paid subscription for the caller.
     delete:
       operationId: billing_subscriptions_me_destroy
       description: Schedule subscription cancellation at the end of the current billing
         period. Returns 202 Accepted — the subscription remains active until the period
-        end timestamp returned in the body.
+        end timestamp returned in the body. Use ``?context=personal`` to cancel the
+        personal sub when the caller also holds a concurrent team sub.
       parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for org-member callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
       - in: query
         name: currency
         schema:
@@ -648,11 +700,59 @@ paths:
               schema:
                 $ref: '#/components/schemas/Subscription'
           description: ''
+        '400':
+          description: The ``?context=`` query param is set to a value other than
+            ``personal``/``team``.
         '403':
-          description: Caller is an ORG_MEMBER without `is_billing=True` on their
-            active org membership — only billing members may cancel the team subscription.
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership — only billing members may cancel the team
+            subscription. ``?context=personal`` does not enforce this gate.'
         '404':
           description: No Stripe customer or active paid subscription for the caller.
+  /api/v1/billing/subscriptions/me/scheduled-change/:
+    delete:
+      operationId: billing_subscriptions_me_scheduled_change_destroy
+      description: Cancel a pending plan-switch (deferred downgrade) on the active
+        subscription. Idempotent — returns the unchanged subscription when no schedule
+        exists. Same context-routing and is_billing gate as PATCH/DELETE on ``/me/``.
+      parameters:
+      - in: query
+        name: context
+        schema:
+          type: string
+          enum:
+          - personal
+          - team
+        description: Which subscription to mutate when the caller has both a personal
+          and a team subscription concurrently (rule 5a / 5b). One of ``personal``
+          or ``team``. Defaults to ``team`` for org-member callers and ``personal``
+          otherwise. Ignored on GET — that endpoint always returns every active subscription
+          the caller can see.
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
+      tags:
+      - billing
+      security:
+      - JWT: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Subscription'
+          description: ''
+        '400':
+          description: The ``?context=`` query param is set to a value other than
+            ``personal``/``team``.
+        '403':
+          description: '``?context=team``: caller is missing ``is_billing=True`` on
+            their active org membership.'
+        '404':
+          description: No active subscription in the resolved context.
   /api/v1/currencies/:
     get:
       operationId: currencies_retrieve
@@ -781,6 +881,36 @@ paths:
                 items:
                   type: string
           description: ''
+  /api/v1/marketing/inquiries/:
+    post:
+      operationId: marketing_inquiries_create
+      description: |-
+        POST /api/v1/marketing/inquiries/ — forward landing-page CTA / Contact form to admin inbox.
+
+        Throttled on its own ``marketing_inquiries`` scope rather than the shared ``auth`` scope: the
+        failure mode here (admin inbox filled by one IP) is more direct than auth's (outbound spam),
+        and the traffic shape is one submission per visitor rather than bursty.
+      tags:
+      - marketing
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarketingInquiryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/MarketingInquiryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/MarketingInquiryRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '204':
+          description: No response body
   /api/v1/orgs/:
     get:
       operationId: orgs_retrieve
@@ -1176,14 +1306,6 @@ components:
       required:
       - subscriptions
       - user
-    AccountTypeEnum:
-      enum:
-      - personal
-      - org_member
-      type: string
-      description: |-
-        * `personal` - Personal
-        * `org_member` - Org Member
     AvatarResponse:
       type: object
       properties:
@@ -1213,7 +1335,7 @@ components:
         plan_price_id:
           type: string
           format: uuid
-        quantity:
+        seat_limit:
           type: integer
           maximum: 10000
           minimum: 1
@@ -1235,6 +1357,9 @@ components:
           type: string
           minLength: 1
           maxLength: 255
+        keep_personal_subscription:
+          type: boolean
+          default: false
       required:
       - cancel_url
       - plan_price_id
@@ -1269,6 +1394,16 @@ components:
       required:
       - email
     CreditBalance:
+      type: object
+      properties:
+        balances:
+          type: array
+          items:
+            $ref: '#/components/schemas/CreditBalanceEntry'
+          readOnly: true
+      required:
+      - balances
+    CreditBalanceEntry:
       type: object
       properties:
         balance:
@@ -1432,6 +1567,26 @@ components:
           minLength: 1
       required:
       - refresh_token
+    MarketingInquiryRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+          maxLength: 254
+        message:
+          type: string
+          default: ''
+          maxLength: 5000
+        source:
+          $ref: '#/components/schemas/SourceEnum'
+        honeypot:
+          type: string
+          default: ''
+      required:
+      - email
+      - source
     MessageResponse:
       type: object
       description: Schema-only serializer for ``{detail, code}`` envelope responses.
@@ -1604,7 +1759,7 @@ components:
         prorate:
           type: boolean
           default: true
-        quantity:
+        seat_limit:
           type: integer
           maximum: 10000
           minimum: 1
@@ -1967,6 +2122,14 @@ components:
         * `owner` - Owner
         * `admin` - Admin
         * `member` - Member
+    SourceEnum:
+      enum:
+      - landing-cta
+      - contact-page
+      type: string
+      description: |-
+        * `landing-cta` - landing-cta
+        * `contact-page` - contact-page
     Subscription:
       type: object
       properties:
@@ -1982,8 +2145,15 @@ components:
           allOf:
           - $ref: '#/components/schemas/Plan'
           readOnly: true
-        quantity:
+        seat_limit:
           type: integer
+          readOnly: true
+        seats_used:
+          type: integer
+          description: |-
+            Number of seats currently occupied. Always 1 for personal
+            subscriptions. For team subscriptions, reflects the current
+            org member count.
           readOnly: true
         trial_ends_at:
           type: string
@@ -2003,20 +2173,61 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        cancel_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        scheduled_plan:
+          allOf:
+          - $ref: '#/components/schemas/Plan'
+          readOnly: true
+          nullable: true
+        scheduled_change_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
         created_at:
           type: string
           format: date-time
           readOnly: true
       required:
+      - cancel_at
       - canceled_at
       - created_at
       - current_period_end
       - current_period_start
       - id
       - plan
-      - quantity
+      - scheduled_change_at
+      - scheduled_plan
+      - seat_limit
+      - seats_used
       - status
       - trial_ends_at
+    SubscriptionListResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Subscription'
+      required:
+      - count
+      - next
+      - previous
+      - results
     SubscriptionStatusEnum:
       enum:
       - active
@@ -2081,10 +2292,6 @@ components:
           type: string
           readOnly: true
           nullable: true
-        account_type:
-          allOf:
-          - $ref: '#/components/schemas/AccountTypeEnum'
-          readOnly: true
         preferred_locale:
           type: string
           readOnly: true
@@ -2124,6 +2331,25 @@ components:
           items:
             type: string
           readOnly: true
+        has_stripe_customer:
+          type: boolean
+          description: |-
+            Whether the user has a personal Stripe customer.
+
+            The user's billing currency is locked at first purchase on this
+            customer (rule 12). After that, even cancellation leaves the
+            customer row in place, so the lock survives — frontend uses this
+            flag to gate the "your billing currency can't be changed" notice
+            on the profile form. Org-scoped Stripe customers don't count;
+            the user's currency is independent of any org's billing currency
+            (rule 3 — distinct customers per scope).
+
+            Performance: a single indexed ``EXISTS`` on the unique ``user_id``
+            (OneToOneField) — ``SELECT 1 ... LIMIT 1``. The flag must reflect
+            live DB state (the row can be hard-deleted out from under the
+            cached ``User`` instance), so we deliberately do not short-circuit
+            via ``_state.fields_cache``.
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -2133,12 +2359,12 @@ components:
           format: date-time
           readOnly: true
       required:
-      - account_type
       - avatar_url
       - bio
       - created_at
       - email
       - full_name
+      - has_stripe_customer
       - id
       - is_verified
       - job_title

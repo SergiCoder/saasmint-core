@@ -16,8 +16,7 @@ logger = logging.getLogger(__name__)
 
 @admin.register(Org)
 class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
-    list_display = ("name", "slug", "is_active", "created_by", "created_at", "deleted_at")
-    list_filter = ("is_active", "deleted_at")
+    list_display = ("name", "slug", "created_by", "created_at")
     search_fields = ("name", "slug")
     readonly_fields = ("id", "created_at")
     list_select_related = ("created_by",)

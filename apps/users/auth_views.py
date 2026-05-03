@@ -52,10 +52,11 @@ from apps.users.authentication import (
     verify_email_token,
     verify_password_reset_token,
 )
-from apps.users.models import AccountType, User
+from apps.users.models import User
 from apps.users.oauth import (
     PROVIDERS,
     OAuthEmailNotVerifiedError,
+    OAuthEmailUnverifiedCollisionError,
     OAuthError,
     exchange_code,
     get_authorization_url,
@@ -83,7 +84,6 @@ def _register_user(
     email: str,
     password: str,
     full_name: str,
-    account_type: AccountType,
 ) -> Response:
     """Create a new user and return a 201 token response."""
     if email_is_registered(email):
@@ -99,7 +99,6 @@ def _register_user(
                 password=password,
                 full_name=full_name,
                 is_verified=False,
-                account_type=account_type,
             )
     except IntegrityError:
         return Response(
@@ -129,30 +128,6 @@ class RegisterView(AuthRegisterView):
             email=ser.validated_data["email"],
             password=ser.validated_data["password"],
             full_name=ser.validated_data["full_name"],
-            account_type=AccountType.PERSONAL,
-        )
-
-
-class RegisterOrgOwnerView(AuthRegisterView):
-    """POST /api/v1/auth/register/org-owner — register as an org owner.
-
-    Creates a user with account_type=ORG_MEMBER; the user must complete team
-    checkout to create an org and subscription.
-    """
-
-    @extend_schema(
-        request=RegisterSerializer,
-        responses={201: TokenResponseSerializer},
-        tags=["auth"],
-    )
-    def post(self, request: Request) -> Response:
-        ser = RegisterSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        return _register_user(
-            email=ser.validated_data["email"],
-            password=ser.validated_data["password"],
-            full_name=ser.validated_data["full_name"],
-            account_type=AccountType.ORG_MEMBER,
         )
 
 
@@ -378,6 +353,8 @@ class OAuthCallbackView(AuthPublicView):
 
         try:
             user = resolve_oauth_user(provider, user_info)
+        except OAuthEmailUnverifiedCollisionError:
+            return _oauth_error_redirect(frontend_url, "oauth_email_unverified_collision")
         except OAuthEmailNotVerifiedError:
             return _oauth_error_redirect(frontend_url, "email_not_verified")
         except ValueError:

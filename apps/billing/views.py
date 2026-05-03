@@ -6,8 +6,9 @@ import logging
 from typing import ClassVar
 from uuid import UUID
 
-from asgiref.sync import async_to_sync
+from asgiref.sync import async_to_sync, sync_to_async
 from django.core.cache import cache
+from django.db.models import Count, OuterRef, Subquery
 from drf_spectacular.utils import (
     OpenApiParameter,
     OpenApiResponse,
@@ -23,12 +24,15 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.subscription import Subscription
+from saasmint_core.exceptions import SeatsBelowMemberCountError
 from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
     create_checkout_session,
     create_product_checkout_session,
+    create_team_stripe_customer,
     get_or_create_customer,
+    release_pending_schedule_for_customer,
     resume_subscription,
 )
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
@@ -59,9 +63,9 @@ from apps.billing.serializers import (
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
-from apps.billing.services import get_credit_balance, plan_context_for
+from apps.billing.services import get_credit_balance
 from apps.billing.tasks import send_subscription_cancel_notice_task
-from apps.users.models import AccountType, User
+from apps.users.models import User
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
@@ -69,8 +73,8 @@ logger = logging.getLogger(__name__)
 MIN_TEAM_SEATS = 1
 
 
-class _AccountTypeMismatch(APIException):
-    """409 — account_type does not match the plan's context (personal vs team).
+class _OrgAlreadyOwned(APIException):
+    """409 — caller already owns an org and cannot start a second team checkout (rule 8).
 
     Raising a bare ``ValidationError({"detail": "..."})`` would coerce the
     string into a list (``{"detail": ["..."]}``) and escape past the custom
@@ -79,8 +83,8 @@ class _AccountTypeMismatch(APIException):
     """
 
     status_code = status.HTTP_409_CONFLICT
-    default_detail = "Account type does not match the plan's context."
-    default_code = "account_type_mismatch"
+    default_detail = "You already own an organization."
+    default_code = "org_already_owned"
 
 
 _CURRENCY_PARAM = OpenApiParameter(
@@ -88,6 +92,20 @@ _CURRENCY_PARAM = OpenApiParameter(
     description="ISO 4217 currency code (e.g. 'eur'). Overrides user preference.",
     required=False,
     type=str,
+)
+
+_SUBSCRIPTION_CONTEXT_PARAM = OpenApiParameter(
+    name="context",
+    description=(
+        "Which subscription to mutate when the caller has both a personal and "
+        "a team subscription concurrently (rule 5a / 5b). One of "
+        "``personal`` or ``team``. Defaults to ``team`` for org-member "
+        "callers and ``personal`` otherwise. Ignored on GET — that endpoint "
+        "always returns every active subscription the caller can see."
+    ),
+    required=False,
+    type=str,
+    enum=["personal", "team"],
 )
 
 
@@ -160,22 +178,98 @@ def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
     return _validate_quantity_for_context(PlanContext(plan_price.plan.context), quantity)
 
 
-async def _resolve_billing_customer(user: User) -> StripeCustomer | None:
+async def _reject_seat_limit_below_member_count(org_id: UUID, seat_limit: int) -> None:
+    """Reject a seat reduction that would leave the org over its sub's seat cap.
+
+    Members must be removed before the seat count can be reduced below the
+    current head-count — otherwise we'd commit to a state where the sub bills
+    for fewer seats than are actually filled.
+    """
+    from apps.orgs.models import OrgMember
+
+    member_count = await OrgMember.objects.filter(org_id=org_id).acount()
+    if seat_limit < member_count:
+        raise SeatsBelowMemberCountError(
+            f"Cannot reduce seats to {seat_limit}: org has {member_count} members."
+            f" Remove {member_count - seat_limit} member(s) first."
+        )
+
+
+_SUBSCRIPTION_CONTEXT_TEAM = "team"
+_SUBSCRIPTION_CONTEXT_PERSONAL = "personal"
+
+
+def _validate_subscription_context(value: str | None) -> str | None:
+    """Coerce the ``?context=`` query param to ``personal``/``team``/``None``."""
+    if value is None or value == "":
+        return None
+    if value not in (_SUBSCRIPTION_CONTEXT_TEAM, _SUBSCRIPTION_CONTEXT_PERSONAL):
+        raise ValidationError(
+            {"context": ["Must be 'personal' or 'team'."]},
+        )
+    return value
+
+
+def _user_is_org_member(user: User) -> bool:
+    """Return True if *user* belongs to any org.
+
+    The source of truth for "is this caller an org member" — replaces the
+    old ``user.account_type == ORG_MEMBER`` denormalized flag. A user is
+    an org member iff an ``OrgMember`` row exists for them.
+    """
+    from apps.orgs.models import OrgMember
+
+    return OrgMember.objects.filter(user_id=user.id).exists()
+
+
+async def _user_is_org_member_async(user: User) -> bool:
+    """Async variant of :func:`_user_is_org_member`."""
+    from apps.orgs.models import OrgMember
+
+    return await OrgMember.objects.filter(user_id=user.id).aexists()
+
+
+def _default_subscription_context(user: User) -> str:
+    """Resolve the default ``?context=`` for PATCH/DELETE on /me/.
+
+    Org member → team (existing behavior), non-member → personal. The default
+    keeps single-sub callers working unchanged. Concurrent users (rule 5b)
+    pass an explicit ``?context=personal`` to manage their personal sub.
+    """
+    return (
+        _SUBSCRIPTION_CONTEXT_TEAM if _user_is_org_member(user) else _SUBSCRIPTION_CONTEXT_PERSONAL
+    )
+
+
+async def _default_subscription_context_async(user: User) -> str:
+    """Async variant of :func:`_default_subscription_context`."""
+    return (
+        _SUBSCRIPTION_CONTEXT_TEAM
+        if await _user_is_org_member_async(user)
+        else _SUBSCRIPTION_CONTEXT_PERSONAL
+    )
+
+
+async def _resolve_billing_customer(
+    user: User, *, context: str | None = None
+) -> StripeCustomer | None:
     """Return the StripeCustomer that owns billing for *user*, or None.
 
-    PERSONAL users own their own customer; ORG_MEMBER users get the customer
-    attached to the active org they belong to (the billing authority is
-    enforced separately by :func:`_require_billing_authority`).
+    Without ``context``: non-org-member users get their user-scoped customer,
+    org members get the customer attached to the active org they belong to.
+    With ``context="personal"`` or ``"team"``, returns the matching customer
+    regardless of org membership — required for the concurrent-billing case
+    (rule 5a/5b) where an org member still has an active personal sub on
+    their user-scoped customer.
     """
     repos = get_billing_repos()
-    if user.account_type == AccountType.ORG_MEMBER:
+    effective = context or await _default_subscription_context_async(user)
+    if effective == _SUBSCRIPTION_CONTEXT_TEAM:
         from apps.orgs.models import OrgMember
 
         membership = (
             await OrgMember.objects.filter(
                 user_id=user.id,
-                org__is_active=True,
-                org__deleted_at__isnull=True,
             )
             .only("org_id")
             .afirst()
@@ -187,18 +281,19 @@ async def _resolve_billing_customer(user: User) -> StripeCustomer | None:
 
 
 async def _get_customer_and_paid_subscription(
-    user: User,
+    user: User, *, context: str | None = None
 ) -> tuple[StripeCustomer, Subscription, str]:
     """Fetch the Stripe customer, active subscription, and its stripe_id.
 
-    Resolves via the user for PERSONAL, via the user's active org membership
-    for ORG_MEMBER. Returning ``stripe_sub_id`` as a non-optional ``str`` lets
-    callers avoid re-checking for ``None`` — every persisted Subscription is a
-    Stripe mirror with a non-null stripe_id. Raises NotFound when the customer
-    or subscription is missing.
+    Without ``context``: same routing as :func:`_resolve_billing_customer`
+    defaults. With explicit ``context``, lets concurrent-billing callers
+    target either the team or the personal sub. Returning ``stripe_sub_id``
+    as a non-optional ``str`` lets callers avoid re-checking for ``None`` —
+    every persisted Subscription is a Stripe mirror with a non-null
+    stripe_id. Raises NotFound when the customer or subscription is missing.
     """
     repos = get_billing_repos()
-    customer = await _resolve_billing_customer(user)
+    customer = await _resolve_billing_customer(user, context=context)
     if customer is None:
         raise NotFound("No Stripe customer found.")
     sub = await repos.subscriptions.get_active_for_customer(customer.id)
@@ -270,12 +365,11 @@ class PlanListView(APIView):
         auth=[],
     )
     def get(self, request: Request) -> Response:
+        # Personal and team plans are both shown to every caller (auth or anon).
+        # Users without an owned org can upgrade to a team plan via team-context
+        # checkout (see CheckoutSessionView), so hiding team plans from them
+        # would make the upgrade undiscoverable.
         qs = PlanModel.objects.filter(is_active=True).select_related("price")
-
-        # Authenticated users only see plans matching their account type
-        if request.user.is_authenticated:
-            qs = qs.filter(context=plan_context_for(request.user))
-
         data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
         return Response(_catalog_envelope(list(data)))
 
@@ -312,7 +406,22 @@ class CheckoutSessionView(BillingScopedView):
 
     @extend_schema(
         request=CheckoutRequestSerializer,
-        responses={200: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()})},
+        responses={
+            200: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()}),
+            400: OpenApiResponse(
+                description=(
+                    "Request body failed validation (e.g. ``org_name`` missing for a"
+                    " team-context plan, invalid quantity for the plan's context)."
+                )
+            ),
+            404: OpenApiResponse(description="Invalid plan price."),
+            409: OpenApiResponse(
+                description=(
+                    "Caller already owns an organization and cannot start a"
+                    " second team checkout (rule 8) — ``code=org_already_owned``."
+                )
+            ),
+        },
         tags=["billing"],
     )
     def post(self, request: Request) -> Response:
@@ -322,21 +431,24 @@ class CheckoutSessionView(BillingScopedView):
         data = ser.validated_data
 
         plan_price = _get_active_plan_price(data["plan_price_id"])
-        quantity = _validate_quantity_for_plan(plan_price, data["quantity"])
+        quantity = _validate_quantity_for_plan(plan_price, data["seat_limit"])
 
         is_team = plan_price.plan.context == PlanContext.TEAM
 
-        # Enforce account_type / plan context match
-        if is_team and user.account_type != AccountType.ORG_MEMBER:
-            raise _AccountTypeMismatch(
-                "Only org accounts can check out team plans. "
-                "Register at /api/v1/auth/register/org-owner/ first."
-            )
-        if not is_team and user.account_type != AccountType.PERSONAL:
-            raise _AccountTypeMismatch("Org accounts cannot check out personal plans.")
-
-        # Team plans require org_name
+        # Team plans: any user without an owned org may upgrade (rule 8: one
+        # owned org per user). The DB partial unique index on OrgMember.user
+        # WHERE role='owner' is the authoritative enforcer; this check is a
+        # fast-path UX guard. Personal-plan checkouts have no eligibility
+        # gate — rule 5b allows org members to also hold a personal sub.
         if is_team:
+            from apps.orgs.models import OrgMember, OrgRole
+
+            already_owns_org = OrgMember.objects.filter(
+                user_id=user.id, role=OrgRole.OWNER
+            ).exists()
+            if already_owns_org:
+                raise _OrgAlreadyOwned
+
             if "org_name" not in data:
                 raise ValidationError({"org_name": ["Required for team plans."]})
 
@@ -345,23 +457,37 @@ class CheckoutSessionView(BillingScopedView):
         if trial_period_days is not None and is_team:
             trial_period_days = None
 
-        # Build metadata for the checkout session
+        # Build metadata for the checkout session. Stripe metadata values are
+        # strings — booleans go through as "true"/"false" and are parsed back
+        # on the webhook side.
         metadata: dict[str, str] | None = None
         if is_team:
             metadata = {
                 "org_name": data["org_name"],
+                "keep_personal_subscription": "true"
+                if data["keep_personal_subscription"]
+                else "false",
             }
 
         async def _do() -> str:
-            customer = await get_or_create_customer(
-                user_id=user.id,
-                email=str(user.email),
-                name=user.full_name,
-                locale=user.preferred_locale,
-                customer_repo=get_billing_repos().customers,
-            )
+            if is_team:
+                stripe_customer_id = await create_team_stripe_customer(
+                    user_id=user.id,
+                    email=str(user.email),
+                    name=user.full_name,
+                    locale=user.preferred_locale,
+                )
+            else:
+                customer = await get_or_create_customer(
+                    user_id=user.id,
+                    email=str(user.email),
+                    name=user.full_name,
+                    locale=user.preferred_locale,
+                    customer_repo=get_billing_repos().customers,
+                )
+                stripe_customer_id = customer.stripe_id
             return await create_checkout_session(
-                stripe_customer_id=customer.stripe_id,
+                stripe_customer_id=stripe_customer_id,
                 client_reference_id=str(user.id),
                 price_id=plan_price.stripe_price_id,
                 quantity=quantity,
@@ -380,8 +506,41 @@ class PortalSessionView(BillingScopedView):
     """POST /api/v1/billing/portal-sessions — create a Stripe Customer Portal session."""
 
     @extend_schema(
+        parameters=[_SUBSCRIPTION_CONTEXT_PARAM],
         request=PortalRequestSerializer,
-        responses={200: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()})},
+        responses={
+            200: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()}),
+            400: OpenApiResponse(
+                description=(
+                    "The ``?context=`` query param is set to a value other than"
+                    " ``personal``/``team``."
+                )
+            ),
+            403: OpenApiResponse(
+                description=(
+                    "``?context=team``: caller is missing ``is_billing=True`` on their"
+                    " active org membership — only billing members may open the team"
+                    " portal."
+                )
+            ),
+            404: OpenApiResponse(
+                description=(
+                    "``?context=team``: caller has no team Stripe customer (i.e. no"
+                    " team subscription has been created)."
+                )
+            ),
+        },
+        description=(
+            "Create a Stripe Customer Portal session. The portal scope is selected"
+            " by ``?context=personal|team``; defaults to ``team`` for org-member"
+            " callers and ``personal`` otherwise — same routing as subscription"
+            " mutations on ``/me/``. ``?context=team`` requires ``is_billing=True``"
+            " and an existing team customer. ``?context=personal`` auto-creates"
+            " the user's Stripe customer when missing.\n\n"
+            "Plan switches are **not** handled here: the portal applies them"
+            " immediately with proration, which conflicts with our deferred"
+            " downgrade rule. Use ``PATCH /subscriptions/me/`` instead."
+        ),
         tags=["billing"],
     )
     def post(self, request: Request) -> Response:
@@ -389,16 +548,39 @@ class PortalSessionView(BillingScopedView):
         ser = PortalRequestSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
+        context = _validate_subscription_context(request.query_params.get("context"))
+
         async def _do() -> str:
-            customer = await get_or_create_customer(
-                user_id=user.id,
-                email=str(user.email),
-                name=user.full_name,
-                locale=user.preferred_locale,
-                customer_repo=get_billing_repos().customers,
-            )
+            effective = context or await _default_subscription_context_async(user)
+
+            if effective == _SUBSCRIPTION_CONTEXT_TEAM:
+                # Same gate as cancel/resume: only is_billing members may open
+                # the team portal (it exposes payment methods, invoices, and
+                # cancel-from-Stripe — not read-only).
+                await sync_to_async(_require_billing_authority)(
+                    user, context=_SUBSCRIPTION_CONTEXT_TEAM
+                )
+                customer = await _resolve_billing_customer(
+                    user, context=_SUBSCRIPTION_CONTEXT_TEAM
+                )
+                if customer is None:
+                    raise NotFound("No team Stripe customer found.")
+                stripe_customer_id = customer.stripe_id
+            else:
+                # Personal scope: auto-create the user's own customer if missing.
+                # Mixing scopes (creating a personal customer for a team-portal
+                # request) would silently leak a stub row into the wrong scope.
+                personal = await get_or_create_customer(
+                    user_id=user.id,
+                    email=str(user.email),
+                    name=user.full_name,
+                    locale=user.preferred_locale,
+                    customer_repo=get_billing_repos().customers,
+                )
+                stripe_customer_id = personal.stripe_id
+
             return await create_billing_portal_session(
-                stripe_customer_id=customer.stripe_id,
+                stripe_customer_id=stripe_customer_id,
                 locale=user.preferred_locale,
                 return_url=ser.validated_data["return_url"],
             )
@@ -407,33 +589,42 @@ class PortalSessionView(BillingScopedView):
         return Response({"url": url})
 
 
-def _require_owner_for_product_purchase(user: User) -> UUID | None:
-    """Authorize a credit purchase. Returns ``org_id`` for team buys, ``None`` for personal.
+def _resolve_product_purchase_context(user: User, context: str | None) -> UUID | None:
+    """Authorize a credit purchase under the requested context.
 
-    PERSONAL: always allowed, credits go to the user's own balance.
-    ORG_MEMBER: must hold ``role=OWNER`` on an active org; admin/member → 403.
-    Unlike subscription mutations (which gate on ``is_billing``), credit
-    purchases are owner-only — the spend authority sits with the principal,
-    not the delegated billing contact.
+    Returns ``org_id`` when the purchase is scoped to an org, ``None`` for a
+    personal purchase. Mirrors the ``?context=personal|team`` semantics used
+    by subscription mutations (rule 5a/5b).
+
+    Defaults when ``context`` is None: org member → team, non-member → personal.
+
+    ``context=personal`` is universally allowed: anyone can buy credits for
+    themselves, including org admins/regular members who cannot buy for the
+    org. The owner-only gate only applies to ``context=team``, since only
+    owners may spend org funds. Non-org-member callers cannot pick ``team``
+    (no org to buy for) and get 400.
     """
-    if user.account_type != AccountType.ORG_MEMBER:
-        return None
-
     from apps.orgs.models import OrgMember, OrgRole
 
-    owner = (
-        OrgMember.objects.filter(
-            user_id=user.id,
-            role=OrgRole.OWNER,
-            org__is_active=True,
-            org__deleted_at__isnull=True,
+    effective = context or _default_subscription_context(user)
+
+    if effective == _SUBSCRIPTION_CONTEXT_PERSONAL:
+        return None
+
+    # effective == "team" — fetch any membership (regardless of role) in a
+    # single query, then discriminate the three outcomes (owner / non-owner /
+    # not-a-member) in Python. Selecting ``role`` lets us collapse the prior
+    # two-query error path (owner-only filter → exists() fallback) into one.
+    membership = OrgMember.objects.filter(user_id=user.id).only("org_id", "role").first()
+    if membership is None:
+        # Not an org member at all (400 — bad request, no team scope).
+        raise ValidationError(
+            {"context": ["Only org members can purchase team credits."]},
         )
-        .only("org_id")
-        .first()
-    )
-    if owner is None:
+    if membership.role != OrgRole.OWNER:
+        # Org member but not owner — only owners may spend org funds.
         raise PermissionDenied("Only the org owner can purchase credits for the team.")
-    return owner.org_id
+    return membership.org_id
 
 
 class ProductCheckoutSessionView(BillingScopedView):
@@ -441,18 +632,44 @@ class ProductCheckoutSessionView(BillingScopedView):
 
     @extend_schema(
         request=ProductCheckoutRequestSerializer,
+        parameters=[
+            OpenApiParameter(
+                name="context",
+                description=(
+                    "Pick the buyer scope when the caller can purchase under both"
+                    " (rule 5a/5b). ``personal`` credits the user's own balance;"
+                    " ``team`` credits the org. Default: ``team`` for org members,"
+                    " ``personal`` otherwise. ``team`` requires ``role=OWNER`` on"
+                    " the active org. Non-org-member callers cannot pick ``team``."
+                ),
+                required=False,
+                type=str,
+                enum=["personal", "team"],
+            ),
+        ],
         responses={
             200: inline_serializer("ProductCheckoutResponse", {"url": drf_serializers.URLField()}),
+            400: OpenApiResponse(
+                description=(
+                    "Invalid ``?context=`` value, or non-org-member caller"
+                    " requested ``?context=team``."
+                )
+            ),
             403: OpenApiResponse(
-                description=("Caller is an ORG_MEMBER without ``role=OWNER`` on their active org.")
+                description=(
+                    "``?context=team``: caller is not the org owner. Admins and"
+                    " regular members can still buy ``?context=personal``."
+                )
             ),
             404: OpenApiResponse(description="Invalid product price."),
         },
         description=(
             "Create a Stripe Checkout Session (``mode=payment``) for a one-time"
-            " product purchase (credit pack). PERSONAL users buy for themselves;"
-            " ORG_MEMBER owners buy for the org. Admins and regular members are"
-            " rejected with 403."
+            " product purchase (credit pack). The buyer scope is selected by"
+            " ``?context=personal|team``; defaults to ``team`` for org members"
+            " and ``personal`` otherwise. ``personal`` is universally allowed"
+            " (anyone can buy credits for themselves); ``team`` is restricted"
+            " to org owners."
         ),
         tags=["billing"],
     )
@@ -462,8 +679,9 @@ class ProductCheckoutSessionView(BillingScopedView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
+        context = _validate_subscription_context(request.query_params.get("context"))
         product_price = _get_active_product_price(data["product_price_id"])
-        org_id = _require_owner_for_product_purchase(user)
+        org_id = _resolve_product_purchase_context(user, context)
 
         metadata: dict[str, str] = {"product_id": str(product_price.product_id)}
         if org_id is not None:
@@ -501,98 +719,120 @@ class CreditBalanceView(BillingScopedView):
     @extend_schema(
         responses={200: CreditBalanceSerializer},
         description=(
-            "Return the caller's current credit balance. PERSONAL users see their"
-            " own balance; ORG_MEMBER users see their org's balance (readable by"
-            " any active member)."
+            "Return the caller's current credit balances as a list. Non-org-member"
+            " users see a single entry with their own balance. Org members see"
+            " their org's balance (readable by any active member), plus a"
+            " ``user``-scoped entry iff a personal balance survives from before"
+            " a personal→team upgrade (rule 16) — this entry is omitted when"
+            " the user has no leftover personal credits."
         ),
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
-        user = get_user(request)
-
-        if user.account_type == AccountType.ORG_MEMBER:
-            from apps.orgs.models import OrgMember
-
-            # Fetch only the org_id — get_credit_balance filters by FK, so we
-            # don't need to hydrate the full Org row via select_related.
-            org_id = (
-                OrgMember.objects.filter(
-                    user_id=user.id,
-                    org__is_active=True,
-                    org__deleted_at__isnull=True,
-                )
-                .values_list("org_id", flat=True)
-                .first()
-            )
-            if org_id is None:
-                raise NotFound("No active org found.")
-            balance = get_credit_balance(org_id=org_id)
-            scope = "org"
-        else:
-            balance = get_credit_balance(user=user)
-            scope = "user"
-
-        return Response(CreditBalanceSerializer({"balance": balance, "scope": scope}).data)
-
-
-def _get_active_subscription_for_user(user: User) -> SubscriptionModel:
-    """Fetch the latest active subscription for a user.
-
-    PERSONAL users resolve to their own subscription (mirrored on
-    ``Subscription.user_id``). ORG_MEMBER users resolve to the active
-    subscription of the org they belong to — any member of an active org can
-    see it; the is_billing gate applies to mutations, not reads. Raises
-    NotFound when no active subscription exists (the new free state).
-    """
-    base = SubscriptionModel.objects.select_related("plan__price").filter(
-        status__in=ACTIVE_SUBSCRIPTION_STATUSES
-    )
-
-    if user.account_type == AccountType.ORG_MEMBER:
         from apps.orgs.models import OrgMember
 
-        membership = (
-            OrgMember.objects.filter(
-                user_id=user.id,
-                org__is_active=True,
-                org__deleted_at__isnull=True,
-            )
-            .only("org_id")
-            .first()
-        )
-        if membership is None:
-            raise NotFound("No active subscription found.")
-        sub = base.filter(stripe_customer__org_id=membership.org_id).order_by("-created_at").first()
-        if sub is None:
-            raise NotFound("No active subscription found.")
-        return sub
+        user = get_user(request)
+        balances: list[dict[str, object]] = []
 
+        # Fetch only the org_id — get_credit_balance filters by FK, so we
+        # don't need to hydrate the full Org row via select_related.
+        org_id = OrgMember.objects.filter(user_id=user.id).values_list("org_id", flat=True).first()
+        if org_id is not None:
+            balances.append({"balance": get_credit_balance(org_id=org_id), "scope": "org"})
+            # Surface leftover personal credits from a pre-upgrade purchase
+            # (rule 16). Only emit when > 0 so we don't spam zero-rows for
+            # org members who never had a personal balance.
+            personal_balance = get_credit_balance(user=user)
+            if personal_balance > 0:
+                balances.append({"balance": personal_balance, "scope": "user"})
+        else:
+            balances.append({"balance": get_credit_balance(user=user), "scope": "user"})
+
+        return Response(CreditBalanceSerializer({"balances": balances}).data)
+
+
+def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
+    """Return every active subscription the user has billing visibility into.
+
+    A user can hold up to two concurrent active subscriptions (rules 5a/5b
+    + 16):
+      - The **team** sub on their org's Stripe customer (any member of the
+        active org sees it; the is_billing gate applies to mutations only).
+      - The **personal** sub on their own user-scoped Stripe customer (any
+        user may have this; org members may also retain one when they keep
+        personal running concurrently).
+
+    Returns 0, 1, or 2 subs (team first when present, then personal). An
+    empty list is the new free-tier shape (replaces the old NotFound 404 on
+    ``GET /me/``).
+    """
+    from apps.orgs.models import OrgMember
+
+    # Annotate the org member count onto each sub so ``SubscriptionSerializer
+    # .get_seats_used`` can read it as a plain attribute instead of firing a
+    # separate COUNT query per serialized object.
+    org_member_count_sq = (
+        OrgMember.objects.filter(org_id=OuterRef("stripe_customer__org_id"))
+        .order_by()
+        .values("org_id")
+        .annotate(n=Count("id"))
+        .values("n")
+    )
+
+    # ``stripe_customer`` is select_related so ``_refetch_subscription_after_mutation``
+    # can discriminate team vs personal subs via ``sub.stripe_customer.org_id``
+    # without firing an FK lookup per sub.
+    base = SubscriptionModel.objects.select_related(
+        "plan__price", "scheduled_plan__price", "stripe_customer"
+    ).annotate(
+        org_member_count=Subquery(org_member_count_sq)
+    ).filter(
+        status__in=ACTIVE_SUBSCRIPTION_STATUSES
+    )
+    subs: list[SubscriptionModel] = []
+    seen_ids: set[UUID] = set()
+
+    membership = OrgMember.objects.filter(user_id=user.id).only("org_id").first()
+    if membership is not None:
+        team_sub = (
+            base.filter(stripe_customer__org_id=membership.org_id).order_by("-created_at").first()
+        )
+        if team_sub is not None:
+            subs.append(team_sub)
+            seen_ids.add(team_sub.id)
+
+    # Personal sub — picked up via either ``Subscription.user_id`` or
+    # ``stripe_customer.user_id``. Split into two queries so each can use its
+    # own partial index (idx_sub_user_status / idx_sub_customer_status)
+    # instead of degenerating into a scan on an OR'd predicate.
     customer = getattr(user, "stripe_customer", None)
     customer_id = customer.id if customer is not None else None
-    # Split into two queries instead of ORing `user` with `stripe_customer_id`
-    # so each query can use its own partial index (idx_sub_user_status /
-    # idx_sub_customer_status) instead of degenerating into a scan.
     sub_user = base.filter(user_id=user.id).order_by("-created_at").first()
     sub_customer = (
         base.filter(stripe_customer_id=customer_id).order_by("-created_at").first()
         if customer_id is not None
         else None
     )
-    candidates = [s for s in (sub_user, sub_customer) if s is not None]
-    if not candidates:
-        raise NotFound("No active subscription found.")
-    return max(candidates, key=lambda s: s.created_at)
+    personal_candidates = [s for s in (sub_user, sub_customer) if s is not None]
+    if personal_candidates:
+        latest_personal = max(personal_candidates, key=lambda s: s.created_at)
+        if latest_personal.id not in seen_ids:
+            subs.append(latest_personal)
+
+    return subs
 
 
-def _require_billing_authority(user: User) -> UUID | None:
-    """Enforce that *user* may mutate the subscription they'll be acting on.
+def _require_billing_authority(user: User, *, context: str) -> UUID | None:
+    """Enforce that *user* may mutate the subscription in *context*.
 
-    Returns the ``org_id`` for ORG_MEMBER users (callers use it to address
-    the notification) or ``None`` for PERSONAL users. Raises
-    ``PermissionDenied`` for ORG_MEMBER users without ``is_billing=True`` on
-    their active membership.
+    For ``context="team"``: requires ``is_billing=True`` on an active
+    org membership. Returns the ``org_id`` (used to address the
+    notification recipient list).
+
+    For ``context="personal"``: anyone may mutate their own personal sub.
+    Returns ``None``.
     """
-    if user.account_type != AccountType.ORG_MEMBER:
+    if context == _SUBSCRIPTION_CONTEXT_PERSONAL:
         return None
 
     from apps.orgs.models import OrgMember
@@ -601,8 +841,6 @@ def _require_billing_authority(user: User) -> UUID | None:
         OrgMember.objects.filter(
             user_id=user.id,
             is_billing=True,
-            org__is_active=True,
-            org__deleted_at__isnull=True,
         )
         .only("org_id")
         .first()
@@ -612,11 +850,41 @@ def _require_billing_authority(user: User) -> UUID | None:
     return billing_member.org_id
 
 
+def _resolve_mutation_context(request: Request, user: User) -> tuple[str, UUID | None]:
+    """Resolve ``?context=`` and enforce billing authority for the chosen context.
+
+    Shared prologue for ``PATCH`` and ``DELETE`` on ``/me/`` — both endpoints
+    parse the same query param and run the same authority check, so keeping
+    them in lockstep here avoids drift if the gate ever needs to grow (e.g.
+    new context value, new role check).
+
+    When ``?context=`` is omitted, the default-context lookup and the
+    is_billing authority check both target the same OrgMember row, so we
+    fetch it once and derive both — saves one round-trip on every PATCH /
+    DELETE without an explicit context.
+    """
+    explicit = _validate_subscription_context(request.query_params.get("context"))
+    if explicit is not None:
+        return explicit, _require_billing_authority(user, context=explicit)
+
+    from apps.orgs.models import OrgMember
+
+    membership = OrgMember.objects.filter(user_id=user.id).only("org_id", "is_billing").first()
+    if membership is None:
+        # No org → default is personal, no authority gate.
+        return _SUBSCRIPTION_CONTEXT_PERSONAL, None
+    # Org member → default is team; reuse the same row for the is_billing gate.
+    if not membership.is_billing:
+        raise PermissionDenied("Only billing members can modify the team subscription.")
+    return _SUBSCRIPTION_CONTEXT_TEAM, membership.org_id
+
+
 def _billing_notice_recipients(user: User, org_id: UUID | None) -> list[str]:
     """Return the list of emails to notify on a billing-state change.
 
-    PERSONAL subs: just the owner. Team subs: every ``is_billing=True`` member
-    of the org (so a rogue billing contact's action is visible to peers).
+    Personal-context subs: just the owner. Team-context subs: every
+    ``is_billing=True`` member of the org (so a rogue billing contact's
+    action is visible to peers).
     """
     if org_id is None:
         return [str(user.email)]
@@ -627,43 +895,64 @@ def _billing_notice_recipients(user: User, org_id: UUID | None) -> list[str]:
         OrgMember.objects.filter(
             org_id=org_id,
             is_billing=True,
-            org__is_active=True,
-            org__deleted_at__isnull=True,
         ).values_list("user__email", flat=True)
     )
 
 
 class SubscriptionView(BillingScopedView):
-    """GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current subscription."""
+    """GET/PATCH/DELETE /api/v1/billing/subscriptions/me/ — manage current subscriptions.
+
+    GET returns every active subscription the caller has billing visibility
+    into (0, 1, or 2 — see :func:`_get_active_subscriptions_for_user`).
+    PATCH/DELETE accept a ``?context=personal|team`` query param to pick
+    which subscription to mutate when the caller has both concurrently.
+    """
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
         responses={
-            200: SubscriptionSerializer,
-            404: OpenApiResponse(
-                description=(
-                    "Caller has no active subscription. Returned for users on the"
-                    " free tier (no Stripe-backed subscription) and for ORG_MEMBER"
-                    " users without an active org membership."
-                )
+            200: inline_serializer(
+                "SubscriptionListResponse",
+                {
+                    "count": drf_serializers.IntegerField(),
+                    "next": drf_serializers.URLField(allow_null=True),
+                    "previous": drf_serializers.URLField(allow_null=True),
+                    "results": SubscriptionSerializer(many=True),
+                },
             ),
         },
+        description=(
+            "List every active subscription the caller has billing visibility"
+            " into. Empty ``results`` indicates the free tier. Up to two rows"
+            " can appear when a user holds both a personal and a team"
+            " subscription concurrently (rule 5a — paid personal user accepts"
+            " a team invite — or rule 5b — keep-personal opt-out during a"
+            " personal→team upgrade)."
+        ),
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
         user = get_user(request)
-        sub = _get_active_subscription_for_user(user)
-        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
+        subs = _get_active_subscriptions_for_user(user)
+        data = SubscriptionSerializer(subs, many=True, context=_currency_context(request)).data
+        return Response(_catalog_envelope(list(data)))
 
     @extend_schema(
-        parameters=[_CURRENCY_PARAM],
+        parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
         request=UpdateSubscriptionSerializer,
         responses={
             200: SubscriptionSerializer,
+            400: OpenApiResponse(
+                description=(
+                    "Request body failed validation, or the ``?context=`` query param"
+                    " is set to a value other than ``personal``/``team``."
+                )
+            ),
             403: OpenApiResponse(
                 description=(
-                    "Caller is an ORG_MEMBER without `is_billing=True` on their active"
-                    " org membership — only billing members may modify the team subscription."
+                    "``?context=team``: caller is missing ``is_billing=True`` on their"
+                    " active org membership — only billing members may modify the team"
+                    " subscription. ``?context=personal`` does not enforce this gate."
                 )
             ),
             404: OpenApiResponse(
@@ -678,18 +967,20 @@ class SubscriptionView(BillingScopedView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        org_id = _require_billing_authority(user)
+        context, org_id = _resolve_mutation_context(request, user)
 
         plan_price = (
             _get_active_plan_price(data["plan_price_id"]) if "plan_price_id" in data else None
         )
 
-        if plan_price and "quantity" in data:
-            _validate_quantity_for_plan(plan_price, data["quantity"])
+        if plan_price and "seat_limit" in data:
+            _validate_quantity_for_plan(plan_price, data["seat_limit"])
 
         async def _do() -> None:
             repos = get_billing_repos()
-            customer, sub, stripe_sub_id = await _get_customer_and_paid_subscription(user)
+            customer, sub, stripe_sub_id = await _get_customer_and_paid_subscription(
+                user, context=context
+            )
             if "cancel_at_period_end" in data:
                 if data["cancel_at_period_end"]:
                     await cancel_subscription(
@@ -703,25 +994,38 @@ class SubscriptionView(BillingScopedView):
                         subscription_repo=repos.subscriptions,
                     )
             elif plan_price:
+                # Passing ``new_price_amount`` opts into the deferred-downgrade
+                # path: ``change_plan`` compares against the current Stripe
+                # price unit amount and creates a SubscriptionSchedule when
+                # the new price is lower. Upgrades and same-amount switches
+                # still apply immediately so the user pays the prorated diff.
+                if "seat_limit" in data and org_id is not None:
+                    await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
                 await change_plan(
                     stripe_subscription_id=stripe_sub_id,
                     new_stripe_price_id=plan_price.stripe_price_id,
+                    new_price_amount=plan_price.amount,
                     prorate=data["prorate"],
-                    quantity=data.get("quantity"),
+                    quantity=data.get("seat_limit"),
                 )
-            elif "quantity" in data:
+            elif "seat_limit" in data:
                 # Seat-only update: enforce per-context seat rules against the
                 # current subscription's plan, otherwise a personal sub could
                 # be bumped to N seats and a team sub down to 1.
                 current_plan = await PlanModel.objects.only("context").aget(id=sub.plan_id)
-                _validate_quantity_for_context(PlanContext(current_plan.context), data["quantity"])
+                _validate_quantity_for_context(
+                    PlanContext(current_plan.context), data["seat_limit"]
+                )
+                if org_id is not None:
+                    await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
                 await update_seat_count(
-                    stripe_subscription_id=stripe_sub_id,
-                    quantity=data["quantity"],
+                    active=sub,
+                    quantity=data["seat_limit"],
+                    subscription_repo=repos.subscriptions,
                 )
 
         async_to_sync(_do)()
-        sub = _get_active_subscription_for_user(user)
+        sub = _refetch_subscription_after_mutation(user, context=context)
         if "cancel_at_period_end" in data:
             recipients = _billing_notice_recipients(user, org_id)
             if recipients:
@@ -733,14 +1037,21 @@ class SubscriptionView(BillingScopedView):
         return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
 
     @extend_schema(
-        parameters=[_CURRENCY_PARAM],
+        parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
         request=None,
         responses={
             202: SubscriptionSerializer,
+            400: OpenApiResponse(
+                description=(
+                    "The ``?context=`` query param is set to a value other than"
+                    " ``personal``/``team``."
+                )
+            ),
             403: OpenApiResponse(
                 description=(
-                    "Caller is an ORG_MEMBER without `is_billing=True` on their active"
-                    " org membership — only billing members may cancel the team subscription."
+                    "``?context=team``: caller is missing ``is_billing=True`` on their"
+                    " active org membership — only billing members may cancel the team"
+                    " subscription. ``?context=personal`` does not enforce this gate."
                 )
             ),
             404: OpenApiResponse(
@@ -750,16 +1061,17 @@ class SubscriptionView(BillingScopedView):
         description=(
             "Schedule subscription cancellation at the end of the current billing period."
             " Returns 202 Accepted — the subscription remains active until the period end"
-            " timestamp returned in the body."
+            " timestamp returned in the body. Use ``?context=personal`` to cancel the"
+            " personal sub when the caller also holds a concurrent team sub."
         ),
         tags=["billing"],
     )
     def delete(self, request: Request) -> Response:
         user = get_user(request)
-        org_id = _require_billing_authority(user)
+        context, org_id = _resolve_mutation_context(request, user)
 
         async def _do() -> None:
-            customer, _, _ = await _get_customer_and_paid_subscription(user)
+            customer, _, _ = await _get_customer_and_paid_subscription(user, context=context)
             await cancel_subscription(
                 stripe_customer_id=customer.id,
                 at_period_end=True,
@@ -767,7 +1079,7 @@ class SubscriptionView(BillingScopedView):
             )
 
         async_to_sync(_do)()
-        sub = _get_active_subscription_for_user(user)
+        sub = _refetch_subscription_after_mutation(user, context=context)
         recipients = _billing_notice_recipients(user, org_id)
         if recipients:
             send_subscription_cancel_notice_task.delay(recipients, sub.plan.name, "scheduled")
@@ -775,3 +1087,80 @@ class SubscriptionView(BillingScopedView):
             SubscriptionSerializer(sub, context=_currency_context(request)).data,
             status=status.HTTP_202_ACCEPTED,
         )
+
+
+class ScheduledChangeView(BillingScopedView):
+    """DELETE /api/v1/billing/subscriptions/me/scheduled-change/ — cancel a pending downgrade.
+
+    Idempotent. Releases any active Stripe ``SubscriptionSchedule`` attached
+    to the caller's active sub in the resolved context, restoring "no
+    pending change" state. Safe to call when no schedule exists — returns
+    the current sub unchanged. The corresponding
+    ``subscription_schedule.released`` webhook also clears the local mirror;
+    the view writes the cleared state up front so the immediate refetch
+    reflects it without webhook lag.
+    """
+
+    @extend_schema(
+        parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
+        request=None,
+        responses={
+            200: SubscriptionSerializer,
+            400: OpenApiResponse(
+                description=(
+                    "The ``?context=`` query param is set to a value other than"
+                    " ``personal``/``team``."
+                )
+            ),
+            403: OpenApiResponse(
+                description=(
+                    "``?context=team``: caller is missing ``is_billing=True`` on"
+                    " their active org membership."
+                )
+            ),
+            404: OpenApiResponse(
+                description="No active subscription in the resolved context."
+            ),
+        },
+        description=(
+            "Cancel a pending plan-switch (deferred downgrade) on the active"
+            " subscription. Idempotent — returns the unchanged subscription"
+            " when no schedule exists. Same context-routing and is_billing"
+            " gate as PATCH/DELETE on ``/me/``."
+        ),
+        tags=["billing"],
+    )
+    def delete(self, request: Request) -> Response:
+        user = get_user(request)
+        context, _org_id = _resolve_mutation_context(request, user)
+
+        async def _do() -> None:
+            customer, _, _ = await _get_customer_and_paid_subscription(user, context=context)
+            await release_pending_schedule_for_customer(
+                stripe_customer_id=customer.id,
+                subscription_repo=get_billing_repos().subscriptions,
+            )
+
+        async_to_sync(_do)()
+        sub = _refetch_subscription_after_mutation(user, context=context)
+        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
+
+
+def _refetch_subscription_after_mutation(user: User, *, context: str) -> SubscriptionModel:
+    """Return the (single) sub matching *context* after a PATCH/DELETE round-trip.
+
+    The webhook may not have caught up yet; we want the row our DB knows about
+    in this scope, not whichever sub happens to sort newest. Picks the team
+    sub for ``context="team"`` (matched on ``stripe_customer.org_id``) and the
+    personal sub otherwise. Raises ``NotFound`` if the sub disappeared.
+    """
+    subs = _get_active_subscriptions_for_user(user)
+    if context == _SUBSCRIPTION_CONTEXT_TEAM:
+        for sub in subs:
+            if sub.stripe_customer is not None and sub.stripe_customer.org_id is not None:
+                return sub
+    else:
+        for sub in subs:
+            if sub.stripe_customer is None or sub.stripe_customer.org_id is None:
+                return sub
+    raise NotFound("No active subscription found.")

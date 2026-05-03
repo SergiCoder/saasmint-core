@@ -21,8 +21,20 @@ class SubscriptionAlreadyActiveError(DomainError):
     """User already has an active subscription."""
 
 
-class AccountTypeConflictError(DomainError):
-    """User tried to switch billing context without cancelling existing subscription."""
+class NoActiveSubscriptionError(DomainError):
+    """No active subscription exists in the resolved billing context."""
+
+
+class PlanContextMismatchError(DomainError):
+    """Target plan's context does not match the resolved subscription's context."""
+
+
+class AlreadyOnPlanError(DomainError):
+    """The active subscription is already on the requested plan price."""
+
+
+class SeatsBelowMemberCountError(DomainError):
+    """Requested seat count is below the org's current member count."""
 
 
 class InsufficientPermissionError(DomainError):

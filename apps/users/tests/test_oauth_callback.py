@@ -69,6 +69,51 @@ class TestOAuthCallbackNewUser:
         social = SocialAccount.objects.get(user=user, provider="google")
         assert social.provider_user_id == "12345"
 
+    def test_microsoft_verified_email_creates_user_and_logs_in(self, client, _oauth_state):
+        # Happy path: Microsoft id_token carried `xms_edov: true` (Microsoft
+        # has verified the email's domain belongs to the user's tenant). The
+        # callback should sign the user in directly, mirroring Google/GitHub.
+        info = _mock_exchange(
+            email="alice@verified-tenant.com",
+            provider_user_id="ms-oid-1",
+            email_verified=True,
+        )
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "#code=" in resp["Location"]
+        assert "email_not_verified" not in resp["Location"]
+
+        user = User.objects.get(email="alice@verified-tenant.com")
+        assert user.registration_method == "microsoft"
+        assert user.is_verified is True
+        assert SocialAccount.objects.filter(
+            user=user, provider="microsoft", provider_user_id="ms-oid-1"
+        ).exists()
+
+    def test_microsoft_unverified_email_redirects_to_error(self, client, _oauth_state):
+        # Microsoft Graph /me does not prove email ownership, so a brand-new
+        # MS sign-in must NOT auto-create a verified user — that would let a
+        # tenant admin take over an existing saasmint account by setting
+        # `mail=victim@example.com`. The callback redirects to the frontend
+        # error page; the frontend then asks the user to verify via email.
+        info = _mock_exchange(
+            email="dan@example.com",
+            provider_user_id="ms-1",
+            email_verified=False,
+        )
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "email_not_verified" in resp["Location"]
+        assert not User.objects.filter(email="dan@example.com").exists()
+
     def test_no_subscription_created(self, client, _oauth_state):
         """OAuth-created users no longer get a free Subscription assigned —
         Subscription is a pure Stripe mirror after this refactor."""
@@ -107,6 +152,35 @@ class TestOAuthCallbackExistingEmailUser:
         # SocialAccount was auto-linked
         assert SocialAccount.objects.filter(user=user, provider="google").exists()
 
+    def test_microsoft_auto_links_social_account_for_email_user(self, client, _oauth_state):
+        # Regression guard for the Microsoft email_verified fix: pre-fix, a
+        # Microsoft sign-in matching an existing email-registered user was
+        # bounced to email_not_verified and never linked.
+        user = User.objects.create_user(
+            email="existing@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Existing User",
+        )
+        info = _mock_exchange(
+            email="existing@example.com",
+            provider_user_id="ms-99",
+            email_verified=True,
+        )
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "#code=" in resp["Location"]
+        assert "email_not_verified" not in resp["Location"]
+
+        user.refresh_from_db()
+        assert user.registration_method == "email"
+        assert SocialAccount.objects.filter(
+            user=user, provider="microsoft", provider_user_id="ms-99"
+        ).exists()
+
 
 @pytest.mark.django_db
 class TestOAuthCallbackReturningSocialUser:
@@ -129,6 +203,36 @@ class TestOAuthCallbackReturningSocialUser:
 
         # No duplicate SocialAccount created
         assert SocialAccount.objects.filter(user=user, provider="github").count() == 1
+
+    def test_returning_microsoft_user_logs_in_even_when_unverified(self, client, _oauth_state):
+        # SocialAccount-by-provider-id lookup short-circuits BEFORE the
+        # email_verified gate (resolve_oauth_user step 1). This matters for
+        # Microsoft specifically: a user who originally signed in pre-fix
+        # already has a SocialAccount row, and on subsequent sign-ins the
+        # id_token may still lack `xms_edov` (consumer MSA, etc.), giving
+        # email_verified=False. They must still be able to log in — only
+        # brand-new users need the verified-email gate.
+        user = User.objects.create_user(
+            email="returning-ms@example.com",
+            full_name="Returning MS",
+            registration_method="microsoft",
+        )
+        SocialAccount.objects.create(user=user, provider="microsoft", provider_user_id="ms-ret")
+
+        info = _mock_exchange(
+            email="returning-ms@example.com",
+            provider_user_id="ms-ret",
+            email_verified=False,
+        )
+        with patch("apps.users.auth_views.exchange_code", return_value=info):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "#code=" in resp["Location"]
+        assert "email_not_verified" not in resp["Location"]
+        assert SocialAccount.objects.filter(user=user, provider="microsoft").count() == 1
 
 
 @pytest.mark.django_db
@@ -217,6 +321,10 @@ class TestOAuthCallbackUnverifiedEmail:
         assert not User.objects.filter(email="unverified@example.com").exists()
 
     def test_unverified_email_blocks_linking_to_existing_account(self, client, _oauth_state):
+        """Unverified email + existing local account → ``oauth_email_unverified_collision``
+        (NOT generic ``email_not_verified``). Frontend uses the collision
+        code to guide the user to log in with their password and link
+        the provider explicitly."""
         User.objects.create_user(
             email="victim@example.com",
             password="testpass123",  # noqa: S106
@@ -233,7 +341,7 @@ class TestOAuthCallbackUnverifiedEmail:
                 {"code": "auth-code", "state": "test-state"},
             )
         assert resp.status_code == 302
-        assert "email_not_verified" in resp["Location"]
+        assert "oauth_email_unverified_collision" in resp["Location"]
         assert not SocialAccount.objects.filter(
             provider="microsoft", provider_user_id="ms-attacker"
         ).exists()

@@ -24,6 +24,7 @@ class _PhoneReadSerializer(serializers.Serializer[User]):
 class UserSerializer(serializers.ModelSerializer[User]):
     phone = _PhoneReadSerializer(source="*", read_only=True, allow_null=True)
     linked_providers = serializers.SerializerMethodField()
+    has_stripe_customer = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -32,7 +33,6 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "email",
             "full_name",
             "avatar_url",
-            "account_type",
             "preferred_locale",
             "preferred_currency",
             "phone",
@@ -43,6 +43,7 @@ class UserSerializer(serializers.ModelSerializer[User]):
             "is_verified",
             "registration_method",
             "linked_providers",
+            "has_stripe_customer",
             "created_at",
             "updated_at",
         )
@@ -53,6 +54,27 @@ class UserSerializer(serializers.ModelSerializer[User]):
         if "social_accounts" in prefetched:
             return [sa.provider for sa in obj.social_accounts.all()]
         return list(obj.social_accounts.values_list("provider", flat=True))
+
+    def get_has_stripe_customer(self, obj: User) -> bool:
+        """Whether the user has a personal Stripe customer.
+
+        The user's billing currency is locked at first purchase on this
+        customer (rule 12). After that, even cancellation leaves the
+        customer row in place, so the lock survives — frontend uses this
+        flag to gate the "your billing currency can't be changed" notice
+        on the profile form. Org-scoped Stripe customers don't count;
+        the user's currency is independent of any org's billing currency
+        (rule 3 — distinct customers per scope).
+
+        Performance: a single indexed ``EXISTS`` on the unique ``user_id``
+        (OneToOneField) — ``SELECT 1 ... LIMIT 1``. The flag must reflect
+        live DB state (the row can be hard-deleted out from under the
+        cached ``User`` instance), so we deliberately do not short-circuit
+        via ``_state.fields_cache``.
+        """
+        from apps.billing.models import StripeCustomer
+
+        return StripeCustomer.objects.filter(user_id=obj.id).exists()
 
     def to_representation(self, instance: User) -> dict[str, Any]:
         data = super().to_representation(instance)

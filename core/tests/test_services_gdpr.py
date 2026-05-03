@@ -107,7 +107,7 @@ async def test_delete_account_with_customer_and_subscription() -> None:
             subscription_repo=subscription_repo,
         )
 
-    mock_cancel.assert_called_once_with("sub_exec")
+    mock_cancel.assert_called_once_with("sub_exec", prorate=False)
     mock_cust_del.assert_called_once_with("cus_exec")
     assert await customer_repo.get_by_id(customer.id) is None
     assert await user_repo.get_by_id(user.id) is None

@@ -62,7 +62,6 @@ class UserChangeForm(BaseUserChangeForm):  # type: ignore[type-arg]  # django-st
             "password",
             "full_name",
             "avatar_url",
-            "account_type",
             "registration_method",
             "preferred_locale",
             "preferred_currency",
@@ -98,8 +97,8 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs generi
     class Media:
         css: ClassVar[dict[str, tuple[str, ...]]] = {"all": ("users_admin.css",)}
 
-    list_display = ("email", "full_name", "account_type", "is_verified", "is_active", "created_at")
-    list_filter = ("account_type", "registration_method", "is_active", "is_staff", "is_verified")
+    list_display = ("email", "full_name", "is_verified", "is_active", "created_at")
+    list_filter = ("registration_method", "is_active", "is_staff", "is_verified")
     search_fields = ("email", "full_name")
     ordering = ("-created_at",)
     readonly_fields = (
@@ -116,7 +115,6 @@ class UserAdmin(BaseUserAdmin):  # type: ignore[type-arg]  # django-stubs generi
                 "fields": (
                     "full_name",
                     "avatar_url",
-                    "account_type",
                     "preferred_locale",
                     "preferred_currency",
                     ("phone_prefix", "phone"),

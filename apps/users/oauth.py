@@ -3,15 +3,28 @@
 from __future__ import annotations
 
 import functools
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TypedDict, assert_never
+from typing import Any, TypedDict, assert_never
 from urllib.parse import urlencode
 
 import httpx
+import jwt
 from django.conf import settings
+from jwt import PyJWKClient
+
+logger = logging.getLogger(__name__)
 
 _OAUTH_TIMEOUT = httpx.Timeout(10.0)
+
+# Microsoft OIDC: keys served at the v2.0 multi-tenant endpoint cover both
+# work/school and consumer (MSA) tokens. Issuer format is per-tenant
+# (`https://login.microsoftonline.com/{tid}/v2.0`); we don't pin a tid so we
+# validate prefix/suffix instead of using jwt.decode's strict issuer check.
+_MS_JWKS_URI = "https://login.microsoftonline.com/common/discovery/v2.0/keys"
+_MS_OIDC_ISSUER_PREFIX = "https://login.microsoftonline.com/"
+_MS_OIDC_ISSUER_SUFFIX = "/v2.0"
 
 
 class Provider(StrEnum):
@@ -38,6 +51,7 @@ class _ProviderConfig(TypedDict):
 
 class _TokenResponse(TypedDict, total=False):
     access_token: str
+    id_token: str
 
 
 class _GoogleUserInfo(TypedDict, total=False):
@@ -71,6 +85,17 @@ class _MicrosoftUserInfo(TypedDict, total=False):
 
 class OAuthEmailNotVerifiedError(Exception):
     """Raised when the OAuth provider did not confirm email ownership."""
+
+
+class OAuthEmailUnverifiedCollisionError(Exception):
+    """Raised when an OAuth-provided email matches an existing local account
+    but the provider is not trusted for auto-link (either ``email_verified``
+    is false/absent, or the provider is not on
+    ``apps.users.services.TRUSTED_FOR_AUTO_LINK``).
+
+    The user must sign in with their password and link the provider
+    explicitly — auto-linking on an unverified or untrusted source would
+    enable account takeover."""
 
 
 @dataclass(frozen=True)
@@ -112,6 +137,46 @@ def _get_config(provider: Provider) -> _ProviderConfig:
                 userinfo_url="https://graph.microsoft.com/v1.0/me",
                 scopes="openid email profile User.Read",
             )
+
+
+@functools.cache
+def _ms_jwks_client() -> PyJWKClient:
+    # PyJWKClient caches keys in-process for the lifetime of the worker.
+    # Lazy-initialised so import-time has no network dependency.
+    return PyJWKClient(_MS_JWKS_URI)
+
+
+def _verify_microsoft_id_token(id_token: str) -> dict[str, Any] | None:
+    """Verify a Microsoft OIDC id_token and return its claims, or None.
+
+    Returns None on any failure (malformed token, JWKS fetch error, bad
+    signature, expired, wrong audience, non-Microsoft issuer). Callers
+    treat None as "we cannot trust this id_token" and fall back to the
+    unverified path — which is safe, just worse UX (the user gets sent
+    through email-link verification).
+    """
+    try:
+        signing_key = _ms_jwks_client().get_signing_key_from_jwt(id_token)
+        claims: dict[str, Any] = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=settings.OAUTH_MICROSOFT_CLIENT_ID,
+            # Microsoft's `iss` is per-tenant (`.../{tid}/v2.0`); we accept
+            # any tenant and validate the prefix below instead of pinning a
+            # single issuer string here.
+            options={"verify_iss": False},
+        )
+    except (jwt.InvalidTokenError, jwt.PyJWKClientError, httpx.HTTPError) as exc:
+        logger.warning("Microsoft id_token verification failed: %s", exc)
+        return None
+
+    iss = claims.get("iss", "")
+    if not (iss.startswith(_MS_OIDC_ISSUER_PREFIX) and iss.endswith(_MS_OIDC_ISSUER_SUFFIX)):
+        logger.warning("Microsoft id_token has unexpected issuer: %s", iss)
+        return None
+
+    return claims
 
 
 def get_authorization_url(provider: str, redirect_uri: str, state: str) -> str:
@@ -185,8 +250,31 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
             )
         case Provider.MICROSOFT:
             ms: _MicrosoftUserInfo = info
-            # Microsoft Graph does not expose a reliable email_verified flag for
-            # consumer accounts, so treat these emails as unverified.
+            # Trust the email iff Microsoft's OIDC id_token is signature-valid
+            # AND carries `xms_edov: true` — the claim Microsoft sets only when
+            # it has verified the email's domain belongs to the user's tenant.
+            # Graph /me on its own does NOT prove ownership: a tenant admin can
+            # set `mail` to any string (including a third-party domain) without
+            # verifying the destination mailbox, which combined with the email
+            # auto-link in resolve_oauth_user would enable account takeover.
+            id_token = token_data.get("id_token")
+            claims = _verify_microsoft_id_token(id_token) if id_token else None
+            # Only the `email` claim is covered by xms_edov's domain-ownership
+            # attestation. `preferred_username` is human-readable, mutable, and
+            # explicitly documented as unsafe for authorization decisions
+            # (Microsoft can return e.g. a tenant admin-controlled UPN that
+            # doesn't match the verified mailbox), so we do NOT fall back to
+            # it on the verified path — without an `email` claim we drop to
+            # the unverified branch.
+            verified_email = claims.get("email") if claims else None
+            if claims and claims.get("xms_edov") is True and verified_email:
+                return OAuthUserInfo(
+                    email=verified_email,
+                    full_name=claims.get("name") or ms.get("displayName", ""),
+                    provider_user_id=str(claims.get("oid") or ms["id"]),
+                    email_verified=True,
+                )
+
             email = ms.get("mail") or ms.get("userPrincipalName")
             if not email:
                 raise OAuthError("Microsoft OAuth response missing email")

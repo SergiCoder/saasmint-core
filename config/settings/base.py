@@ -11,12 +11,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Repo root: base.py → settings/ → config/ → repo
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# Select the active env file based on ENVIRONMENT (default: local)
+# Select the active env file based on ENVIRONMENT (default: local).
+# Accepted values: local | dev | prod. Anything else falls back to .env.local.
 _ENV_NAME = os.environ.get("ENVIRONMENT", "local")
 _ENV_FILE_MAP = {
     "local": ".env.local",
-    "development": ".env.dev",
-    "production": ".env.prod",
+    "dev": ".env.dev",
+    "prod": ".env.prod",
 }
 _ACTIVE_ENV = _REPO_ROOT / _ENV_FILE_MAP.get(_ENV_NAME, ".env.local")
 
@@ -34,7 +35,7 @@ class _Env(BaseSettings):
     stripe_webhook_secret: str
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://localhost:5432/saasmint"
-    debug: bool = False
+    environment: str = "local"  # local | dev | prod — surfaced in admin banner + logs
     schema_public: bool = False  # expose /api/schema, /api/docs, /api/redoc outside DEBUG
     allowed_hosts: list[str] = []
     cors_allowed_origins: list[str] = []
@@ -49,6 +50,7 @@ class _Env(BaseSettings):
     oauth_github_client_secret: str = ""
     oauth_microsoft_client_id: str = ""
     oauth_microsoft_client_secret: str = ""
+    marketing_inquiries_to: str = ""  # admin inbox for landing-CTA / Contact-form submissions
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
 
 
@@ -75,7 +77,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = env.django_secret_key
 JWT_SIGNING_KEY = env.jwt_signing_key or env.django_secret_key
-DEBUG = env.debug
+ENVIRONMENT = env.environment
 SCHEMA_PUBLIC = env.schema_public
 ALLOWED_HOSTS = env.allowed_hosts
 
@@ -96,6 +98,7 @@ INSTALLED_APPS = [
     "apps.orgs",
     "apps.admin_panel",
     "apps.dashboard",
+    "apps.marketing",
 ]
 
 MIDDLEWARE = [
@@ -125,6 +128,7 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
+                "config.context_processors.app_context",
             ],
         },
     },
@@ -186,6 +190,11 @@ REST_FRAMEWORK = {
         "auth_login": "5/minute",
         "auth_register": "5/minute",
         "auth_refresh": "60/minute",
+        # Marketing inquiries get a dedicated, much tighter scope: the failure
+        # mode (admin inbox flooded by a single IP) is more direct than auth's
+        # (outbound spam, contained by Resend reputation), and the traffic
+        # shape is one-and-done rather than bursty.
+        "marketing_inquiries": "3/10minute",
         "billing": "100/hour",
         "account": "120/hour",
         "account_export": "3/hour",
@@ -240,10 +249,6 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.billing.tasks.sync_exchange_rates",
         "schedule": 86400,  # once per day
     },
-    "cleanup-orphaned-org-accounts": {
-        "task": "apps.users.tasks.cleanup_orphaned_org_accounts",
-        "schedule": 86400,  # once per day
-    },
     "cleanup-expired-refresh-tokens": {
         "task": "apps.users.tasks.cleanup_expired_refresh_tokens",
         "schedule": 86400,  # once per day
@@ -266,6 +271,9 @@ OAUTH_GITHUB_CLIENT_ID = env.oauth_github_client_id
 OAUTH_GITHUB_CLIENT_SECRET = env.oauth_github_client_secret
 OAUTH_MICROSOFT_CLIENT_ID = env.oauth_microsoft_client_id
 OAUTH_MICROSOFT_CLIENT_SECRET = env.oauth_microsoft_client_secret
+
+# Marketing
+MARKETING_INQUIRIES_TO = env.marketing_inquiries_to
 
 # django-hijack
 HIJACK_REGISTER_ADMIN_ACTIONS = True

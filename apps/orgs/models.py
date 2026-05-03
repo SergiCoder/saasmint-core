@@ -33,20 +33,13 @@ class Org(models.Model):
         blank=True,
         related_name="created_orgs",
     )
-    # `deleted_at` is the canonical soft-delete marker (IS NULL = live).
-    # `is_active` is an orthogonal flag used to pause/disable an org (e.g. after
-    # the team subscription is cancelled) without deleting it, so both columns
-    # are intentional and should be filtered together: deleted_at__isnull=True, is_active=True.
-    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    deleted_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     class Meta:
         db_table = "orgs"
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(
                 fields=["slug"],
-                condition=models.Q(deleted_at__isnull=True),
                 name="idx_orgs_slug_active",
             ),
         ]
@@ -67,6 +60,17 @@ class OrgMember(models.Model):
         db_table = "org_members"
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(fields=["org", "user"], name="org_members_org_user_uniq"),
+            # Rule 8: one owned org per user. Partial unique index on the
+            # owner-row guarantees DB-level enforcement so two parallel team
+            # checkouts can't both win the rule-8 view-layer guard
+            # (CheckoutSessionView.post → already_owns_org). The view's
+            # ``.exists()`` check stays as a fast-path UX guard; the DB
+            # constraint is the authoritative enforcer for the race.
+            models.UniqueConstraint(
+                fields=["user"],
+                condition=models.Q(role="owner"),
+                name="uniq_org_owner_per_user",
+            ),
         ]
         indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             # Hot path: `SubscriptionView` checks whether an org-member user has

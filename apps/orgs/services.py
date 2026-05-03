@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING
@@ -11,12 +12,12 @@ if TYPE_CHECKING:
     from apps.billing.models import Subscription as SubscriptionModel
 
 import stripe
-from asgiref.sync import async_to_sync, sync_to_async
+from asgiref.sync import sync_to_async
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
-from apps.users.models import AccountType, User
+from apps.users.models import User
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +26,14 @@ def generate_unique_slug(name: str) -> str:
     """Generate a unique org slug from a name.
 
     Slugifies the name, ensures it matches [a-z0-9][a-z0-9-]*[a-z0-9] (min 2 chars),
-    and appends a numeric suffix if the slug is already taken by an active org.
+    and appends a numeric suffix if the slug is already taken.
 
     Race semantics: this is a best-effort generator, not a guarantee. The
     scan + pick is not transactional, so two concurrent callers can land on
-    the same candidate. The partial unique index on `Org.slug` where
-    `deleted_at IS NULL` (see `idx_orgs_slug_active`) is the authoritative
-    uniqueness enforcer — callers are expected to wrap the `Org.create()`
-    in a try/except for `IntegrityError` and retry if they must survive a
-    lost race (see `_create_org_with_owner`).
+    the same candidate. The unique index on `Org.slug` (`idx_orgs_slug_active`)
+    is the authoritative uniqueness enforcer — callers are expected to wrap
+    the `Org.create()` in a try/except for `IntegrityError` and retry if they
+    must survive a lost race (see `_create_org_with_owner`).
     """
     base = slugify(name)
     # Strip any characters not in [a-z0-9-]
@@ -55,7 +55,6 @@ def generate_unique_slug(name: str) -> str:
         slug
         for slug in Org.objects.filter(
             slug__startswith=base,
-            deleted_at__isnull=True,
         ).values_list("slug", flat=True)
         if _suffix_re.match(slug)
     }
@@ -73,13 +72,19 @@ async def on_team_checkout_completed(
     stripe_customer_id: str,
     livemode: bool,
     stripe_subscription_id: str | None,
+    keep_personal_subscription: bool,
 ) -> None:
     """Create an org and its Stripe customer after a team plan checkout.
 
-    Called from the checkout.session.completed webhook handler.
-    The user already has account_type=ORG_MEMBER from registration.
-    Creates the Org, adds the user as owner + billing contact, and
-    links the Stripe customer to the org.
+    Called from the checkout.session.completed webhook handler. Org membership
+    is the only signal that distinguishes a team-billing user from a personal
+    one — successful team checkout creates the OrgMember row.
+
+    When ``keep_personal_subscription`` is False (the default for the upgrade
+    flow), the user's existing personal subscription — if any — is scheduled
+    to cancel at period end so they're not double-billed (rule 16). Set True
+    to leave the personal sub running concurrently with the new team sub
+    (rule 5b).
     """
     user = await User.objects.aget(id=user_id)
 
@@ -98,6 +103,12 @@ async def on_team_checkout_completed(
         )
         raise
 
+    if stripe_subscription_id is not None:
+        await _persist_team_subscription(stripe_subscription_id)
+
+    if not keep_personal_subscription:
+        await _schedule_personal_cancel_at_period_end(user_id)
+
     logger.info(
         "Team checkout completed: org '%s' (slug=%s) created for user %s, Stripe customer %s",
         org_name,
@@ -107,6 +118,67 @@ async def on_team_checkout_completed(
     )
 
 
+async def _persist_team_subscription(stripe_subscription_id: str) -> None:
+    """Upsert the team subscription mirror row immediately after org creation.
+
+    Stripe sometimes delivers ``customer.subscription.created`` BEFORE
+    ``checkout.session.completed`` — when that happens, the sync webhook
+    raises ``Unknown customer`` because the ``StripeCustomer`` row has
+    not been written yet (it's only created here, by the team-checkout
+    handler). Fetching the subscription from Stripe and upserting it now
+    closes that race; the later ``customer.subscription.updated`` events
+    flow through the same idempotent upsert.
+    """
+    from saasmint_core.services.webhooks import sync_subscription_from_data
+
+    from apps.billing.repositories import get_webhook_repos
+
+    sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
+    repos = get_webhook_repos()
+    # ``stripe.Subscription.retrieve`` returns a ``StripeObject``: it supports
+    # ``[...]`` indexing but does NOT inherit from ``dict``, so ``.get(...)``,
+    # ``.items()``, etc. are proxied through ``__getattr__`` and crash with
+    # ``AttributeError`` when the requested key is absent. The webhook-dispatch
+    # path receives plain dicts (json-decoded by ``stripe.Webhook.construct_event``)
+    # and ``sync_subscription_from_data`` is written against dict semantics, so
+    # we normalise at the boundary via ``to_dict()`` (recursive in this SDK).
+    await sync_subscription_from_data(
+        sub.to_dict(),
+        customers=repos.customers,
+        plans=repos.plans,
+        subscriptions=repos.subscriptions,
+    )
+
+
+async def _schedule_personal_cancel_at_period_end(user_id: UUID) -> None:
+    """Schedule cancel-at-period-end on the user's personal sub, if any.
+
+    No-op when the user has no user-scoped Stripe customer or no active
+    personal subscription. Idempotent on already-scheduled subs — Stripe's
+    ``Subscription.modify(cancel_at="min_period_end")`` accepts being called
+    repeatedly with the same value.
+    """
+    from saasmint_core.exceptions import SubscriptionNotFoundError
+    from saasmint_core.services.billing import cancel_subscription
+
+    from apps.billing.repositories import get_billing_repos
+
+    repos = get_billing_repos()
+    personal_customer = await repos.customers.get_by_user_id(user_id)
+    if personal_customer is None:
+        return
+
+    try:
+        await cancel_subscription(
+            stripe_customer_id=personal_customer.id,
+            at_period_end=True,
+            subscription_repo=repos.subscriptions,
+        )
+    except SubscriptionNotFoundError:
+        # User has a personal customer but no active sub on it — fine, nothing to cancel.
+        return
+
+
 def _create_org_with_owner(
     user: User,
     org_name: str,
@@ -114,37 +186,32 @@ def _create_org_with_owner(
     stripe_customer_id: str | None = None,
     livemode: bool = False,
 ) -> tuple[Org, OrgMember]:
-    """Atomically create an org, its owner membership, and (optionally) its Stripe customer.
+    """Atomically create an org, its owner membership, and its Stripe customer.
 
-    The user must already have account_type=ORG_MEMBER (set at registration).
-    Passing `stripe_customer_id` links the org to its Stripe customer in the same
-    transaction, preventing orgs without billing linkage on partial failure.
+    All three state changes happen in a single transaction so partial-failure
+    can't leave an org without billing linkage. The OrgMember row is the
+    authoritative signal that this user is now an org member — no separate
+    flag on User is needed.
 
-    Handles the user→org transition: ``CheckoutSessionView`` saves a user-scoped
-    ``StripeCustomer`` when starting team checkout (the org does not exist yet).
-    On ``checkout.session.completed``, that same row is re-bound here to the new
-    org. A ``StripeCustomer`` already linked to an org is treated as a duplicate
-    webhook delivery — the existing org and membership are returned unchanged.
+    Duplicate-webhook short-circuit: a ``StripeCustomer`` row that already
+    points to an org+OrgMember pair indicates a re-delivery and returns the
+    existing org+member unchanged.
     """
     from apps.billing.models import StripeCustomer
-
-    if user.account_type != AccountType.ORG_MEMBER:
-        raise ValueError(f"User {user.id} must have account_type=org_member to create an org")
 
     with transaction.atomic():
         # Duplicate-webhook short-circuit has to happen INSIDE the transaction
         # with SELECT FOR UPDATE — otherwise two concurrent deliveries can
         # both pass a pre-check, both create an Org, and the second wins the
-        # StripeCustomer reassignment, orphaning the first Org.
-        existing_customer = None
+        # StripeCustomer creation, orphaning the first Org.
         if stripe_customer_id is not None:
-            existing_customer = (
+            existing = (
                 StripeCustomer.objects.select_for_update()
                 .filter(stripe_id=stripe_customer_id)
                 .first()
             )
-            if existing_customer is not None and existing_customer.org_id is not None:
-                already_org = Org.objects.filter(id=existing_customer.org_id).first()
+            if existing is not None and existing.org_id is not None:
+                already_org = Org.objects.filter(id=existing.org_id).first()
                 if already_org is not None:
                     member = OrgMember.objects.filter(org=already_org, user=user).first()
                     if member is not None:
@@ -163,40 +230,27 @@ def _create_org_with_owner(
             is_billing=True,
         )
         if stripe_customer_id is not None:
-            if existing_customer is None:
-                StripeCustomer.objects.create(
-                    stripe_id=stripe_customer_id,
-                    org=org,
-                    livemode=livemode,
-                )
-            else:
-                existing_customer.user = None
-                existing_customer.org = org
-                existing_customer.livemode = livemode
-                existing_customer.save(update_fields=["user", "org", "livemode"])
+            StripeCustomer.objects.create(
+                stripe_id=stripe_customer_id,
+                org=org,
+                livemode=livemode,
+            )
+
     return org, member
 
 
-async def deactivate_org(org_id: UUID) -> None:
-    """Deactivate an org after its subscription is canceled.
+async def delete_org_on_subscription_cancel(org_id: UUID) -> None:
+    """Schedule hard-delete of an org after its team subscription is canceled.
 
-    Sets is_active=False and cancels pending invitations.
-    Called from the customer.subscription.deleted webhook handler.
+    Dispatch-only: the cascade itself runs in
+    :func:`apps.orgs.tasks.delete_org_on_subscription_cancel_task` so the
+    Stripe webhook handler returns within the retry window. See that task
+    for the cascade semantics, idempotency contract, and the rule-9 note on
+    why we don't branch on ``cancellation_details.reason``.
     """
-    updated = await Org.objects.filter(id=org_id, is_active=True).aupdate(is_active=False)
-    if updated:
-        await cancel_pending_invitations_for_org(org_id)
-        logger.info("Deactivated org %s after subscription cancellation", org_id)
-    else:
-        logger.warning("Org %s already inactive or not found", org_id)
+    from apps.orgs.tasks import delete_org_on_subscription_cancel_task
 
-
-async def cancel_pending_invitations_for_org(org_id: UUID) -> int:
-    """Cancel all pending invitations for an org. Returns count cancelled."""
-    count = await Invitation.objects.filter(org_id=org_id, status=InvitationStatus.PENDING).aupdate(
-        status=InvitationStatus.CANCELLED
-    )
-    return count
+    delete_org_on_subscription_cancel_task.delay(str(org_id))
 
 
 def accept_invitation(
@@ -226,7 +280,6 @@ def accept_invitation(
             email=invitation.email,
             password=password,
             full_name=full_name,
-            account_type=AccountType.ORG_MEMBER,
             is_verified=False,
         )
         OrgMember.objects.create(
@@ -261,21 +314,33 @@ def _delete_org_db_only(org: Org) -> None:
             status=InvitationStatus.CANCELLED
         )
 
-        # Delete only users whose *only* membership is in this org — users
-        # who also belong to another org must keep their account, otherwise
-        # deleting org A would wipe accounts still active in org B.
-        # The NOT EXISTS subquery is evaluated in the DB so we don't need to
-        # materialize thousands of UUIDs into Python for the IN clause.
+        # Delete only users whose *only* membership is in this org **and**
+        # who don't have an active personal subscription — otherwise
+        # deleting org A would wipe accounts still active in org B, or
+        # silently nuke a user who's still paying for their own personal plan.
+        # The NOT EXISTS subqueries are evaluated in the DB so we don't need
+        # to materialize thousands of UUIDs into Python for the IN clause.
+        from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+        from apps.billing.models import Subscription as SubscriptionModel
+
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id=org_id
         )
-        single_org_member_user_ids = (
+        personal_subs = SubscriptionModel.objects.filter(
+            user_id=OuterRef("user_id"),
+            stripe_customer__user_id=OuterRef("user_id"),
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+        )
+        deletable_user_ids = (
             OrgMember.objects.filter(org=org)
-            .annotate(has_other=Exists(other_memberships))
-            .filter(has_other=False)
+            .annotate(
+                has_other=Exists(other_memberships),
+                has_personal_sub=Exists(personal_subs),
+            )
+            .filter(has_other=False, has_personal_sub=False)
             .values("user_id")
         )
-        User.objects.filter(id__in=Subquery(single_org_member_user_ids)).delete()
+        User.objects.filter(id__in=Subquery(deletable_user_ids)).delete()
         OrgMember.objects.filter(org=org).delete()
 
         org.delete()
@@ -315,7 +380,7 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
     """
     from apps.orgs.tasks import cancel_stripe_subs_task
 
-    orgs = list(Org.objects.filter(created_by_id=user_id, deleted_at__isnull=True))
+    orgs = list(Org.objects.filter(created_by_id=user_id))
     if not orgs:
         return
 
@@ -355,49 +420,13 @@ def _get_active_stripe_sub(org_id: UUID) -> SubscriptionModel | None:
     )
 
 
-def decrement_subscription_seats(org_id: UUID) -> None:
-    """Decrement the team subscription's seat count to match member count."""
-    from saasmint_core.services.subscriptions import update_seat_count
-
-    sub = _get_active_stripe_sub(org_id)
-    if sub is None or sub.stripe_id is None:
-        return
-
-    # Lock the OrgMember rows while we compute the new seat count so two
-    # concurrent member removals can't both read the pre-decrement total
-    # and then push the same (stale) count to Stripe. Snapshot the count
-    # inside the txn and push to Stripe only after commit to avoid holding
-    # DB locks across the external API call.
-    with transaction.atomic():
-        new_quantity = (
-            OrgMember.objects.select_for_update()
-            .filter(org_id=org_id, org__deleted_at__isnull=True)
-            .count()
-        )
-
-    if new_quantity < 1:
-        return
-
-    try:
-        async_to_sync(update_seat_count)(
-            stripe_subscription_id=sub.stripe_id,
-            quantity=new_quantity,
-        )
-    except (stripe.StripeError, ValueError):
-        logger.exception(
-            "Failed to update seat count to %d for sub %s",
-            new_quantity,
-            sub.stripe_id,
-        )
-
-
 def _cancel_team_subscription(org: Org) -> None:
-    """Cancel the team subscription for an org via Stripe (immediate cancellation)."""
+    """Cancel the team subscription for an org via Stripe (immediate, no refund)."""
     sub = _get_active_stripe_sub(org.id)
     if sub is None or sub.stripe_id is None:
         return
     try:
-        stripe.Subscription.cancel(sub.stripe_id)
+        stripe.Subscription.cancel(sub.stripe_id, prorate=False)
     except stripe.StripeError:
         logger.exception(
             "Failed to cancel Stripe sub %s for org %s",

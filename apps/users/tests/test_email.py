@@ -123,9 +123,7 @@ class TestEmailLogging:
 
         assert any("user@example.com" in r.message for r in caplog.records)
 
-    def test_reset_email_logs_recipient(
-        self, email_settings, caplog: pytest.LogCaptureFixture
-    ):
+    def test_reset_email_logs_recipient(self, email_settings, caplog: pytest.LogCaptureFixture):
         with patch("apps.users.email.resend.Emails.send"):
             with caplog.at_level("INFO", logger="apps.users.email"):
                 send_password_reset_email("user@example.com", "tok_reset")

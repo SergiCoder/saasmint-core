@@ -59,6 +59,66 @@ class TestAccountViewGET:
         resp = client.get("/api/v1/account/")
         assert resp.status_code in (401, 403)
 
+    def test_has_stripe_customer_false_when_no_customer(self, authed_client, user):
+        """User with no personal Stripe customer (free tier, never subscribed)
+        gets ``has_stripe_customer: false`` — frontend hides the
+        currency-locked notice (rule 12)."""
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is False
+
+    def test_has_stripe_customer_true_when_user_scoped_customer_exists(self, authed_client, user):
+        """A user-scoped ``StripeCustomer`` row means the user's billing
+        currency is locked at first purchase, so the notice should render —
+        even after the subscription is later cancelled (the customer row
+        survives cancellation)."""
+        from apps.billing.models import StripeCustomer
+
+        StripeCustomer.objects.create(stripe_id="cus_user_locked", user=user, livemode=False)
+
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is True
+
+    def test_has_stripe_customer_false_when_only_org_customer_exists(self, authed_client, user):
+        """Org-scoped Stripe customers don't count — the user's currency is
+        independent of the org's billing currency (rule 3 — distinct
+        customers per scope). An org-member user who only ever paid for
+        team plans must still see ``has_stripe_customer: false`` so the
+        notice doesn't show until they personally subscribe."""
+        from apps.billing.models import StripeCustomer
+        from apps.orgs.models import Org, OrgMember, OrgRole
+
+        org = Org.objects.create(name="OrgOnly", slug="org-only-account", created_by=user)
+        OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
+        StripeCustomer.objects.create(stripe_id="cus_org_only", org=org, livemode=False)
+
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is False
+
+    def test_has_stripe_customer_false_after_customer_hard_deleted(self, authed_client, user):
+        """If the user's personal Stripe customer is hard-deleted (e.g. via
+        the GDPR-erasure path that survives the user, or admin cleanup),
+        the flag flips back to ``false``. The flag is recomputed per
+        request, not cached on the user row, so any state change is
+        immediately reflected."""
+        from apps.billing.models import StripeCustomer
+
+        cust = StripeCustomer.objects.create(stripe_id="cus_to_delete", user=user, livemode=False)
+
+        # Pre-condition: flag is true while the customer row exists.
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is True
+
+        # Hard-delete the customer (no on_delete cascade to the user).
+        cust.delete()
+
+        resp = authed_client.get("/api/v1/account/")
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is False
+
 
 @pytest.mark.django_db
 class TestAccountViewPATCH:
@@ -289,6 +349,39 @@ class TestAccountViewPATCHEdgeCases:
         resp = client.patch("/api/v1/account/", {"full_name": "Hacker"}, format="json")
         assert resp.status_code in (401, 403)
 
+    def test_patch_response_includes_has_stripe_customer(self, authed_client, user):
+        """PATCH /account/ returns ``UserSerializer`` data, so the new
+        ``has_stripe_customer`` flag must appear in the response envelope
+        — frontend reads it from the same payload after profile edits to
+        decide whether to re-render the currency-locked notice."""
+        from apps.billing.models import StripeCustomer
+
+        StripeCustomer.objects.create(stripe_id="cus_patch_resp", user=user, livemode=False)
+
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"full_name": "Renamed"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert "has_stripe_customer" in resp.data
+        assert resp.data["has_stripe_customer"] is True
+
+    def test_patch_cannot_set_has_stripe_customer(self, authed_client, user):
+        """``has_stripe_customer`` is a derived ``SerializerMethodField`` on
+        the response serializer, and ``UpdateUserSerializer`` does not
+        declare it — a client attempting to inject ``true`` via PATCH is
+        silently ignored, and the response reflects the real DB state
+        (no personal ``StripeCustomer`` row -> ``false``)."""
+        resp = authed_client.patch(
+            "/api/v1/account/",
+            {"has_stripe_customer": True, "full_name": "Still Me"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert resp.data["has_stripe_customer"] is False
+        assert resp.data["full_name"] == "Still Me"
+
 
 @pytest.mark.django_db
 class TestAccountViewDELETE:
@@ -309,9 +402,7 @@ class TestAccountViewDELETE:
             Subscription,
         )
 
-        cust = StripeCustomer.objects.create(
-            stripe_id="cus_gdpr_del", user=user, livemode=False
-        )
+        cust = StripeCustomer.objects.create(stripe_id="cus_gdpr_del", user=user, livemode=False)
         plan = Plan.objects.create(
             name="Personal Basic",
             context=PlanContext.PERSONAL,
@@ -325,7 +416,7 @@ class TestAccountViewDELETE:
             stripe_customer=cust,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -336,7 +427,7 @@ class TestAccountViewDELETE:
         assert not User.objects.filter(id=user.id).exists()
         assert not StripeCustomer.objects.filter(id=cust.id).exists()
         mock_cust_del.assert_called_once_with("cus_gdpr_del")
-        mock_sub_cancel.assert_called_once_with("sub_gdpr_del")
+        mock_sub_cancel.assert_called_once_with("sub_gdpr_del", prorate=False)
 
     @patch("saasmint_core.services.gdpr.stripe.Customer.delete")
     def test_delete_without_stripe_customer_still_hard_deletes_user(
@@ -348,9 +439,7 @@ class TestAccountViewDELETE:
         mock_cust_del.assert_not_called()
 
     @patch("saasmint_core.services.gdpr.stripe.Customer.delete")
-    def test_delete_non_owner_membership_decrements_seats(
-        self, mock_cust_del, authed_client, user
-    ):
+    def test_delete_non_owner_membership_decrements_seats(self, mock_cust_del, authed_client, user):
         """Deleting a non-owner member cascades through pre_delete_hook:
         the membership is removed and the team sub quantity is decremented."""
         from datetime import UTC, datetime
@@ -365,20 +454,16 @@ class TestAccountViewDELETE:
             Subscription,
         )
         from apps.orgs.models import Org, OrgMember, OrgRole
-        from apps.users.models import AccountType
 
         owner = User.objects.create_user(
             email="teamowner@example.com",
             full_name="Team Owner",
-            account_type=AccountType.ORG_MEMBER,
         )
         org = Org.objects.create(name="Delete Test Org", slug="delete-test-org", created_by=owner)
         OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.MEMBER)
 
-        team_cust = StripeCustomer.objects.create(
-            stripe_id="cus_seatdec", org=org, livemode=False
-        )
+        team_cust = StripeCustomer.objects.create(stripe_id="cus_seatdec", org=org, livemode=False)
         team_plan = Plan.objects.create(
             name="Team",
             context=PlanContext.TEAM,
@@ -392,25 +477,22 @@ class TestAccountViewDELETE:
             stripe_customer=team_cust,
             status="active",
             plan=team_plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
 
-        with patch(
-            "apps.orgs.tasks.decrement_subscription_seats_task.delay"
-        ) as mock_dispatch:
-            resp = authed_client.delete("/api/v1/account/")
+        resp = authed_client.delete("/api/v1/account/")
 
         assert resp.status_code == 204
         assert not User.objects.filter(id=user.id).exists()
         # Org and owner survive
         assert User.objects.filter(id=owner.id).exists()
         assert Org.objects.filter(id=org.id).exists()
-        # Deleted user's membership is gone
+        # Deleted user's membership is gone — but the seat *limit* on the
+        # team sub is intentionally untouched. Reducing it is an explicit
+        # action via PATCH /subscriptions/me/.
         assert not OrgMember.objects.filter(user_id=user.id).exists()
-        # Seat-count decrement was fanned out to Celery with the org id
-        mock_dispatch.assert_called_once_with(str(org.id))
 
     def test_unauthenticated_delete_rejected(self):
         client = APIClient()
@@ -441,9 +523,7 @@ class TestAccountExportView:
             Subscription,
         )
 
-        cust = StripeCustomer.objects.create(
-            stripe_id="cus_export", user=user, livemode=False
-        )
+        cust = StripeCustomer.objects.create(stripe_id="cus_export", user=user, livemode=False)
         plan = Plan.objects.create(
             name="Personal Basic",
             context=PlanContext.PERSONAL,
@@ -457,7 +537,7 @@ class TestAccountExportView:
             stripe_customer=cust,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )

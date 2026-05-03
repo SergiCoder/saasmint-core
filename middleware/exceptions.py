@@ -11,11 +11,14 @@ from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 from rest_framework.views import exception_handler
 from saasmint_core.exceptions import (
-    AccountTypeConflictError,
+    AlreadyOnPlanError,
     DomainError,
     InsufficientPermissionError,
+    NoActiveSubscriptionError,
     OrgMemberNotFoundError,
     OrgNotFoundError,
+    PlanContextMismatchError,
+    SeatsBelowMemberCountError,
     SubscriptionAlreadyActiveError,
     SubscriptionNotFoundError,
     UserNotFoundError,
@@ -29,7 +32,10 @@ _STATUS_MAP: dict[type[DomainError], int] = {
     OrgMemberNotFoundError: 404,
     SubscriptionNotFoundError: 404,
     SubscriptionAlreadyActiveError: 409,
-    AccountTypeConflictError: 409,
+    NoActiveSubscriptionError: 409,
+    AlreadyOnPlanError: 409,
+    PlanContextMismatchError: 400,
+    SeatsBelowMemberCountError: 400,
     InsufficientPermissionError: 403,
 }
 

@@ -35,7 +35,7 @@ def _make_subscription(
         stripe_customer=stripe_customer,
         status=status,
         plan=plan,
-        quantity=1,
+        seat_limit=1,
         current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
         current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
     )

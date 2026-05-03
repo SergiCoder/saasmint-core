@@ -18,7 +18,7 @@ from saasmint_core.domain.subscription import (
     Subscription,
     SubscriptionStatus,
 )
-from saasmint_core.domain.user import AccountType, User
+from saasmint_core.domain.user import User
 
 NOW = datetime(2024, 1, 1, tzinfo=UTC)
 
@@ -199,7 +199,6 @@ def make_user(**overrides: Any) -> User:
         "id": uuid4(),
         "email": "test@example.com",
         "full_name": "Test User",
-        "account_type": AccountType.PERSONAL,
         "preferred_locale": "en",
         "preferred_currency": "usd",
         "is_verified": True,
@@ -235,7 +234,7 @@ def make_subscription(**overrides: Any) -> Subscription:
         "stripe_customer_id": uuid4(),
         "status": SubscriptionStatus.ACTIVE,
         "plan_id": uuid4(),
-        "quantity": 1,
+        "seat_limit": 1,
         "current_period_start": NOW,
         "current_period_end": NOW,
         "created_at": NOW,

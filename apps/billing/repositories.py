@@ -100,11 +100,14 @@ class DjangoSubscriptionRepository:
             user_id=obj.user_id,
             status=SubscriptionStatus(obj.status),
             plan_id=obj.plan_id,
-            quantity=obj.quantity,
+            seat_limit=obj.seat_limit,
             trial_ends_at=obj.trial_ends_at,
             current_period_start=obj.current_period_start,
             current_period_end=obj.current_period_end,
             canceled_at=obj.canceled_at,
+            cancel_at=obj.cancel_at,
+            scheduled_plan_id=obj.scheduled_plan_id,
+            scheduled_change_at=obj.scheduled_change_at,
             created_at=obj.created_at,
         )
 
@@ -162,11 +165,14 @@ class DjangoSubscriptionRepository:
                 "user_id": subscription.user_id,
                 "status": subscription.status.value,
                 "plan_id": subscription.plan_id,
-                "quantity": subscription.quantity,
+                "seat_limit": subscription.seat_limit,
                 "trial_ends_at": subscription.trial_ends_at,
                 "current_period_start": subscription.current_period_start,
                 "current_period_end": subscription.current_period_end,
                 "canceled_at": subscription.canceled_at,
+                "cancel_at": subscription.cancel_at,
+                "scheduled_plan_id": subscription.scheduled_plan_id,
+                "scheduled_change_at": subscription.scheduled_change_at,
             },
         )
         return subscription
@@ -321,7 +327,7 @@ def get_webhook_repos() -> WebhookRepos:
     from saasmint_core.services.webhooks import WebhookRepos
 
     from apps.billing.services import on_product_checkout_completed
-    from apps.orgs.services import deactivate_org, on_team_checkout_completed
+    from apps.orgs.services import delete_org_on_subscription_cancel, on_team_checkout_completed
 
     return WebhookRepos(
         events=DjangoStripeEventRepository(),
@@ -329,7 +335,7 @@ def get_webhook_repos() -> WebhookRepos:
         customers=DjangoStripeCustomerRepository(),
         plans=DjangoPlanRepository(),
         on_team_checkout_completed=on_team_checkout_completed,
-        on_org_subscription_canceled=deactivate_org,
+        on_org_subscription_canceled=delete_org_on_subscription_cancel,
         on_product_checkout_completed=on_product_checkout_completed,
     )
 

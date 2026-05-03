@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from saasmint_core.domain.user import AccountType, User
+from saasmint_core.domain.user import User
 
 from apps.users.models import User as UserModel
 from helpers import aget_or_none
@@ -18,7 +18,6 @@ class DjangoUserRepository:
             email=obj.email,
             full_name=obj.full_name,
             avatar_url=obj.avatar_url,
-            account_type=AccountType(obj.account_type),
             preferred_locale=obj.preferred_locale,
             preferred_currency=obj.preferred_currency,
             pronouns=obj.pronouns,
@@ -40,7 +39,6 @@ class DjangoUserRepository:
                 "email": str(user.email),
                 "full_name": user.full_name,
                 "avatar_url": user.avatar_url,
-                "account_type": user.account_type.value,
                 "preferred_locale": user.preferred_locale,
                 "preferred_currency": user.preferred_currency,
                 "pronouns": user.pronouns,

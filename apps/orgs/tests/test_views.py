@@ -33,21 +33,19 @@ class TestOrgListViewGET:
         assert resp.status_code == 200
         assert resp.data["count"] == 0
 
-    def test_excludes_soft_deleted_orgs(self, authed_client, soft_deleted_org, owner_membership):
-        resp = authed_client.get("/api/v1/orgs/")
-        assert resp.status_code == 200
-        assert resp.data["count"] == 0
-
     def test_unauthenticated_rejected(self):
         client = APIClient()
         resp = client.get("/api/v1/orgs/")
         assert resp.status_code in (401, 403)
 
     def test_returns_orgs_ordered_by_name(self, authed_client, user):
+        # Rule 8 (``uniq_org_owner_per_user``) limits a user to one OWNER role,
+        # so the second membership uses ADMIN — the listing endpoint sorts
+        # on Org.name regardless of the caller's role.
         org_b = Org.objects.create(name="Bravo", slug="bravo", created_by=user)
         org_a = Org.objects.create(name="Alpha", slug="alpha", created_by=user)
         OrgMember.objects.create(org=org_b, user=user, role=OrgRole.OWNER)
-        OrgMember.objects.create(org=org_a, user=user, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org_a, user=user, role=OrgRole.ADMIN)
         resp = authed_client.get("/api/v1/orgs/")
         names = [o["name"] for o in resp.data["results"]]
         assert names == ["Alpha", "Bravo"]
@@ -81,10 +79,6 @@ class TestOrgDetailViewGET:
 
     def test_not_found(self, authed_client):
         resp = authed_client.get(f"/api/v1/orgs/{uuid4()}/")
-        assert resp.status_code == 404
-
-    def test_soft_deleted_org_returns_404(self, authed_client, soft_deleted_org, owner_membership):
-        resp = authed_client.get(f"/api/v1/orgs/{soft_deleted_org.id}/")
         assert resp.status_code == 404
 
 
@@ -160,7 +154,7 @@ class TestOrgDetailViewDELETE:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=timezone.now(),
             current_period_end=timezone.now() + timedelta(days=30),
         )
@@ -201,6 +195,15 @@ class TestOrgDetailViewDELETE:
         client = APIClient()
         resp = client.delete(f"/api/v1/orgs/{org.id}/")
         assert resp.status_code in (401, 403)
+
+    @patch("apps.orgs.tasks.cancel_stripe_subs_task")
+    def test_double_delete_is_idempotent(self, _mock_cancel, authed_client, org, owner_membership):
+        """Second DELETE after a successful one returns 404 (org already gone)."""
+        org_id = org.id
+        first = authed_client.delete(f"/api/v1/orgs/{org_id}/")
+        assert first.status_code == 204
+        second = authed_client.delete(f"/api/v1/orgs/{org_id}/")
+        assert second.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -286,10 +289,8 @@ class TestOrgMemberDetailViewPATCH:
 
 @pytest.mark.django_db
 class TestOrgMemberDetailViewDELETE:
-    @patch("apps.orgs.services.decrement_subscription_seats")
     def test_owner_removes_member_and_deletes_account(
         self,
-        mock_seats,
         authed_client,
         org,
         owner_membership,
@@ -307,10 +308,8 @@ class TestOrgMemberDetailViewDELETE:
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{user.id}/")
         assert resp.status_code == 403
 
-    @patch("apps.orgs.services.decrement_subscription_seats")
     def test_admin_removes_member(
         self,
-        mock_seats,
         admin_client,
         org,
         owner_membership,
@@ -559,9 +558,8 @@ class TestInvitationAcceptView:
         assert resp.data["code"] == "verification_email_sent"
         assert "access_token" not in resp.data
         assert "refresh_token" not in resp.data
-        # New user created as org_member, not yet verified
+        # New user created and added as org member, not yet verified
         new_user = User.objects.get(email="newuser@example.com")
-        assert new_user.account_type == "org_member"
         assert new_user.is_verified is False
         assert OrgMember.objects.filter(org=org, user=new_user).exists()
         invitation.refresh_from_db()
@@ -683,50 +681,6 @@ class TestInvitationAcceptView:
         assert resp.status_code == 400
         assert "password" in resp.data
 
-    def test_accept_against_soft_deleted_org_returns_404(self, org, owner_membership, user):
-        """Accepting an invite for a soft-deleted org returns 404 via _InvitationOrgGone."""
-        Invitation.objects.create(
-            org=org,
-            email="deleted-org@example.com",
-            role=OrgRole.MEMBER,
-            token="deleted-org-token",  # noqa: S106
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=7),
-        )
-        org.deleted_at = timezone.now()
-        org.save(update_fields=["deleted_at"])
-
-        client = APIClient()
-        resp = client.post(
-            "/api/v1/invitations/deleted-org-token/accept/",
-            {"full_name": "Ghost", "password": "securepass123"},
-            format="json",
-        )
-        assert resp.status_code == 404
-        # Invitation itself was not marked accepted.
-        inv = Invitation.objects.get(token="deleted-org-token")  # noqa: S106
-        assert inv.status == InvitationStatus.PENDING
-
-    def test_accept_against_inactive_org_returns_404(self, org, owner_membership, user):
-        Invitation.objects.create(
-            org=org,
-            email="inactive-org@example.com",
-            role=OrgRole.MEMBER,
-            token="inactive-org-token",  # noqa: S106
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=7),
-        )
-        org.is_active = False
-        org.save(update_fields=["is_active"])
-
-        client = APIClient()
-        resp = client.post(
-            "/api/v1/invitations/inactive-org-token/accept/",
-            {"full_name": "Ghost", "password": "securepass123"},
-            format="json",
-        )
-        assert resp.status_code == 404
-
     def test_accept_succeeds_even_when_seats_exhausted(self, org, owner_membership, user):
         """Accept-time has no seat check — seat enforcement is invite-time only.
 
@@ -762,7 +716,7 @@ class TestInvitationAcceptView:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            quantity=1,  # only 1 seat — already filled by owner
+            seat_limit=1,  # only 1 seat — already filled by owner
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -798,7 +752,11 @@ class TestInvitationDeclineView:
         )
         client = APIClient()  # unauthenticated
         resp = client.post("/api/v1/invitations/decline-token/decline/")
-        assert resp.status_code == 401
+        # SessionAuthentication doesn't emit a WWW-Authenticate challenge, so
+        # DRF picks 403; JWT auth (the prod default) would emit 401. Accepting
+        # either matches the project-wide pattern used in other unauthenticated
+        # rejection tests.
+        assert resp.status_code in (401, 403)
 
     def test_decline_rejects_email_mismatch(self, org, owner_membership, user, authed_client):
         invitation = Invitation.objects.create(
@@ -827,30 +785,6 @@ class TestInvitationDeclineView:
         assert resp.status_code == 204
         invitation.refresh_from_db()
         assert invitation.status == InvitationStatus.DECLINED
-
-
-# ---------------------------------------------------------------------------
-# Soft-deleted org operations
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestSoftDeletedOrgOperations:
-    def test_patch_member_on_soft_deleted_org_returns_404(
-        self, authed_client, soft_deleted_org, owner_membership, member_user, member_membership
-    ):
-        resp = authed_client.patch(
-            f"/api/v1/orgs/{soft_deleted_org.id}/members/{member_user.id}/",
-            {"role": "admin"},
-            format="json",
-        )
-        assert resp.status_code == 404
-
-    def test_list_members_on_soft_deleted_org_returns_404(
-        self, authed_client, soft_deleted_org, owner_membership
-    ):
-        resp = authed_client.get(f"/api/v1/orgs/{soft_deleted_org.id}/members/")
-        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -947,32 +881,6 @@ class TestInvitationThrottleScope:
 
 
 # ---------------------------------------------------------------------------
-# Inactive org filtering
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestInactiveOrgFiltering:
-    def test_inactive_org_excluded_from_list(self, authed_client, org, owner_membership):
-        org.is_active = False
-        org.save(update_fields=["is_active"])
-        resp = authed_client.get("/api/v1/orgs/")
-        assert resp.data["count"] == 0
-
-    def test_inactive_org_returns_404_on_detail(self, authed_client, org, owner_membership):
-        org.is_active = False
-        org.save(update_fields=["is_active"])
-        resp = authed_client.get(f"/api/v1/orgs/{org.id}/")
-        assert resp.status_code == 404
-
-    def test_inactive_org_returns_404_on_members(self, authed_client, org, owner_membership):
-        org.is_active = False
-        org.save(update_fields=["is_active"])
-        resp = authed_client.get(f"/api/v1/orgs/{org.id}/members/")
-        assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
 # Seat limit validation on invitation
 # ---------------------------------------------------------------------------
 
@@ -980,7 +888,7 @@ class TestInactiveOrgFiltering:
 @pytest.mark.django_db
 class TestInvitationSeatLimit:
     @staticmethod
-    def _make_team_sub(org, *, quantity: int, stripe_suffix: str = "a"):
+    def _make_team_sub(org, *, seat_limit: int, stripe_suffix: str = "a"):
         from datetime import UTC, datetime
 
         from apps.billing.models import (
@@ -1011,7 +919,7 @@ class TestInvitationSeatLimit:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            quantity=quantity,
+            seat_limit=seat_limit,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -1020,8 +928,8 @@ class TestInvitationSeatLimit:
     def test_invitation_rejected_when_seat_limit_reached(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        self._make_team_sub(org, quantity=1, stripe_suffix="limit")
-        # org already has 1 member (owner) and sub has quantity=1
+        self._make_team_sub(org, seat_limit=1, stripe_suffix="limit")
+        # org already has 1 member (owner) and sub has seat_limit=1
         resp = authed_client.post(
             f"/api/v1/orgs/{org.id}/invitations/",
             {"email": "overflow@example.com", "role": "member"},
@@ -1035,8 +943,8 @@ class TestInvitationSeatLimit:
     def test_invitation_allowed_one_below_boundary(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        # quantity=2, 1 existing member, 0 pending → 1 seat free, allowed.
-        self._make_team_sub(org, quantity=2, stripe_suffix="below")
+        # seat_limit=2, 1 existing member, 0 pending → 1 seat free, allowed.
+        self._make_team_sub(org, seat_limit=2, stripe_suffix="below")
         resp = authed_client.post(
             f"/api/v1/orgs/{org.id}/invitations/",
             {"email": "newhire@example.com", "role": "member"},
@@ -1048,8 +956,8 @@ class TestInvitationSeatLimit:
     def test_invitation_rejected_exactly_at_boundary(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        # quantity=2, 1 member + 1 pending invitation → at boundary.
-        self._make_team_sub(org, quantity=2, stripe_suffix="atboundary")
+        # seat_limit=2, 1 member + 1 pending invitation → at boundary.
+        self._make_team_sub(org, seat_limit=2, stripe_suffix="atboundary")
         Invitation.objects.create(
             org=org,
             email="pending@example.com",
@@ -1071,8 +979,8 @@ class TestInvitationSeatLimit:
     def test_cancelled_invitation_frees_seat(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        # quantity=2, 1 owner + 1 pending → boundary.
-        self._make_team_sub(org, quantity=2, stripe_suffix="cancel")
+        # seat_limit=2, 1 owner + 1 pending → boundary.
+        self._make_team_sub(org, seat_limit=2, stripe_suffix="cancel")
         pending = Invitation.objects.create(
             org=org,
             email="pending@example.com",
@@ -1096,7 +1004,7 @@ class TestInvitationSeatLimit:
     def test_declined_and_expired_invitations_do_not_consume_seats(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        self._make_team_sub(org, quantity=2, stripe_suffix="declined")
+        self._make_team_sub(org, seat_limit=2, stripe_suffix="declined")
         Invitation.objects.create(
             org=org,
             email="declined@example.com",
@@ -1172,7 +1080,7 @@ class TestInvitationSeatLimit:
             stripe_customer=personal_cust,
             status="active",
             plan=personal_plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
