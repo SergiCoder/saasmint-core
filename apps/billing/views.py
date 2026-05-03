@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import ClassVar
 from uuid import UUID
 
-import stripe
 from asgiref.sync import async_to_sync, sync_to_async
 from django.core.cache import cache
+from django.db.models import Count, OuterRef, Subquery
 from drf_spectacular.utils import (
     OpenApiParameter,
     OpenApiResponse,
@@ -25,11 +24,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.subscription import Subscription
-from saasmint_core.exceptions import (
-    AlreadyOnPlanError,
-    NoActiveSubscriptionError,
-    PlanContextMismatchError,
-)
+from saasmint_core.exceptions import SeatsBelowMemberCountError
 from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
@@ -37,6 +32,7 @@ from saasmint_core.services.billing import (
     create_product_checkout_session,
     create_team_stripe_customer,
     get_or_create_customer,
+    release_pending_schedule_for_customer,
     resume_subscription,
 )
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
@@ -180,6 +176,23 @@ def _validate_quantity_for_context(context: PlanContext, quantity: int) -> int:
 
 def _validate_quantity_for_plan(plan_price: PlanPrice, quantity: int) -> int:
     return _validate_quantity_for_context(PlanContext(plan_price.plan.context), quantity)
+
+
+async def _reject_seat_limit_below_member_count(org_id: UUID, seat_limit: int) -> None:
+    """Reject a seat reduction that would leave the org over its sub's seat cap.
+
+    Members must be removed before the seat count can be reduced below the
+    current head-count — otherwise we'd commit to a state where the sub bills
+    for fewer seats than are actually filled.
+    """
+    from apps.orgs.models import OrgMember
+
+    member_count = await OrgMember.objects.filter(org_id=org_id).acount()
+    if seat_limit < member_count:
+        raise SeatsBelowMemberCountError(
+            f"Cannot reduce seats to {seat_limit}: org has {member_count} members."
+            f" Remove {member_count - seat_limit} member(s) first."
+        )
 
 
 _SUBSCRIPTION_CONTEXT_TEAM = "team"
@@ -418,7 +431,7 @@ class CheckoutSessionView(BillingScopedView):
         data = ser.validated_data
 
         plan_price = _get_active_plan_price(data["plan_price_id"])
-        quantity = _validate_quantity_for_plan(plan_price, data["quantity"])
+        quantity = _validate_quantity_for_plan(plan_price, data["seat_limit"])
 
         is_team = plan_price.plan.context == PlanContext.TEAM
 
@@ -500,10 +513,7 @@ class PortalSessionView(BillingScopedView):
             400: OpenApiResponse(
                 description=(
                     "The ``?context=`` query param is set to a value other than"
-                    " ``personal``/``team``, or ``flow=subscription_update_confirm``"
-                    " was passed with a ``plan_price_id`` whose plan context does"
-                    " not match the resolved subscription context"
-                    " (``code=plan_context_mismatch``)."
+                    " ``personal``/``team``."
                 )
             ),
             403: OpenApiResponse(
@@ -516,17 +526,7 @@ class PortalSessionView(BillingScopedView):
             404: OpenApiResponse(
                 description=(
                     "``?context=team``: caller has no team Stripe customer (i.e. no"
-                    " team subscription has been created); or ``plan_price_id`` does"
-                    " not exist / belongs to an inactive plan."
-                )
-            ),
-            409: OpenApiResponse(
-                description=(
-                    "``flow=subscription_update_confirm`` was requested but the"
-                    " resolved context has no active subscription"
-                    " (``code=no_active_subscription``), or the active subscription"
-                    " is already on the requested plan price"
-                    " (``code=already_on_plan``)."
+                    " team subscription has been created)."
                 )
             ),
         },
@@ -537,10 +537,9 @@ class PortalSessionView(BillingScopedView):
             " mutations on ``/me/``. ``?context=team`` requires ``is_billing=True``"
             " and an existing team customer. ``?context=personal`` auto-creates"
             " the user's Stripe customer when missing.\n\n"
-            "Optional ``flow`` + ``plan_price_id`` body fields deep-link the portal"
-            " into a focused flow. Currently the only supported flow is"
-            " ``subscription_update_confirm``, which lands the user on Stripe's"
-            " plan-switch confirmation screen for the target ``plan_price_id``."
+            "Plan switches are **not** handled here: the portal applies them"
+            " immediately with proration, which conflicts with our deferred"
+            " downgrade rule. Use ``PATCH /subscriptions/me/`` instead."
         ),
         tags=["billing"],
     )
@@ -548,28 +547,11 @@ class PortalSessionView(BillingScopedView):
         user = get_user(request)
         ser = PortalRequestSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        flow = ser.validated_data.get("flow")
-        plan_price_id = ser.validated_data.get("plan_price_id")
 
         context = _validate_subscription_context(request.query_params.get("context"))
 
-        # Resolve the target plan price up front (sync ORM) so we can fail fast
-        # with 404 / 400 before doing any Stripe work in the async closure.
-        target_plan_price: PlanPrice | None = None
-        if flow == "subscription_update_confirm":
-            target_plan_price = _get_active_plan_price(plan_price_id)
-
         async def _do() -> str:
             effective = context or await _default_subscription_context_async(user)
-            if target_plan_price is not None:
-                # Validate target plan's context matches the resolved billing
-                # context before we touch Stripe — a personal-context portal
-                # session can't switch to a team plan and vice versa.
-                if target_plan_price.plan.context != effective:
-                    raise PlanContextMismatchError(
-                        f"Target plan is for context '{target_plan_price.plan.context}', "
-                        f"but the resolved subscription context is '{effective}'."
-                    )
 
             if effective == _SUBSCRIPTION_CONTEXT_TEAM:
                 # Same gate as cancel/resume: only is_billing members may open
@@ -584,7 +566,6 @@ class PortalSessionView(BillingScopedView):
                 if customer is None:
                     raise NotFound("No team Stripe customer found.")
                 stripe_customer_id = customer.stripe_id
-                customer_local_id = customer.id
             else:
                 # Personal scope: auto-create the user's own customer if missing.
                 # Mixing scopes (creating a personal customer for a team-portal
@@ -597,67 +578,15 @@ class PortalSessionView(BillingScopedView):
                     customer_repo=get_billing_repos().customers,
                 )
                 stripe_customer_id = personal.stripe_id
-                customer_local_id = personal.id
-
-            flow_data: dict[str, object] | None = None
-            if target_plan_price is not None:
-                flow_data = await _build_subscription_update_confirm_flow_data(
-                    customer_local_id=customer_local_id,
-                    target_plan_price=target_plan_price,
-                )
 
             return await create_billing_portal_session(
                 stripe_customer_id=stripe_customer_id,
                 locale=user.preferred_locale,
                 return_url=ser.validated_data["return_url"],
-                flow_data=flow_data,
             )
 
         url = async_to_sync(_do)()
         return Response({"url": url})
-
-
-async def _build_subscription_update_confirm_flow_data(
-    *,
-    customer_local_id: UUID,
-    target_plan_price: PlanPrice,
-) -> dict[str, object]:
-    """Resolve the active sub + first item id and assemble Stripe ``flow_data``.
-
-    Raises :class:`NoActiveSubscriptionError` (409) when no active sub exists
-    in the resolved context, and :class:`AlreadyOnPlanError` (409) when the
-    sub is already on the target price (Stripe would otherwise no-op the
-    confirm screen, which is a confusing UX).
-    """
-    repos = get_billing_repos()
-    sub = await repos.subscriptions.get_active_for_customer(customer_local_id)
-    if sub is None or sub.stripe_id is None:
-        raise NoActiveSubscriptionError(
-            "No active subscription found in the resolved context."
-        )
-
-    stripe_sub = await asyncio.to_thread(stripe.Subscription.retrieve, sub.stripe_id)
-    first_item = stripe_sub["items"]["data"][0]
-    item_id = str(first_item["id"])
-    current_price_id = str(first_item["price"]["id"])
-    current_quantity = int(first_item["quantity"])
-
-    if current_price_id == target_plan_price.stripe_price_id:
-        raise AlreadyOnPlanError("Subscription is already on the requested plan.")
-
-    return {
-        "type": "subscription_update_confirm",
-        "subscription_update_confirm": {
-            "subscription": sub.stripe_id,
-            "items": [
-                {
-                    "id": item_id,
-                    "price": target_plan_price.stripe_price_id,
-                    "quantity": current_quantity,
-                }
-            ],
-        },
-    }
 
 
 def _resolve_product_purchase_context(user: User, context: str | None) -> UUID | None:
@@ -839,11 +768,24 @@ def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
     """
     from apps.orgs.models import OrgMember
 
+    # Annotate the org member count onto each sub so ``SubscriptionSerializer
+    # .get_seats_used`` can read it as a plain attribute instead of firing a
+    # separate COUNT query per serialized object.
+    org_member_count_sq = (
+        OrgMember.objects.filter(org_id=OuterRef("stripe_customer__org_id"))
+        .order_by()
+        .values("org_id")
+        .annotate(n=Count("id"))
+        .values("n")
+    )
+
     # ``stripe_customer`` is select_related so ``_refetch_subscription_after_mutation``
     # can discriminate team vs personal subs via ``sub.stripe_customer.org_id``
     # without firing an FK lookup per sub.
     base = SubscriptionModel.objects.select_related(
         "plan__price", "scheduled_plan__price", "stripe_customer"
+    ).annotate(
+        org_member_count=Subquery(org_member_count_sq)
     ).filter(
         status__in=ACTIVE_SUBSCRIPTION_STATUSES
     )
@@ -1031,8 +973,8 @@ class SubscriptionView(BillingScopedView):
             _get_active_plan_price(data["plan_price_id"]) if "plan_price_id" in data else None
         )
 
-        if plan_price and "quantity" in data:
-            _validate_quantity_for_plan(plan_price, data["quantity"])
+        if plan_price and "seat_limit" in data:
+            _validate_quantity_for_plan(plan_price, data["seat_limit"])
 
         async def _do() -> None:
             repos = get_billing_repos()
@@ -1057,22 +999,29 @@ class SubscriptionView(BillingScopedView):
                 # price unit amount and creates a SubscriptionSchedule when
                 # the new price is lower. Upgrades and same-amount switches
                 # still apply immediately so the user pays the prorated diff.
+                if "seat_limit" in data and org_id is not None:
+                    await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
                 await change_plan(
                     stripe_subscription_id=stripe_sub_id,
                     new_stripe_price_id=plan_price.stripe_price_id,
                     new_price_amount=plan_price.amount,
                     prorate=data["prorate"],
-                    quantity=data.get("quantity"),
+                    quantity=data.get("seat_limit"),
                 )
-            elif "quantity" in data:
+            elif "seat_limit" in data:
                 # Seat-only update: enforce per-context seat rules against the
                 # current subscription's plan, otherwise a personal sub could
                 # be bumped to N seats and a team sub down to 1.
                 current_plan = await PlanModel.objects.only("context").aget(id=sub.plan_id)
-                _validate_quantity_for_context(PlanContext(current_plan.context), data["quantity"])
+                _validate_quantity_for_context(
+                    PlanContext(current_plan.context), data["seat_limit"]
+                )
+                if org_id is not None:
+                    await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
                 await update_seat_count(
-                    stripe_subscription_id=stripe_sub_id,
-                    quantity=data["quantity"],
+                    active=sub,
+                    quantity=data["seat_limit"],
+                    subscription_repo=repos.subscriptions,
                 )
 
         async_to_sync(_do)()
@@ -1182,8 +1131,6 @@ class ScheduledChangeView(BillingScopedView):
         tags=["billing"],
     )
     def delete(self, request: Request) -> Response:
-        from saasmint_core.services.billing import release_pending_schedule_for_customer
-
         user = get_user(request)
         context, _org_id = _resolve_mutation_context(request, user)
 

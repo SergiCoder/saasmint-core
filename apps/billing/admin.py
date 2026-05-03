@@ -63,7 +63,7 @@ class SubscriptionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-s
         "stripe_customer",
         "status",
         "plan",
-        "quantity",
+        "seat_limit",
         "trial_ends_at",
         "current_period_end",
         "canceled_at",

@@ -390,7 +390,7 @@ async def test_sync_subscription_quantity_none_defaults_to_one() -> None:
     await process_stored_event(event, stripe_id, repos)
 
     sub = next(iter(subscription_repo._store.values()))
-    assert sub.quantity == 1
+    assert sub.seat_limit == 1
 
 
 @pytest.mark.anyio
@@ -424,7 +424,7 @@ async def test_sync_subscription_with_explicit_quantity() -> None:
     await process_stored_event(event, stripe_id, repos)
 
     sub = next(iter(subscription_repo._store.values()))
-    assert sub.quantity == 5
+    assert sub.seat_limit == 5
 
 
 @pytest.mark.anyio
@@ -1564,3 +1564,350 @@ async def test_schedule_created_with_single_phase_skipped() -> None:
     saved = await subscription_repo.get_by_stripe_id("sub_sched_target")
     assert saved is not None
     assert saved.scheduled_plan_id is None
+
+
+@pytest.mark.anyio
+async def test_schedule_upserted_without_subscription_field_is_noop() -> None:
+    """Standalone schedules not attached to a subscription (no ``subscription``
+    key in the event object) are skipped rather than raising — there is no
+    local row to update."""
+    event_repo = InMemoryStripeEventRepository()
+    repos = _make_repos(event_repo=event_repo)
+
+    # Build a schedule event with ``subscription`` explicitly absent.
+    event = {
+        "id": "evt_sched_standalone",
+        "type": "subscription_schedule.created",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "sub_sched_standalone",
+                # ``subscription`` key omitted intentionally
+                "phases": [
+                    {"items": [{"price": {"id": "p1"}, "quantity": 1}], "end_date": NOW_TS + 1},
+                    {"items": [{"price": {"id": "p2"}, "quantity": 1}], "start_date": NOW_TS + 1},
+                ],
+            }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
+    # Must not raise; event is marked processed.
+    await process_stored_event(event, stripe_id, repos)
+
+    saved_event = event_repo._store["evt_sched_standalone"]
+    assert saved_event.processed_at is not None
+
+
+@pytest.mark.anyio
+async def test_schedule_cleared_without_subscription_field_is_noop() -> None:
+    """A ``subscription_schedule.released`` event without a ``subscription``
+    field (standalone schedule) should be skipped silently and not raise."""
+    event_repo = InMemoryStripeEventRepository()
+    repos = _make_repos(event_repo=event_repo)
+
+    event = {
+        "id": "evt_sched_released_standalone",
+        "type": "subscription_schedule.released",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "sub_sched_released_standalone",
+                # ``subscription`` key omitted intentionally
+            }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
+
+    saved_event = event_repo._store["evt_sched_released_standalone"]
+    assert saved_event.processed_at is not None
+
+
+@pytest.mark.anyio
+async def test_schedule_cleared_already_clear_is_noop() -> None:
+    """If the local sub already has no pending change (``scheduled_plan_id``
+    and ``scheduled_change_at`` are both ``None``), the cleared handler does
+    not write anything — avoids unnecessary save churn."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_already_clear")
+    await customer_repo.save(customer)
+    # Sub with no pending change.
+    sub = make_subscription(
+        stripe_id="sub_sched_target",
+        stripe_customer_id=customer.id,
+        # scheduled_plan_id and scheduled_change_at default to None in make_subscription.
+    )
+    await subscription_repo.save(sub)
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _schedule_event("subscription_schedule.released")
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
+
+    # Row unchanged — still no pending fields.
+    saved = await subscription_repo.get_by_stripe_id("sub_sched_target")
+    assert saved is not None
+    assert saved.scheduled_plan_id is None
+    assert saved.scheduled_change_at is None
+
+
+@pytest.mark.anyio
+async def test_schedule_created_idempotent_when_mirror_already_correct() -> None:
+    """A duplicate ``subscription_schedule.created`` delivery for the same
+    target plan and timestamp must not re-save the row — avoids churn and
+    confirms the early-return branch fires."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_idem_sched")
+    await customer_repo.save(customer)
+    target_plan = make_plan()
+    plan_repo._plans[target_plan.id] = target_plan
+    target_price = make_plan_price(plan_id=target_plan.id, stripe_price_id="price_idem_sched")
+    plan_repo._prices[target_price.id] = target_price
+
+    phase_end = NOW_TS + 7 * 86400
+    sub = make_subscription(
+        stripe_id="sub_sched_target",
+        stripe_customer_id=customer.id,
+        scheduled_plan_id=target_plan.id,
+        scheduled_change_at=datetime.fromtimestamp(phase_end, tz=UTC),
+    )
+    await subscription_repo.save(sub)
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _schedule_event(
+        "subscription_schedule.created",
+        target_price_id="price_idem_sched",
+        phase_end_ts=phase_end,
+    )
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
+
+    # Event marked processed and sub unchanged.
+    saved_event = event_repo._store["evt_sched"]
+    assert saved_event.processed_at is not None
+    saved = await subscription_repo.get_by_stripe_id("sub_sched_target")
+    assert saved is not None
+    assert saved.scheduled_plan_id == target_plan.id
+
+
+@pytest.mark.anyio
+async def test_schedule_upserted_next_phase_empty_items_is_noop() -> None:
+    """A schedule whose second phase carries no items cannot be mirrored —
+    the handler warns and skips rather than raising."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_empty_items")
+    await customer_repo.save(customer)
+    sub = make_subscription(
+        stripe_id="sub_sched_target", stripe_customer_id=customer.id
+    )
+    await subscription_repo.save(sub)
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+    )
+    # Next phase has an empty ``items`` list.
+    event = _schedule_event(
+        "subscription_schedule.created",
+        phases=[
+            {
+                "items": [{"price": {"id": "price_current"}, "quantity": 1}],
+                "start_date": NOW_TS,
+                "end_date": NOW_TS + 86400,
+            },
+            {
+                "items": [],  # empty — no items to mirror
+                "start_date": NOW_TS + 86400,
+            },
+        ],
+    )
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
+
+    # Sub is unchanged — no scheduled_plan_id set.
+    saved = await subscription_repo.get_by_stripe_id("sub_sched_target")
+    assert saved is not None
+    assert saved.scheduled_plan_id is None
+
+
+@pytest.mark.anyio
+async def test_schedule_upserted_next_phase_item_missing_price_id_is_noop() -> None:
+    """If the next-phase item has a price object with no ``id`` key,
+    the handler cannot identify the target plan — warns and skips."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_no_price_id")
+    await customer_repo.save(customer)
+    sub = make_subscription(
+        stripe_id="sub_sched_target", stripe_customer_id=customer.id
+    )
+    await subscription_repo.save(sub)
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _schedule_event(
+        "subscription_schedule.created",
+        phases=[
+            {
+                "items": [{"price": {"id": "price_current"}, "quantity": 1}],
+                "start_date": NOW_TS,
+                "end_date": NOW_TS + 86400,
+            },
+            {
+                # price dict exists but has no ``id`` key
+                "items": [{"price": {}, "quantity": 1}],
+                "start_date": NOW_TS + 86400,
+            },
+        ],
+    )
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
+
+    saved = await subscription_repo.get_by_stripe_id("sub_sched_target")
+    assert saved is not None
+    assert saved.scheduled_plan_id is None
+
+
+@pytest.mark.anyio
+async def test_schedule_upserted_missing_phase_boundary_timestamp_is_noop() -> None:
+    """When neither ``end_date`` on phase 0 nor ``start_date`` on phase 1 are
+    present, the handler cannot determine when the switch happens — warns and
+    skips rather than storing an invalid timestamp."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_no_ts")
+    await customer_repo.save(customer)
+    target_plan = make_plan()
+    plan_repo._plans[target_plan.id] = target_plan
+    target_price = make_plan_price(
+        plan_id=target_plan.id, stripe_price_id="price_no_ts_target"
+    )
+    plan_repo._prices[target_price.id] = target_price
+
+    sub = make_subscription(
+        stripe_id="sub_sched_target", stripe_customer_id=customer.id
+    )
+    await subscription_repo.save(sub)
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _schedule_event(
+        "subscription_schedule.created",
+        phases=[
+            {
+                # no ``end_date`` — handler falls through to phase 1 ``start_date``
+                "items": [{"price": {"id": "price_current"}, "quantity": 1}],
+                "start_date": NOW_TS,
+            },
+            {
+                # no ``start_date`` either — boundary is truly absent
+                "items": [{"price": {"id": "price_no_ts_target"}, "quantity": 1}],
+            },
+        ],
+    )
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
+
+    saved = await subscription_repo.get_by_stripe_id("sub_sched_target")
+    assert saved is not None
+    assert saved.scheduled_plan_id is None
+
+
+@pytest.mark.anyio
+async def test_schedule_cleared_for_unknown_subscription_is_noop() -> None:
+    """A ``subscription_schedule.released`` event for a subscription that
+    isn't mirrored locally should be silently skipped — no raise, event
+    marked processed."""
+    event_repo = InMemoryStripeEventRepository()
+    # No subscription in the store for "sub_sched_target".
+    repos = _make_repos(event_repo=event_repo)
+
+    event = _schedule_event("subscription_schedule.released")
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
+
+    saved_event = event_repo._store["evt_sched"]
+    assert saved_event.processed_at is not None
+    assert saved_event.error is None
+
+
+@pytest.mark.anyio
+async def test_sync_subscription_preserves_scheduled_plan_fields_on_update() -> None:
+    """``customer.subscription.updated`` fires alongside every schedule event.
+    The sync must preserve existing ``scheduled_plan_id`` / ``scheduled_change_at``
+    instead of wiping them — otherwise the deferred-downgrade badge disappears
+    until the schedule webhook is re-processed."""
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_preserve_sched")
+    await customer_repo.save(customer)
+    plan = make_plan()
+    plan_repo._plans[plan.id] = plan
+    price = make_plan_price(plan_id=plan.id, stripe_price_id="price_preserve_sched")
+    plan_repo._prices[price.id] = price
+
+    pending_plan_id = uuid4()
+    pending_change_at = datetime.fromtimestamp(NOW_TS + 7 * 86400, tz=UTC)
+    existing_sub = make_subscription(
+        stripe_id="sub_preserve_sched",
+        stripe_customer_id=customer.id,
+        scheduled_plan_id=pending_plan_id,
+        scheduled_change_at=pending_change_at,
+    )
+    await subscription_repo.save(existing_sub)
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event = _sub_event(
+        "customer.subscription.updated",
+        stripe_sub_id="sub_preserve_sched",
+        stripe_customer_id="cus_preserve_sched",
+        price_id="price_preserve_sched",
+    )
+    stripe_id = await _persist(event_repo, event)
+    await process_stored_event(event, stripe_id, repos)
+
+    updated = await subscription_repo.get_by_stripe_id("sub_preserve_sched")
+    assert updated is not None
+    # The sync must NOT clear the pending schedule mirror.
+    assert updated.scheduled_plan_id == pending_plan_id
+    assert updated.scheduled_change_at == pending_change_at

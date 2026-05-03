@@ -154,7 +154,7 @@ class TestOrgDetailViewDELETE:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=timezone.now(),
             current_period_end=timezone.now() + timedelta(days=30),
         )
@@ -289,10 +289,8 @@ class TestOrgMemberDetailViewPATCH:
 
 @pytest.mark.django_db
 class TestOrgMemberDetailViewDELETE:
-    @patch("apps.orgs.services.decrement_subscription_seats")
     def test_owner_removes_member_and_deletes_account(
         self,
-        mock_seats,
         authed_client,
         org,
         owner_membership,
@@ -310,10 +308,8 @@ class TestOrgMemberDetailViewDELETE:
         resp = authed_client.delete(f"/api/v1/orgs/{org.id}/members/{user.id}/")
         assert resp.status_code == 403
 
-    @patch("apps.orgs.services.decrement_subscription_seats")
     def test_admin_removes_member(
         self,
-        mock_seats,
         admin_client,
         org,
         owner_membership,
@@ -720,7 +716,7 @@ class TestInvitationAcceptView:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            quantity=1,  # only 1 seat — already filled by owner
+            seat_limit=1,  # only 1 seat — already filled by owner
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -892,7 +888,7 @@ class TestInvitationThrottleScope:
 @pytest.mark.django_db
 class TestInvitationSeatLimit:
     @staticmethod
-    def _make_team_sub(org, *, quantity: int, stripe_suffix: str = "a"):
+    def _make_team_sub(org, *, seat_limit: int, stripe_suffix: str = "a"):
         from datetime import UTC, datetime
 
         from apps.billing.models import (
@@ -923,7 +919,7 @@ class TestInvitationSeatLimit:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            quantity=quantity,
+            seat_limit=seat_limit,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -932,8 +928,8 @@ class TestInvitationSeatLimit:
     def test_invitation_rejected_when_seat_limit_reached(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        self._make_team_sub(org, quantity=1, stripe_suffix="limit")
-        # org already has 1 member (owner) and sub has quantity=1
+        self._make_team_sub(org, seat_limit=1, stripe_suffix="limit")
+        # org already has 1 member (owner) and sub has seat_limit=1
         resp = authed_client.post(
             f"/api/v1/orgs/{org.id}/invitations/",
             {"email": "overflow@example.com", "role": "member"},
@@ -947,8 +943,8 @@ class TestInvitationSeatLimit:
     def test_invitation_allowed_one_below_boundary(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        # quantity=2, 1 existing member, 0 pending → 1 seat free, allowed.
-        self._make_team_sub(org, quantity=2, stripe_suffix="below")
+        # seat_limit=2, 1 existing member, 0 pending → 1 seat free, allowed.
+        self._make_team_sub(org, seat_limit=2, stripe_suffix="below")
         resp = authed_client.post(
             f"/api/v1/orgs/{org.id}/invitations/",
             {"email": "newhire@example.com", "role": "member"},
@@ -960,8 +956,8 @@ class TestInvitationSeatLimit:
     def test_invitation_rejected_exactly_at_boundary(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        # quantity=2, 1 member + 1 pending invitation → at boundary.
-        self._make_team_sub(org, quantity=2, stripe_suffix="atboundary")
+        # seat_limit=2, 1 member + 1 pending invitation → at boundary.
+        self._make_team_sub(org, seat_limit=2, stripe_suffix="atboundary")
         Invitation.objects.create(
             org=org,
             email="pending@example.com",
@@ -983,8 +979,8 @@ class TestInvitationSeatLimit:
     def test_cancelled_invitation_frees_seat(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        # quantity=2, 1 owner + 1 pending → boundary.
-        self._make_team_sub(org, quantity=2, stripe_suffix="cancel")
+        # seat_limit=2, 1 owner + 1 pending → boundary.
+        self._make_team_sub(org, seat_limit=2, stripe_suffix="cancel")
         pending = Invitation.objects.create(
             org=org,
             email="pending@example.com",
@@ -1008,7 +1004,7 @@ class TestInvitationSeatLimit:
     def test_declined_and_expired_invitations_do_not_consume_seats(
         self, mock_email, authed_client, org, owner_membership, user
     ):
-        self._make_team_sub(org, quantity=2, stripe_suffix="declined")
+        self._make_team_sub(org, seat_limit=2, stripe_suffix="declined")
         Invitation.objects.create(
             org=org,
             email="declined@example.com",
@@ -1084,7 +1080,7 @@ class TestInvitationSeatLimit:
             stripe_customer=personal_cust,
             status="active",
             plan=personal_plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )

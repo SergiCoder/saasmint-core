@@ -150,7 +150,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "trial_period_days": 14,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
@@ -228,7 +228,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "My Org",
@@ -252,7 +252,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Second Org",
@@ -320,7 +320,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 # no org_name
@@ -350,7 +350,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "My Team Org",
@@ -381,7 +381,7 @@ class TestCheckoutSessionView:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Keep Personal",
@@ -655,367 +655,6 @@ class TestPortalSessionContextRouting:
 
 
 @pytest.mark.django_db
-class TestPortalSessionDeepLinkFlow:
-    """``flow=subscription_update_confirm`` deep-links the Stripe portal into
-    the plan-switch confirm screen. Verifies the ``flow_data`` payload sent
-    to Stripe and the error envelope on each failure mode."""
-
-    def _domain_customer_from_fixture(self, stripe_customer: object) -> DomainStripeCustomer:
-        """Build a ``DomainStripeCustomer`` whose ids match the DB fixture.
-
-        Several tests need ``get_or_create_customer`` to return a customer
-        whose local UUID matches the fixture row so that
-        ``get_active_for_customer`` can find the associated subscription.
-        """
-        return DomainStripeCustomer(
-            id=stripe_customer.id,  # type: ignore[union-attr]
-            stripe_id=stripe_customer.stripe_id,  # type: ignore[union-attr]
-            user_id=stripe_customer.user_id,  # type: ignore[union-attr]
-            org_id=None,
-            livemode=False,
-            created_at=datetime.now(UTC),
-        )
-
-    def _make_stripe_sub(self, *, stripe_id: str, item_id: str, price_id: str, quantity: int):
-        """Build a mock object shaped like the Stripe Subscription resource
-        (only the fields ``_build_subscription_update_confirm_flow_data``
-        reads — ``items.data[0].id/price.id/quantity``)."""
-        return {
-            "id": stripe_id,
-            "items": {
-                "data": [
-                    {
-                        "id": item_id,
-                        "price": {"id": price_id},
-                        "quantity": quantity,
-                    }
-                ]
-            },
-        }
-
-    @patch("apps.billing.views.stripe.Subscription.retrieve")
-    @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_personal_upgrade_passes_flow_data(
-        self,
-        mock_get_customer,
-        mock_portal,
-        mock_retrieve,
-        authed_client,
-        stripe_customer,
-        subscription,
-        plan_price,  # current price: price_test_123
-    ):
-        """Personal happy path: target plan price's stripe_price_id, the
-        first sub item id, and the current quantity are all forwarded into
-        ``flow_data.subscription_update_confirm``."""
-        from apps.billing.models import Plan as PlanModel
-        from apps.billing.models import PlanPrice
-
-        # Target plan: a different (active) personal plan with a different price.
-        target_plan = PlanModel.objects.create(
-            name="Personal Pro Monthly",
-            context="personal",
-            tier=3,
-            interval="month",
-            is_active=True,
-        )
-        target_price = PlanPrice.objects.create(
-            plan=target_plan, stripe_price_id="price_personal_pro", amount=1999
-        )
-        # The view calls ``get_or_create_customer`` for personal scope; return
-        # a domain customer whose UUID matches the DB-backed StripeCustomer so
-        # ``get_active_for_customer`` finds the subscription fixture.
-        mock_get_customer.return_value = self._domain_customer_from_fixture(stripe_customer)
-        mock_retrieve.return_value = self._make_stripe_sub(
-            stripe_id=subscription.stripe_id,
-            item_id="si_123",
-            price_id=plan_price.stripe_price_id,
-            quantity=1,
-        )
-        mock_portal.return_value = "https://billing.stripe.com/p/upgrade"
-
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {
-                "return_url": "https://localhost/dashboard",
-                "flow": "subscription_update_confirm",
-                "plan_price_id": str(target_price.id),
-            },
-            format="json",
-        )
-        assert resp.status_code == 200
-        flow_data = mock_portal.call_args.kwargs["flow_data"]
-        assert flow_data == {
-            "type": "subscription_update_confirm",
-            "subscription_update_confirm": {
-                "subscription": subscription.stripe_id,
-                "items": [
-                    {
-                        "id": "si_123",
-                        "price": "price_personal_pro",
-                        "quantity": 1,
-                    }
-                ],
-            },
-        }
-
-    @patch("apps.billing.views.stripe.Subscription.retrieve")
-    @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
-    def test_team_upgrade_preserves_quantity(self, mock_portal, mock_retrieve):
-        """Team happy path: the current seat count (``quantity``) on the
-        Stripe sub item is preserved when the portal opens — switching
-        plans must not silently reset seats."""
-        from apps.billing.models import Plan as PlanModel
-        from apps.billing.models import PlanPrice, StripeCustomer, Subscription
-        from apps.orgs.models import Org, OrgMember, OrgRole
-        from apps.users.models import User
-
-        owner = User.objects.create_user(email="team-up@example.com", full_name="Team Up")
-        org = Org.objects.create(name="UpOrg", slug="up-org", created_by=owner)
-        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
-        team_customer = StripeCustomer.objects.create(
-            stripe_id="cus_team_up", org=org, livemode=False
-        )
-        current_team_plan = PlanModel.objects.create(
-            name="Team Basic Monthly",
-            context="team",
-            tier=2,
-            interval="month",
-            is_active=True,
-        )
-        PlanPrice.objects.create(
-            plan=current_team_plan, stripe_price_id="price_team_basic", amount=1500
-        )
-        sub = Subscription.objects.create(
-            stripe_id="sub_team_up",
-            stripe_customer=team_customer,
-            status="active",
-            plan=current_team_plan,
-            quantity=5,
-            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
-        )
-        target_plan = PlanModel.objects.create(
-            name="Team Pro Monthly",
-            context="team",
-            tier=3,
-            interval="month",
-            is_active=True,
-        )
-        target_price = PlanPrice.objects.create(
-            plan=target_plan, stripe_price_id="price_team_pro", amount=3000
-        )
-
-        mock_retrieve.return_value = self._make_stripe_sub(
-            stripe_id=sub.stripe_id,
-            item_id="si_team_1",
-            price_id="price_team_basic",
-            quantity=5,
-        )
-        mock_portal.return_value = "https://billing.stripe.com/p/team-upgrade"
-
-        client = APIClient()
-        client.force_authenticate(user=owner)
-        resp = client.post(
-            "/api/v1/billing/portal-sessions/?context=team",
-            {
-                "return_url": "https://localhost/dashboard",
-                "flow": "subscription_update_confirm",
-                "plan_price_id": str(target_price.id),
-            },
-            format="json",
-        )
-        assert resp.status_code == 200
-        flow_data = mock_portal.call_args.kwargs["flow_data"]
-        item = flow_data["subscription_update_confirm"]["items"][0]
-        assert item["id"] == "si_team_1"
-        assert item["price"] == "price_team_pro"
-        assert item["quantity"] == 5  # seats preserved
-        assert (
-            flow_data["subscription_update_confirm"]["subscription"] == sub.stripe_id
-        )
-
-    @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_empty_body_extension_passes_no_flow_data(
-        self, mock_get_customer, mock_portal, authed_client, mock_stripe_customer
-    ):
-        """Backwards compat: omitting ``flow``/``plan_price_id`` creates a
-        vanilla session — ``flow_data`` must be ``None`` (lands on portal home)."""
-        mock_get_customer.return_value = mock_stripe_customer
-        mock_portal.return_value = "https://billing.stripe.com/p/home"
-
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {"return_url": "https://localhost/dashboard"},
-            format="json",
-        )
-        assert resp.status_code == 200
-        assert mock_portal.call_args.kwargs.get("flow_data") is None
-
-    def test_unknown_flow_value_returns_400(self, authed_client, plan_price):
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {
-                "return_url": "https://localhost/dashboard",
-                "flow": "subscription_cancel",
-                "plan_price_id": str(plan_price.id),
-            },
-            format="json",
-        )
-        assert resp.status_code == 400
-
-    def test_flow_without_plan_price_id_returns_400(self, authed_client):
-        """``flow=subscription_update_confirm`` requires ``plan_price_id``;
-        omitting it should fail serializer cross-validation."""
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {
-                "return_url": "https://localhost/dashboard",
-                "flow": "subscription_update_confirm",
-            },
-            format="json",
-        )
-        assert resp.status_code == 400
-        assert "plan_price_id" in str(resp.data)
-
-    def test_plan_price_id_without_flow_returns_400(self, authed_client, plan_price):
-        """Providing ``plan_price_id`` without ``flow`` is ambiguous and must
-        be rejected by the serializer cross-validation."""
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {
-                "return_url": "https://localhost/dashboard",
-                "plan_price_id": str(plan_price.id),
-            },
-            format="json",
-        )
-        assert resp.status_code == 400
-        assert "flow" in str(resp.data)
-
-    def test_unknown_plan_price_returns_404(self, authed_client):
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {
-                "return_url": "https://localhost/dashboard",
-                "flow": "subscription_update_confirm",
-                "plan_price_id": str(uuid4()),
-            },
-            format="json",
-        )
-        assert resp.status_code == 404
-
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_no_active_subscription_returns_409(
-        self, mock_get_customer, authed_client, plan_price, mock_stripe_customer
-    ):
-        """Personal scope: the auto-created customer has no subscription rows,
-        so ``flow=subscription_update_confirm`` must 409 — there's nothing
-        to update on the confirm screen."""
-        mock_get_customer.return_value = mock_stripe_customer
-
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {
-                "return_url": "https://localhost/dashboard",
-                "flow": "subscription_update_confirm",
-                "plan_price_id": str(plan_price.id),
-            },
-            format="json",
-        )
-        assert resp.status_code == 409
-        assert resp.data["code"] == "no_active_subscription"
-
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_plan_context_mismatch_returns_400(
-        self,
-        mock_get_customer,
-        authed_client,
-        stripe_customer,
-        subscription,
-        team_plan_price,
-    ):
-        """Personal-context portal session targeting a team plan price must
-        400 — the plan doesn't fit the Stripe customer's scope."""
-        mock_get_customer.return_value = self._domain_customer_from_fixture(stripe_customer)
-
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {
-                "return_url": "https://localhost/dashboard",
-                "flow": "subscription_update_confirm",
-                "plan_price_id": str(team_plan_price.id),
-            },
-            format="json",
-        )
-        assert resp.status_code == 400
-        assert resp.data["code"] == "plan_context_mismatch"
-
-    @patch("apps.billing.views.stripe.Subscription.retrieve")
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_already_on_plan_returns_409(
-        self,
-        mock_get_customer,
-        mock_retrieve,
-        authed_client,
-        stripe_customer,
-        subscription,
-        plan_price,
-    ):
-        """Target ``plan_price_id`` whose ``stripe_price_id`` matches the
-        active sub's current price → 409 ``already_on_plan``. Stripe would
-        otherwise show an empty confirm screen."""
-        mock_get_customer.return_value = self._domain_customer_from_fixture(stripe_customer)
-        mock_retrieve.return_value = self._make_stripe_sub(
-            stripe_id=subscription.stripe_id,
-            item_id="si_same",
-            price_id=plan_price.stripe_price_id,  # same price as target
-            quantity=1,
-        )
-
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {
-                "return_url": "https://localhost/dashboard",
-                "flow": "subscription_update_confirm",
-                "plan_price_id": str(plan_price.id),
-            },
-            format="json",
-        )
-        assert resp.status_code == 409
-        assert resp.data["code"] == "already_on_plan"
-
-    def test_team_context_403_for_non_billing_member(self, team_plan_price):
-        """Existing team-context gate still applies: a non-billing org
-        member cannot deep-link into the team portal even with a valid
-        ``plan_price_id``."""
-        from apps.billing.models import StripeCustomer
-        from apps.orgs.models import Org, OrgMember, OrgRole
-        from apps.users.models import User
-
-        member = User.objects.create_user(
-            email="non-billing-deep@example.com", full_name="Member"
-        )
-        org = Org.objects.create(name="DeepOrg", slug="deep-org", created_by=member)
-        OrgMember.objects.create(org=org, user=member, role=OrgRole.ADMIN, is_billing=False)
-        StripeCustomer.objects.create(stripe_id="cus_deep_team", org=org, livemode=False)
-
-        client = APIClient()
-        client.force_authenticate(user=member)
-        resp = client.post(
-            "/api/v1/billing/portal-sessions/?context=team",
-            {
-                "return_url": "https://localhost/dashboard",
-                "flow": "subscription_update_confirm",
-                "plan_price_id": str(team_plan_price.id),
-            },
-            format="json",
-        )
-        assert resp.status_code == 403
-
-
-@pytest.mark.django_db
 class TestSubscriptionView:
     def test_returns_active_subscription(self, authed_client, subscription):
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")
@@ -1183,7 +822,7 @@ class TestUpdateSubscription:
     def test_updates_seats(self, mock_seats, authed_client, team_subscription):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 5},
+            {"seat_limit": 5},
             format="json",
         )
         assert resp.status_code == 200
@@ -1197,7 +836,7 @@ class TestUpdateSubscription:
         with patch("apps.billing.views.change_plan", new_callable=AsyncMock) as mock_change:
             authed_client.patch(
                 "/api/v1/billing/subscriptions/me/",
-                {"quantity": 3},
+                {"seat_limit": 3},
                 format="json",
             )
             mock_change.assert_not_called()
@@ -1208,7 +847,7 @@ class TestUpdateSubscription:
         """Personal plans must not accept multi-seat updates via the seat-only path."""
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 5},
+            {"seat_limit": 5},
             format="json",
         )
         assert resp.status_code == 400
@@ -1221,7 +860,7 @@ class TestUpdateSubscription:
         """Team plans accept a single seat (solo org owner starting a team)."""
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 1},
+            {"seat_limit": 1},
             format="json",
         )
         assert resp.status_code == 200
@@ -1230,7 +869,7 @@ class TestUpdateSubscription:
     def test_invalid_quantity_returns_400(self, authed_client, subscription):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 0},
+            {"seat_limit": 0},
             format="json",
         )
         assert resp.status_code == 400
@@ -1242,7 +881,7 @@ class TestUpdateSubscription:
     def test_no_customer_returns_404(self, authed_client, user):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 5},
+            {"seat_limit": 5},
             format="json",
         )
         assert resp.status_code == 404
@@ -1250,7 +889,7 @@ class TestUpdateSubscription:
     def test_customer_without_subscription_returns_404(self, authed_client, stripe_customer):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"quantity": 5},
+            {"seat_limit": 5},
             format="json",
         )
         assert resp.status_code == 404
@@ -1261,7 +900,7 @@ class TestUpdateSubscription:
     ):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+            {"plan_price_id": str(team_plan_price.id), "seat_limit": 3},
             format="json",
         )
         assert resp.status_code == 200
@@ -1277,11 +916,128 @@ class TestUpdateSubscription:
         with patch("apps.billing.views.update_seat_count", new_callable=AsyncMock) as mock_seats:
             authed_client.patch(
                 "/api/v1/billing/subscriptions/me/",
-                {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+                {"plan_price_id": str(team_plan_price.id), "seat_limit": 3},
                 format="json",
             )
             mock_seats.assert_not_called()
         mock_change.assert_called_once()
+
+    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
+    def test_seat_only_reduction_below_member_count_rejected(
+        self, mock_seats, team_plan, team_plan_price
+    ):
+        """Reducing seats below the org's current head-count must 400 with
+        ``code=seats_below_member_count`` — otherwise the sub would bill for
+        fewer seats than members actually filled."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="seat-floor@example.com", full_name="Floor")
+        org = Org.objects.create(name="FloorOrg", slug="floor-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+        for i in range(2):
+            extra = User.objects.create_user(email=f"m{i}@floor.com", full_name=f"M{i}")
+            OrgMember.objects.create(org=org, user=extra, role=OrgRole.MEMBER)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_floor_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_floor_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,
+            seat_limit=5,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        # 3 members; attempt to drop seats to 2 → reject.
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=team",
+            {"seat_limit": 2},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert resp.data["code"] == "seats_below_member_count"
+        mock_seats.assert_not_called()
+
+    @patch("apps.billing.views.update_seat_count", new_callable=AsyncMock)
+    def test_seat_only_reduction_at_member_count_allowed(
+        self, mock_seats, team_plan, team_plan_price
+    ):
+        """Reducing to exactly the current member count is allowed — every
+        seat is still filled, none are over-committed."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="seat-eq@example.com", full_name="Eq")
+        org = Org.objects.create(name="EqOrg", slug="eq-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_eq_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_eq_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,
+            seat_limit=5,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        # 1 member (the owner); drop to 1 → allowed.
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=team",
+            {"seat_limit": 1},
+            format="json",
+        )
+        assert resp.status_code == 200
+        mock_seats.assert_called_once()
+
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_combined_plan_seat_reduction_below_member_count_rejected(
+        self, mock_change, team_plan, team_plan_price
+    ):
+        """Same guard applies on the combined plan+seat path — a downgrade
+        with seats below member count must 400 before any Stripe call."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="seat-combo@example.com", full_name="Combo")
+        org = Org.objects.create(name="ComboOrg", slug="combo-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+        for i in range(2):
+            extra = User.objects.create_user(email=f"c{i}@combo.com", full_name=f"C{i}")
+            OrgMember.objects.create(org=org, user=extra, role=OrgRole.MEMBER)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_combo_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_combo_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,
+            seat_limit=5,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        # 3 members; combined patch attempting seats=2 → reject.
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=team",
+            {"plan_price_id": str(team_plan_price.id), "seat_limit": 2},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert resp.data["code"] == "seats_below_member_count"
+        mock_change.assert_not_called()
 
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_prorate_kwarg_passed_to_change_plan(
@@ -1347,7 +1103,7 @@ class TestUpdateSubscription:
 
     def test_unauthenticated_rejected(self):
         client = APIClient()
-        resp = client.patch("/api/v1/billing/subscriptions/me/", {"quantity": 5}, format="json")
+        resp = client.patch("/api/v1/billing/subscriptions/me/", {"seat_limit": 5}, format="json")
         assert resp.status_code in (401, 403)
 
 
@@ -1415,7 +1171,7 @@ class TestQuantityValidationOnCheckout:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(plan_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
             },
@@ -1441,7 +1197,7 @@ class TestQuantityValidationOnCheckout:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
-                "quantity": 1,
+                "seat_limit": 1,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Mini Org",
@@ -1469,7 +1225,7 @@ class TestQuantityValidationOnCheckout:
             "/api/v1/billing/checkout-sessions/",
             {
                 "plan_price_id": str(team_price.id),
-                "quantity": 2,
+                "seat_limit": 2,
                 "success_url": "https://localhost/success",
                 "cancel_url": "https://localhost/cancel",
                 "org_name": "Min Org",
@@ -1489,7 +1245,7 @@ class TestUpdateSubscriptionQuantityValidation:
     ):
         resp = authed_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"plan_price_id": str(plan_price.id), "quantity": 2},
+            {"plan_price_id": str(plan_price.id), "seat_limit": 2},
             format="json",
         )
         assert resp.status_code == 400
@@ -1640,7 +1396,7 @@ def team_org_setup(org_member_user, team_plan, team_plan_price):
         stripe_customer=customer,
         status="active",
         plan=team_plan,
-        quantity=3,
+        seat_limit=3,
         current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
         current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
     )
@@ -1717,7 +1473,7 @@ class TestConcurrentSubscriptions:
             stripe_customer=team_customer,
             status="active",
             plan=team_plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -1730,7 +1486,7 @@ class TestConcurrentSubscriptions:
             user=user,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2025, 12, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 1, 1, tzinfo=UTC),
         )
@@ -1865,7 +1621,7 @@ class TestConcurrentSubscriptions:
             stripe_customer=team_customer,
             status="active",
             plan=team_plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -1878,7 +1634,7 @@ class TestConcurrentSubscriptions:
             user=member,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2025, 12, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 1, 1, tzinfo=UTC),
         )
@@ -2050,7 +1806,7 @@ class TestConcurrentSubscriptions:
             user=user,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -2098,7 +1854,7 @@ class TestBillingAuthorityOnMutations:
     ):
         resp = org_member_client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+            {"plan_price_id": str(team_plan_price.id), "seat_limit": 3},
             format="json",
         )
         assert resp.status_code == 200
@@ -2119,7 +1875,7 @@ class TestBillingAuthorityOnMutations:
 
         resp = client.patch(
             "/api/v1/billing/subscriptions/me/",
-            {"plan_price_id": str(team_plan_price.id), "quantity": 3},
+            {"plan_price_id": str(team_plan_price.id), "seat_limit": 3},
             format="json",
         )
         assert resp.status_code == 403
@@ -2644,9 +2400,10 @@ class TestScheduledChangeView:
     ):
         """Default routing: a non-org-member user hits the personal path,
         and the view delegates to ``release_pending_schedule_for_customer``."""
-        # The view does a lazy import — patch the symbol on the source module.
+        # Patch the bound name in views.py — the view imports it at module
+        # scope, so patching the source module wouldn't intercept the call.
         with patch(
-            "saasmint_core.services.billing.release_pending_schedule_for_customer",
+            "apps.billing.views.release_pending_schedule_for_customer",
             new_callable=AsyncMock,
         ) as mock_release:
             resp = authed_client.delete(
@@ -2684,7 +2441,7 @@ class TestScheduledChangeView:
             stripe_customer=customer,
             status="active",
             plan=team_plan_price.plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )

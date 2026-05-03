@@ -81,7 +81,7 @@ class Subscription(BaseModel):
     user_id: UUID | None = None
     status: SubscriptionStatus
     plan_id: UUID
-    quantity: int = 1
+    seat_limit: int = 1
     trial_ends_at: datetime | None = None
     current_period_start: datetime
     current_period_end: datetime

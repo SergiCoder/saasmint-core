@@ -146,7 +146,7 @@ class Subscription(models.Model):
         max_length=30, choices=SubscriptionStatus.choices, default=SubscriptionStatus.INCOMPLETE
     )
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="subscriptions")
-    quantity = models.IntegerField(default=1)
+    seat_limit = models.IntegerField(default=1)
     trial_ends_at = models.DateTimeField(null=True, blank=True)
     current_period_start = models.DateTimeField()
     current_period_end = models.DateTimeField()

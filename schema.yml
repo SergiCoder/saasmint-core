@@ -455,7 +455,7 @@ paths:
       description: |-
         Create a Stripe Customer Portal session. The portal scope is selected by ``?context=personal|team``; defaults to ``team`` for org-member callers and ``personal`` otherwise — same routing as subscription mutations on ``/me/``. ``?context=team`` requires ``is_billing=True`` and an existing team customer. ``?context=personal`` auto-creates the user's Stripe customer when missing.
 
-        Optional ``flow`` + ``plan_price_id`` body fields deep-link the portal into a focused flow. Currently the only supported flow is ``subscription_update_confirm``, which lands the user on Stripe's plan-switch confirmation screen for the target ``plan_price_id``.
+        Plan switches are **not** handled here: the portal applies them immediately with proration, which conflicts with our deferred downgrade rule. Use ``PATCH /subscriptions/me/`` instead.
       parameters:
       - in: query
         name: context
@@ -495,20 +495,13 @@ paths:
           description: ''
         '400':
           description: The ``?context=`` query param is set to a value other than
-            ``personal``/``team``, or ``flow=subscription_update_confirm`` was passed
-            with a ``plan_price_id`` whose plan context does not match the resolved
-            subscription context (``code=plan_context_mismatch``).
+            ``personal``/``team``.
         '403':
           description: '``?context=team``: caller is missing ``is_billing=True`` on
             their active org membership — only billing members may open the team portal.'
         '404':
           description: '``?context=team``: caller has no team Stripe customer (i.e.
-            no team subscription has been created); or ``plan_price_id`` does not
-            exist / belongs to an inactive plan.'
-        '409':
-          description: '``flow=subscription_update_confirm`` was requested but the
-            resolved context has no active subscription (``code=no_active_subscription``),
-            or the active subscription is already on the requested plan price (``code=already_on_plan``).'
+            no team subscription has been created).'
   /api/v1/billing/product-checkout-sessions/:
     post:
       operationId: billing_product_checkout_sessions_create
@@ -1342,7 +1335,7 @@ components:
         plan_price_id:
           type: string
           format: uuid
-        quantity:
+        seat_limit:
           type: integer
           maximum: 10000
           minimum: 1
@@ -1422,11 +1415,6 @@ components:
       required:
       - balance
       - scope
-    FlowEnum:
-      enum:
-      - subscription_update_confirm
-      type: string
-      description: '* `subscription_update_confirm` - subscription_update_confirm'
     ForgotPasswordRequest:
       type: object
       properties:
@@ -1612,9 +1600,6 @@ components:
       required:
       - code
       - detail
-    NullEnum:
-      enum:
-      - null
     OAuthExchangeRequestRequest:
       type: object
       properties:
@@ -1774,7 +1759,7 @@ components:
         prorate:
           type: boolean
           default: true
-        quantity:
+        seat_limit:
           type: integer
           maximum: 10000
           minimum: 1
@@ -1938,15 +1923,6 @@ components:
           type: string
           format: uri
           minLength: 1
-        flow:
-          nullable: true
-          oneOf:
-          - $ref: '#/components/schemas/FlowEnum'
-          - $ref: '#/components/schemas/NullEnum'
-        plan_price_id:
-          type: string
-          format: uuid
-          nullable: true
       required:
       - return_url
     PortalResponse:
@@ -2169,8 +2145,15 @@ components:
           allOf:
           - $ref: '#/components/schemas/Plan'
           readOnly: true
-        quantity:
+        seat_limit:
           type: integer
+          readOnly: true
+        seats_used:
+          type: integer
+          description: |-
+            Number of seats currently occupied. Always 1 for personal
+            subscriptions. For team subscriptions, reflects the current
+            org member count.
           readOnly: true
         trial_ends_at:
           type: string
@@ -2199,6 +2182,7 @@ components:
           allOf:
           - $ref: '#/components/schemas/Plan'
           readOnly: true
+          nullable: true
         scheduled_change_at:
           type: string
           format: date-time
@@ -2216,9 +2200,10 @@ components:
       - current_period_start
       - id
       - plan
-      - quantity
       - scheduled_change_at
       - scheduled_plan
+      - seat_limit
+      - seats_used
       - status
       - trial_ends_at
     SubscriptionListResponse:

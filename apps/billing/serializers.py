@@ -139,6 +139,7 @@ class ProductSerializer(serializers.ModelSerializer[Product]):
 class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
     plan = PlanSerializer(read_only=True)
     scheduled_plan = PlanSerializer(read_only=True)
+    seats_used = serializers.SerializerMethodField()
 
     class Meta:
         model = Subscription
@@ -146,7 +147,8 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "id",
             "status",
             "plan",
-            "quantity",
+            "seat_limit",
+            "seats_used",
             "trial_ends_at",
             "current_period_start",
             "current_period_end",
@@ -158,10 +160,32 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
         )
         read_only_fields = fields
 
+    def get_seats_used(self, obj: Subscription) -> int:
+        """Number of seats currently occupied.
+
+        Always 1 for personal subscriptions. For team subscriptions,
+        reflects the current org member count.
+
+        When the queryset was annotated with ``org_member_count`` (as
+        ``_get_active_subscriptions_for_user`` does), that value is read
+        directly from the annotation to avoid a second COUNT query per
+        serialized object. Falls back to a live COUNT for callers that
+        skip the annotation (e.g. direct serializer use in tests).
+        """
+        from apps.orgs.models import OrgMember
+
+        org_id = getattr(obj.stripe_customer, "org_id", None) if obj.stripe_customer_id else None
+        if org_id is None:
+            return 1
+        annotated: int | None = getattr(obj, "org_member_count", None)
+        if annotated is not None:
+            return annotated
+        return OrgMember.objects.filter(org_id=org_id).count()
+
 
 class CheckoutRequestSerializer(serializers.Serializer[object]):
     plan_price_id = serializers.UUIDField()
-    quantity = serializers.IntegerField(default=1, min_value=1, max_value=10000)
+    seat_limit = serializers.IntegerField(default=1, min_value=1, max_value=10000)
     success_url = serializers.URLField()
     cancel_url = serializers.URLField()
     trial_period_days = serializers.IntegerField(
@@ -179,29 +203,9 @@ class CheckoutRequestSerializer(serializers.Serializer[object]):
 
 class PortalRequestSerializer(serializers.Serializer[object]):
     return_url = serializers.URLField()
-    flow = serializers.ChoiceField(
-        choices=["subscription_update_confirm"],
-        required=False,
-        allow_null=True,
-        default=None,
-    )
-    plan_price_id = serializers.UUIDField(required=False, allow_null=True, default=None)
 
     def validate_return_url(self, value: str) -> str:
         return _validate_redirect_url(value)
-
-    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
-        flow = attrs.get("flow")
-        plan_price_id = attrs.get("plan_price_id")
-        if flow == "subscription_update_confirm" and plan_price_id is None:
-            raise serializers.ValidationError(
-                {"plan_price_id": ["Required when flow='subscription_update_confirm'."]}
-            )
-        if plan_price_id is not None and flow is None:
-            raise serializers.ValidationError(
-                {"flow": ["Required when plan_price_id is provided."]}
-            )
-        return attrs
 
 
 class ProductCheckoutRequestSerializer(serializers.Serializer[object]):
@@ -228,16 +232,16 @@ class CreditBalanceSerializer(serializers.Serializer[object]):
 class UpdateSubscriptionSerializer(serializers.Serializer[object]):
     plan_price_id = serializers.UUIDField(required=False)
     prorate = serializers.BooleanField(default=True)
-    quantity = serializers.IntegerField(min_value=1, max_value=10000, required=False)
+    seat_limit = serializers.IntegerField(min_value=1, max_value=10000, required=False)
     cancel_at_period_end = serializers.BooleanField(required=False)
 
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
-        has_plan_change = "plan_price_id" in attrs or "quantity" in attrs
+        has_plan_change = "plan_price_id" in attrs or "seat_limit" in attrs
         has_cancel_toggle = "cancel_at_period_end" in attrs
 
         if not has_plan_change and not has_cancel_toggle:
             raise serializers.ValidationError(
-                "At least one of 'plan_price_id', 'quantity', or "
+                "At least one of 'plan_price_id', 'seat_limit', or "
                 "'cancel_at_period_end' is required."
             )
         # Cancel/resume is a standalone toggle — mixing it with plan/seat
@@ -245,6 +249,6 @@ class UpdateSubscriptionSerializer(serializers.Serializer[object]):
         # Clients should send two requests instead.
         if has_cancel_toggle and has_plan_change:
             raise serializers.ValidationError(
-                "'cancel_at_period_end' cannot be combined with 'plan_price_id' or 'quantity'."
+                "'cancel_at_period_end' cannot be combined with 'plan_price_id' or 'seat_limit'."
             )
         return attrs

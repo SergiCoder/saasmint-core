@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from apps.billing.models import Subscription as SubscriptionModel
 
 import stripe
-from asgiref.sync import async_to_sync, sync_to_async
+from asgiref.sync import sync_to_async
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 
@@ -314,21 +314,33 @@ def _delete_org_db_only(org: Org) -> None:
             status=InvitationStatus.CANCELLED
         )
 
-        # Delete only users whose *only* membership is in this org — users
-        # who also belong to another org must keep their account, otherwise
-        # deleting org A would wipe accounts still active in org B.
-        # The NOT EXISTS subquery is evaluated in the DB so we don't need to
-        # materialize thousands of UUIDs into Python for the IN clause.
+        # Delete only users whose *only* membership is in this org **and**
+        # who don't have an active personal subscription — otherwise
+        # deleting org A would wipe accounts still active in org B, or
+        # silently nuke a user who's still paying for their own personal plan.
+        # The NOT EXISTS subqueries are evaluated in the DB so we don't need
+        # to materialize thousands of UUIDs into Python for the IN clause.
+        from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+        from apps.billing.models import Subscription as SubscriptionModel
+
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id=org_id
         )
-        single_org_member_user_ids = (
+        personal_subs = SubscriptionModel.objects.filter(
+            user_id=OuterRef("user_id"),
+            stripe_customer__user_id=OuterRef("user_id"),
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+        )
+        deletable_user_ids = (
             OrgMember.objects.filter(org=org)
-            .annotate(has_other=Exists(other_memberships))
-            .filter(has_other=False)
+            .annotate(
+                has_other=Exists(other_memberships),
+                has_personal_sub=Exists(personal_subs),
+            )
+            .filter(has_other=False, has_personal_sub=False)
             .values("user_id")
         )
-        User.objects.filter(id__in=Subquery(single_org_member_user_ids)).delete()
+        User.objects.filter(id__in=Subquery(deletable_user_ids)).delete()
         OrgMember.objects.filter(org=org).delete()
 
         org.delete()
@@ -406,38 +418,6 @@ def _get_active_stripe_sub(org_id: UUID) -> SubscriptionModel | None:
         .order_by("-created_at")
         .first()
     )
-
-
-def decrement_subscription_seats(org_id: UUID) -> None:
-    """Decrement the team subscription's seat count to match member count."""
-    from saasmint_core.services.subscriptions import update_seat_count
-
-    sub = _get_active_stripe_sub(org_id)
-    if sub is None or sub.stripe_id is None:
-        return
-
-    # Lock the OrgMember rows while we compute the new seat count so two
-    # concurrent member removals can't both read the pre-decrement total
-    # and then push the same (stale) count to Stripe. Snapshot the count
-    # inside the txn and push to Stripe only after commit to avoid holding
-    # DB locks across the external API call.
-    with transaction.atomic():
-        new_quantity = OrgMember.objects.select_for_update().filter(org_id=org_id).count()
-
-    if new_quantity < 1:
-        return
-
-    try:
-        async_to_sync(update_seat_count)(
-            stripe_subscription_id=sub.stripe_id,
-            quantity=new_quantity,
-        )
-    except (stripe.StripeError, ValueError):
-        logger.exception(
-            "Failed to update seat count to %d for sub %s",
-            new_quantity,
-            sub.stripe_id,
-        )
 
 
 def _cancel_team_subscription(org: Org) -> None:

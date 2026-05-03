@@ -234,7 +234,7 @@ def make_subscription(**overrides: Any) -> Subscription:
         "stripe_customer_id": uuid4(),
         "status": SubscriptionStatus.ACTIVE,
         "plan_id": uuid4(),
-        "quantity": 1,
+        "seat_limit": 1,
         "current_period_start": NOW,
         "current_period_end": NOW,
         "created_at": NOW,

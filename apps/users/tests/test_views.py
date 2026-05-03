@@ -416,7 +416,7 @@ class TestAccountViewDELETE:
             stripe_customer=cust,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -477,23 +477,22 @@ class TestAccountViewDELETE:
             stripe_customer=team_cust,
             status="active",
             plan=team_plan,
-            quantity=2,
+            seat_limit=2,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
 
-        with patch("apps.orgs.tasks.decrement_subscription_seats_task.delay") as mock_dispatch:
-            resp = authed_client.delete("/api/v1/account/")
+        resp = authed_client.delete("/api/v1/account/")
 
         assert resp.status_code == 204
         assert not User.objects.filter(id=user.id).exists()
         # Org and owner survive
         assert User.objects.filter(id=owner.id).exists()
         assert Org.objects.filter(id=org.id).exists()
-        # Deleted user's membership is gone
+        # Deleted user's membership is gone — but the seat *limit* on the
+        # team sub is intentionally untouched. Reducing it is an explicit
+        # action via PATCH /subscriptions/me/.
         assert not OrgMember.objects.filter(user_id=user.id).exists()
-        # Seat-count decrement was fanned out to Celery with the org id
-        mock_dispatch.assert_called_once_with(str(org.id))
 
     def test_unauthenticated_delete_rejected(self):
         client = APIClient()
@@ -538,7 +537,7 @@ class TestAccountExportView:
             stripe_customer=cust,
             status="active",
             plan=plan,
-            quantity=1,
+            seat_limit=1,
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )

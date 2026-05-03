@@ -18,6 +18,7 @@ from saasmint_core.exceptions import (
     OrgMemberNotFoundError,
     OrgNotFoundError,
     PlanContextMismatchError,
+    SeatsBelowMemberCountError,
     SubscriptionAlreadyActiveError,
     SubscriptionNotFoundError,
     UserNotFoundError,
@@ -34,6 +35,7 @@ _STATUS_MAP: dict[type[DomainError], int] = {
     NoActiveSubscriptionError: 409,
     AlreadyOnPlanError: 409,
     PlanContextMismatchError: 400,
+    SeatsBelowMemberCountError: 400,
     InsufficientPermissionError: 403,
 }
 

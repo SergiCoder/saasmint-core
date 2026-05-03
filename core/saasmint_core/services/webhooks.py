@@ -278,7 +278,7 @@ async def sync_subscription_from_data(
         user_id=customer.user_id,  # None for org subs; mirrored so user-scoped queries work
         status=SubscriptionStatus(str(sub_data["status"])),
         plan_id=plan_price.plan_id,
-        quantity=int(first_item.get("quantity") or 1),
+        seat_limit=int(first_item.get("quantity") or 1),
         trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
         current_period_start=datetime.fromtimestamp(period_start, tz=UTC),
         current_period_end=datetime.fromtimestamp(period_end, tz=UTC),
@@ -288,6 +288,14 @@ async def sync_subscription_from_data(
         # resuming the sub or by it actually firing — Stripe re-emits an
         # ``updated`` event in either case so the local mirror converges.
         cancel_at=_ts_to_dt(sub_data.get("cancel_at")),
+        # Preserve the pending-schedule mirror written by
+        # ``subscription_schedule.created/updated``. A ``customer.subscription.updated``
+        # event fires alongside every schedule event and would otherwise wipe
+        # these fields back to None, breaking the deferred-downgrade badge.
+        # ``subscription_schedule.released/canceled/aborted`` are the only
+        # events that should clear them — not a subscription sync.
+        scheduled_plan_id=existing.scheduled_plan_id if existing else None,
+        scheduled_change_at=existing.scheduled_change_at if existing else None,
         created_at=existing.created_at if existing else datetime.now(UTC),
     )
 
@@ -328,6 +336,51 @@ async def _on_subscription_deleted(sub_data: dict[str, Any], repos: WebhookRepos
                 )
 
 
+def _parse_schedule_pending_change(
+    schedule_data: dict[str, Any],
+) -> tuple[str, datetime] | None:
+    """Extract the (next_stripe_price_id, change_at) pair from schedule phases.
+
+    Returns ``None`` and logs when the data is absent or malformed — single-phase
+    schedules, missing items, missing price id, or missing boundary timestamp.
+    Callers treat ``None`` as "nothing to mirror."
+    """
+    schedule_id = schedule_data.get("id")
+    phases = schedule_data.get("phases") or []
+    if len(phases) < 2:
+        logger.debug(
+            "subscription_schedule %s has %d phase(s); no pending change to mirror",
+            schedule_id,
+            len(phases),
+        )
+        return None
+
+    current_phase = phases[0]
+    next_phase = phases[1]
+    next_items = next_phase.get("items") or []
+    if not next_items:
+        logger.warning("subscription_schedule %s next phase has no items", schedule_id)
+        return None
+
+    next_price = next_items[0].get("price")
+    next_price_id: str | None = (
+        next_price.get("id") if isinstance(next_price, dict) else next_price
+    )
+    if not next_price_id:
+        logger.warning("subscription_schedule %s next phase missing price id", schedule_id)
+        return None
+
+    change_at_ts = current_phase.get("end_date") or next_phase.get("start_date")
+    change_at = _ts_to_dt(change_at_ts)
+    if change_at is None:
+        logger.warning(
+            "subscription_schedule %s missing phase boundary timestamp", schedule_id
+        )
+        return None
+
+    return str(next_price_id), change_at
+
+
 async def _on_subscription_schedule_upserted(
     schedule_data: dict[str, Any], repos: WebhookRepos
 ) -> None:
@@ -351,44 +404,13 @@ async def _on_subscription_schedule_upserted(
         logger.debug("subscription_schedule event without ``subscription`` field — skipping")
         return
 
-    phases = schedule_data.get("phases") or []
-    if len(phases) < 2:
-        logger.debug(
-            "subscription_schedule %s has %d phase(s); no pending change to mirror",
-            schedule_data.get("id"),
-            len(phases),
-        )
+    pending = _parse_schedule_pending_change(schedule_data)
+    if pending is None:
         return
 
-    current_phase = phases[0]
-    next_phase = phases[1]
-    next_items = next_phase.get("items") or []
-    if not next_items:
-        logger.warning(
-            "subscription_schedule %s next phase has no items", schedule_data.get("id")
-        )
-        return
+    next_price_id, change_at = pending
 
-    next_price = next_items[0].get("price")
-    next_price_id = (
-        next_price.get("id") if isinstance(next_price, dict) else next_price
-    )
-    if not next_price_id:
-        logger.warning(
-            "subscription_schedule %s next phase missing price id", schedule_data.get("id")
-        )
-        return
-
-    change_at_ts = current_phase.get("end_date") or next_phase.get("start_date")
-    change_at = _ts_to_dt(change_at_ts)
-    if change_at is None:
-        logger.warning(
-            "subscription_schedule %s missing phase boundary timestamp",
-            schedule_data.get("id"),
-        )
-        return
-
-    plan_price = await repos.plans.get_price_by_stripe_id(str(next_price_id))
+    plan_price = await repos.plans.get_price_by_stripe_id(next_price_id)
     if plan_price is None:
         # Unknown target price: treat as a transient catalog mismatch (e.g.
         # schedule created in dashboard pointing at a price we haven't synced

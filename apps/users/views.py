@@ -84,25 +84,17 @@ class AccountView(AccountScopedView):
 
         from apps.orgs.models import OrgMember
         from apps.orgs.services import delete_orgs_created_by_user
-        from apps.orgs.tasks import decrement_subscription_seats_task
 
         user = get_user(request)
 
         async def _pre_delete(user_id: uuid.UUID) -> None:
             # If owner: delete owned orgs (cascades member account deletion)
             await sync_to_async(delete_orgs_created_by_user)(user_id)
-            # If non-owner member: remove from every org and decrement each
-            # seat count. `.afirst()` missed the multi-membership case.
-            memberships = OrgMember.objects.filter(user_id=user_id)
-            org_ids = [m.org_id async for m in memberships]
-            if org_ids:
-                await memberships.adelete()
-                # Fan out to Celery instead of running Stripe seat updates
-                # inline: each call is a 500-1500 ms round-trip, so K orgs
-                # would stall the DELETE request for K*~1 s. The memberships
-                # are already gone, so the task is free to run at any time.
-                for org_id in org_ids:
-                    decrement_subscription_seats_task.delay(str(org_id))
+            # If non-owner member: remove from every org. The seat *limit*
+            # (purchased capacity) is intentionally left untouched — admins
+            # can re-fill the seat. Reducing the seat count is an explicit
+            # action via PATCH /subscriptions/me/.
+            await OrgMember.objects.filter(user_id=user_id).adelete()
 
         user_repo, customer_repo, subscription_repo = _get_account_repos()
         async_to_sync(delete_account)(
