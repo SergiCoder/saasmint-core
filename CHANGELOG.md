@@ -8,6 +8,53 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.11.0] - 2026-05-03
+
+### Added
+
+- `DELETE /billing/subscriptions/me/scheduled-change/` — releases a pending
+  deferred downgrade; user keeps current plan.
+- `GET /billing/subscriptions/me/` now returns `scheduled_plan` (nested) and
+  `scheduled_change_at` for rendering a "downgrading on <date>" badge.
+- `seats_used` field on the subscription serializer (live `OrgMember` count,
+  N+1-safe via subquery annotation).
+- `audit_stripe_catalog` management command — lists or `--archive`s Stripe
+  products absent from the local catalog, skipping any with active subs.
+- Marketing inquiries endpoint for landing CTA + Contact form.
+
+### Changed
+
+- **Breaking**: `Subscription.quantity` renamed to `seat_limit` across
+  codebase, serializer, and migration 0017. Frontend must read `seat_limit`.
+- Portal plan-switch deep-link removed — plan changes go through
+  `PATCH /subscriptions/me/`.
+- `User.account_type` field removed; org membership now derived exclusively
+  from `OrgMember`.
+
+### Fixed
+
+- `change_plan` upgrades now release a pinning `SubscriptionSchedule` before
+  `Subscription.modify` (Stripe rejects modify on a schedule-owned sub).
+- Revising a pending downgrade reuses the existing schedule via `modify`
+  instead of failing on duplicate `create`.
+- `customer.subscription.updated` webhooks no longer wipe `scheduled_plan_id`
+  / `scheduled_change_at` set by `subscription_schedule.*` events.
+- `update_seat_count` mirrors the new seat count locally before returning,
+  so revalidate-and-refetch sees the new value without webhook lag.
+- Portal session routes by `?context=` for concurrent billers.
+- Team subscription persisted on checkout to close webhook race.
+- Hard-delete cascades and cancellation hardening for org deletion.
+- Microsoft OAuth: verify `id_token` signature and trust `xms_edov` for email.
+- Seat reduction below current member count rejected at the API layer.
+- Hijack release works without staff gate; GET bounces to admin home.
+
+### Maintenance
+
+- `saasmint-core` and `saasmint-core-lib` bumped to `0.11.0`.
+- `psycopg` bumped to `3.3.4`.
+- `CLAUDE.md` condensed; type-ignore suppressions documented in
+  `docs/type-ignores.md`.
+
 ## [0.8.5] - 2026-04-29
 
 ### Added
