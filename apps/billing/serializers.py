@@ -161,16 +161,25 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
         read_only_fields = fields
 
     def get_seats_used(self, obj: Subscription) -> int:
-        """Return the seat count currently in use.
+        """Number of seats currently occupied.
 
-        Personal subs are always 1 (the owning user). Team subs count
-        ``OrgMember`` rows on the org tied to the sub's StripeCustomer.
+        Always 1 for personal subscriptions. For team subscriptions,
+        reflects the current org member count.
+
+        When the queryset was annotated with ``org_member_count`` (as
+        ``_get_active_subscriptions_for_user`` does), that value is read
+        directly from the annotation to avoid a second COUNT query per
+        serialized object. Falls back to a live COUNT for callers that
+        skip the annotation (e.g. direct serializer use in tests).
         """
         from apps.orgs.models import OrgMember
 
         org_id = getattr(obj.stripe_customer, "org_id", None) if obj.stripe_customer_id else None
         if org_id is None:
             return 1
+        annotated: int | None = getattr(obj, "org_member_count", None)
+        if annotated is not None:
+            return annotated
         return OrgMember.objects.filter(org_id=org_id).count()
 
 

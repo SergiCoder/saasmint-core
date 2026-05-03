@@ -2151,10 +2151,9 @@ components:
         seats_used:
           type: integer
           description: |-
-            Return the seat count currently in use.
-
-            Personal subs are always 1 (the owning user). Team subs count
-            ``OrgMember`` rows on the org tied to the sub's StripeCustomer.
+            Number of seats currently occupied. Always 1 for personal
+            subscriptions. For team subscriptions, reflects the current
+            org member count.
           readOnly: true
         trial_ends_at:
           type: string
@@ -2183,6 +2182,7 @@ components:
           allOf:
           - $ref: '#/components/schemas/Plan'
           readOnly: true
+          nullable: true
         scheduled_change_at:
           type: string
           format: date-time

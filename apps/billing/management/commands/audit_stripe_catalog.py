@@ -17,6 +17,11 @@ from django.core.management.base import BaseCommand
 from apps.billing.models import Plan, Product
 
 
+def _product_metadata(sp: stripe.Product) -> dict[str, str]:
+    """Return the metadata dict for a Stripe product (empty dict when absent)."""
+    return (sp.metadata.to_dict() if sp.metadata else {}) or {}
+
+
 class Command(BaseCommand):
     help = "List (or archive) Stripe products not present in the local catalog."
 
@@ -38,7 +43,7 @@ class Command(BaseCommand):
         strays: list[stripe.Product] = []
         owned = 0
         for sp in stripe.Product.list(active=True, limit=100).auto_paging_iter():
-            md = (sp.metadata.to_dict() if sp.metadata else {}) or {}
+            md = _product_metadata(sp)
             kind = md.get("kind")
             local_id = md.get("local_plan_id") or md.get("local_product_id")
 
@@ -57,7 +62,7 @@ class Command(BaseCommand):
             return
 
         for sp in strays:
-            md = (sp.metadata.to_dict() if sp.metadata else {}) or {}
+            md = _product_metadata(sp)
             self.stdout.write(f"  · {sp.id}  name={sp.name!r}  metadata={md}")
 
         if not options.get("archive"):

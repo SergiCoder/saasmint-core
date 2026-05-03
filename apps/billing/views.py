@@ -8,6 +8,7 @@ from uuid import UUID
 
 from asgiref.sync import async_to_sync, sync_to_async
 from django.core.cache import cache
+from django.db.models import Count, OuterRef, Subquery
 from drf_spectacular.utils import (
     OpenApiParameter,
     OpenApiResponse,
@@ -31,6 +32,7 @@ from saasmint_core.services.billing import (
     create_product_checkout_session,
     create_team_stripe_customer,
     get_or_create_customer,
+    release_pending_schedule_for_customer,
     resume_subscription,
 )
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES
@@ -766,11 +768,24 @@ def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
     """
     from apps.orgs.models import OrgMember
 
+    # Annotate the org member count onto each sub so ``SubscriptionSerializer
+    # .get_seats_used`` can read it as a plain attribute instead of firing a
+    # separate COUNT query per serialized object.
+    org_member_count_sq = (
+        OrgMember.objects.filter(org_id=OuterRef("stripe_customer__org_id"))
+        .order_by()
+        .values("org_id")
+        .annotate(n=Count("id"))
+        .values("n")
+    )
+
     # ``stripe_customer`` is select_related so ``_refetch_subscription_after_mutation``
     # can discriminate team vs personal subs via ``sub.stripe_customer.org_id``
     # without firing an FK lookup per sub.
     base = SubscriptionModel.objects.select_related(
         "plan__price", "scheduled_plan__price", "stripe_customer"
+    ).annotate(
+        org_member_count=Subquery(org_member_count_sq)
     ).filter(
         status__in=ACTIVE_SUBSCRIPTION_STATUSES
     )
@@ -1115,8 +1130,6 @@ class ScheduledChangeView(BillingScopedView):
         tags=["billing"],
     )
     def delete(self, request: Request) -> Response:
-        from saasmint_core.services.billing import release_pending_schedule_for_customer
-
         user = get_user(request)
         context, _org_id = _resolve_mutation_context(request, user)
 

@@ -288,6 +288,14 @@ async def sync_subscription_from_data(
         # resuming the sub or by it actually firing — Stripe re-emits an
         # ``updated`` event in either case so the local mirror converges.
         cancel_at=_ts_to_dt(sub_data.get("cancel_at")),
+        # Preserve the pending-schedule mirror written by
+        # ``subscription_schedule.created/updated``. A ``customer.subscription.updated``
+        # event fires alongside every schedule event and would otherwise wipe
+        # these fields back to None, breaking the deferred-downgrade badge.
+        # ``subscription_schedule.released/canceled/aborted`` are the only
+        # events that should clear them — not a subscription sync.
+        scheduled_plan_id=existing.scheduled_plan_id if existing else None,
+        scheduled_change_at=existing.scheduled_change_at if existing else None,
         created_at=existing.created_at if existing else datetime.now(UTC),
     )
 

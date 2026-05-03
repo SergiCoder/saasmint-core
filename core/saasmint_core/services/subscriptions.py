@@ -122,6 +122,31 @@ async def change_plan(
     return "applied_now"
 
 
+def _read_period_field(
+    sub: stripe.Subscription,
+    first_item: object,
+    field: str,
+) -> int:
+    """Read a period timestamp from the item first, then the subscription level.
+
+    Stripe API 2024-06+ moved ``current_period_start`` / ``current_period_end``
+    from the subscription object onto the subscription items. Older API versions
+    (and some test fixtures) still place them at the subscription level, so we
+    fall back there when the item has no value.
+
+    Raises :class:`ValueError` when neither source provides an integer.
+    """
+    value = _safe_get(first_item, field)
+    if value is None:
+        value = _safe_get(sub, field)
+    if not isinstance(value, int):
+        raise ValueError(
+            f"Subscription {sub['id']} missing integer {field}; "
+            "cannot schedule a deferred downgrade"
+        )
+    return value
+
+
 async def _schedule_downgrade_at_period_end(
     *,
     sub: stripe.Subscription,
@@ -137,29 +162,8 @@ async def _schedule_downgrade_at_period_end(
     matching the current state, which we then ``modify`` to append phase 2.
     """
     first_item = sub["items"]["data"][0]
-    period_end = _safe_get(first_item, "current_period_end")
-    if period_end is None:
-        # Older Stripe API versions placed period bounds at the subscription
-        # level rather than the item. ``stripe.Subscription`` is subscriptable
-        # at runtime even though the stub doesn't declare ``__getitem__`` for
-        # the period field — fall back via dict access.
-        period_end = _safe_get(sub, "current_period_end")
-    if not isinstance(period_end, int):
-        raise ValueError(
-            f"Subscription {sub['id']} missing integer current_period_end; "
-            "cannot schedule a deferred downgrade"
-        )
-
-    # Same fallback logic as current_period_end: read from item first, then
-    # subscription level for older API versions.
-    period_start = _safe_get(first_item, "current_period_start")
-    if period_start is None:
-        period_start = _safe_get(sub, "current_period_start")
-    if not isinstance(period_start, int):
-        raise ValueError(
-            f"Subscription {sub['id']} missing integer current_period_start; "
-            "cannot schedule a deferred downgrade"
-        )
+    period_end = _read_period_field(sub, first_item, "current_period_end")
+    period_start = _read_period_field(sub, first_item, "current_period_start")
 
     current_price_id = str(first_item["price"]["id"])
 
