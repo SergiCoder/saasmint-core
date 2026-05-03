@@ -64,6 +64,55 @@ class TestSubscriptionSerializer:
         assert "cancel_at" in data
         assert data["cancel_at"] is None
 
+    def test_seats_used_personal_subscription_always_one(self, subscription):
+        """Personal subs (no org on the stripe_customer) always return 1 for
+        ``seats_used`` regardless of anything else."""
+        data = SubscriptionSerializer(subscription).data
+        assert data["seats_used"] == 1
+
+    def test_seats_used_team_subscription_counts_org_members(self, team_plan, team_plan_price):
+        """Team subs (customer has an org) return the live OrgMember count via
+        the fallback COUNT query (the annotation path is exercised via views)."""
+        from datetime import UTC, datetime
+
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="ser-owner@example.com", full_name="Owner")
+        member1 = User.objects.create_user(email="ser-m1@example.com", full_name="M1")
+        member2 = User.objects.create_user(email="ser-m2@example.com", full_name="M2")
+        org = Org.objects.create(name="SerOrg", slug="ser-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org, user=member1, role=OrgRole.MEMBER)
+        OrgMember.objects.create(org=org, user=member2, role=OrgRole.MEMBER)
+        customer = StripeCustomer.objects.create(
+            stripe_id="cus_ser_team", org=org, livemode=False
+        )
+        sub = Subscription.objects.create(
+            stripe_id="sub_ser_team",
+            stripe_customer=customer,
+            status="active",
+            plan=team_plan,
+            seat_limit=5,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        # Fetch fresh so stripe_customer is available via select_related.
+        sub = Subscription.objects.select_related("stripe_customer").get(id=sub.id)
+        data = SubscriptionSerializer(sub).data
+        # 3 members in the org.
+        assert data["seats_used"] == 3
+
+    def test_scheduled_plan_and_change_at_exposed(self, subscription, team_plan):
+        """``scheduled_plan`` and ``scheduled_change_at`` must be present in
+        the serialized output; they start as None for a plain sub."""
+        data = SubscriptionSerializer(subscription).data
+        assert "scheduled_plan" in data
+        assert "scheduled_change_at" in data
+        assert data["scheduled_plan"] is None
+        assert data["scheduled_change_at"] is None
+
 
 class TestCheckoutRequestSerializer:
     def test_valid_data(self, settings):

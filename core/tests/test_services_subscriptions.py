@@ -466,3 +466,139 @@ async def test_change_plan_downgrade_missing_period_start_raises() -> None:
             new_stripe_price_id="price_basic",
             new_price_amount=999,
         )
+
+
+@pytest.mark.anyio
+async def test_change_plan_downgrade_reuses_existing_schedule() -> None:
+    """When the subscription is already managed by a SubscriptionSchedule
+    (``sub["schedule"]`` is set), ``_schedule_downgrade_at_period_end`` must
+    skip ``SubscriptionSchedule.create`` and go straight to
+    ``SubscriptionSchedule.modify`` on the existing schedule id.
+    Stripe rejects a second ``create(from_subscription=...)`` call when the
+    sub is already pinned by a schedule."""
+    sub = _stripe_sub_dict(
+        unit_amount=2000,
+        quantity=3,
+        period_start=1_700_000_000,
+        period_end=1_702_592_000,
+    )
+    # Inject the existing schedule id onto the sub dict so _safe_get picks it up.
+    sub["schedule"] = "sub_sched_existing"  # type: ignore[index]
+
+    with (
+        patch("stripe.Subscription.retrieve", return_value=sub),
+        patch("stripe.Subscription.modify"),
+        patch("stripe.SubscriptionSchedule.create") as mock_create,
+        patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
+    ):
+        result = await change_plan(
+            stripe_subscription_id="sub_dg",
+            new_stripe_price_id="price_basic",
+            new_price_amount=999,
+        )
+
+    assert result == "scheduled_for_period_end"
+    # Must NOT create a new schedule — the existing one is reused.
+    mock_create.assert_not_called()
+    # Must modify the existing schedule id.
+    args, kwargs = mock_sched_modify.call_args
+    assert args[0] == "sub_sched_existing"
+    assert kwargs["end_behavior"] == "release"
+
+
+@pytest.mark.anyio
+async def test_change_plan_upgrade_with_existing_schedule_releases_schedule_first() -> None:
+    """When the sub is already owned by a SubscriptionSchedule (pinned by a
+    previous deferred downgrade), an upgrade must release the schedule before
+    calling ``Subscription.modify`` — Stripe rejects modify on a scheduled sub.
+    After release, the sub is re-fetched and the modify proceeds normally."""
+    sub_before_release = _stripe_sub_dict(
+        sub_id="sub_upgrade_sched",
+        item_id="si_before",
+        unit_amount=999,  # current price is 999 → upgrade to 2000
+        quantity=2,
+        period_start=1_700_000_000,
+        period_end=1_702_592_000,
+    )
+    sub_before_release["schedule"] = "sub_sched_pinned"  # type: ignore[index]
+
+    # After release, Stripe returns the sub without the schedule field.
+    sub_after_release = _stripe_sub_dict(
+        sub_id="sub_upgrade_sched",
+        item_id="si_after",
+        unit_amount=999,
+        quantity=2,
+    )
+
+    retrieve_call_count = 0
+
+    def side_effect_retrieve(sub_id: str) -> object:
+        nonlocal retrieve_call_count
+        retrieve_call_count += 1
+        return sub_before_release if retrieve_call_count == 1 else sub_after_release
+
+    with (
+        patch("stripe.Subscription.retrieve", side_effect=side_effect_retrieve),
+        patch("stripe.SubscriptionSchedule.release") as mock_release,
+        patch("stripe.Subscription.modify") as mock_modify,
+        patch("stripe.SubscriptionSchedule.create") as mock_create,
+    ):
+        result = await change_plan(
+            stripe_subscription_id="sub_upgrade_sched",
+            new_stripe_price_id="price_pro",
+            new_price_amount=2000,  # upgrade
+        )
+
+    assert result == "applied_now"
+    # Must NOT have created a new schedule.
+    mock_create.assert_not_called()
+    # Must have released the pinning schedule before modifying.
+    mock_release.assert_called_once_with("sub_sched_pinned")
+    # Modify must have been called once with the item from the re-fetched sub.
+    mock_modify.assert_called_once()
+    modify_items = mock_modify.call_args[1]["items"]
+    assert modify_items[0]["id"] == "si_after"
+
+
+@pytest.mark.anyio
+async def test_change_plan_downgrade_period_fallback_from_subscription_level() -> None:
+    """``_read_period_field`` reads period timestamps from the item first,
+    then falls back to the subscription level. Verify the fallback path:
+    item has no ``current_period_start/end``, but the sub object does."""
+    # Period fields absent from the item but present at the subscription level.
+    sub = {
+        "id": "sub_fallback",
+        "schedule": None,
+        "current_period_start": 1_700_000_000,
+        "current_period_end": 1_702_592_000,
+        "items": {
+            "data": [
+                {
+                    "id": "si_fallback",
+                    "price": {"id": "price_pro", "unit_amount": 2000},
+                    "quantity": 2,
+                    # current_period_start / current_period_end deliberately absent
+                }
+            ]
+        },
+    }
+
+    with (
+        patch("stripe.Subscription.retrieve", return_value=sub),
+        patch("stripe.Subscription.modify"),
+        patch(
+            "stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_fb"}
+        ) as mock_create,
+        patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
+    ):
+        result = await change_plan(
+            stripe_subscription_id="sub_fallback",
+            new_stripe_price_id="price_basic",
+            new_price_amount=999,
+        )
+
+    assert result == "scheduled_for_period_end"
+    mock_create.assert_called_once_with(from_subscription="sub_fallback")
+    phases = mock_sched_modify.call_args.kwargs["phases"]
+    assert phases[0]["start_date"] == 1_700_000_000
+    assert phases[0]["end_date"] == 1_702_592_000
