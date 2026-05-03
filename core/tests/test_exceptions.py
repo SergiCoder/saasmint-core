@@ -5,10 +5,14 @@ from __future__ import annotations
 import pytest
 
 from saasmint_core.exceptions import (
+    AlreadyOnPlanError,
     DomainError,
     InsufficientPermissionError,
+    NoActiveSubscriptionError,
     OrgMemberNotFoundError,
     OrgNotFoundError,
+    PlanContextMismatchError,
+    SeatsBelowMemberCountError,
     SubscriptionAlreadyActiveError,
     SubscriptionNotFoundError,
     UserNotFoundError,
@@ -25,6 +29,10 @@ _ALL_EXCEPTIONS = [
     OrgMemberNotFoundError,
     WebhookVerificationError,
     WebhookDataError,
+    NoActiveSubscriptionError,
+    AlreadyOnPlanError,
+    PlanContextMismatchError,
+    SeatsBelowMemberCountError,
 ]
 
 

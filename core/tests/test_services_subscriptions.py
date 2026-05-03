@@ -6,7 +6,27 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from saasmint_core.services.subscriptions import change_plan, update_seat_count
+from saasmint_core.services.subscriptions import _safe_get, change_plan, update_seat_count
+
+# ── _safe_get ─────────────────────────────────────────────────────────────────
+
+
+def test_safe_get_returns_value_from_dict() -> None:
+    assert _safe_get({"key": "val"}, "key") == "val"
+
+
+def test_safe_get_missing_key_returns_none() -> None:
+    assert _safe_get({"other": 1}, "key") is None
+
+
+def test_safe_get_none_obj_returns_none() -> None:
+    assert _safe_get(None, "key") is None
+
+
+def test_safe_get_returns_none_for_non_subscriptable() -> None:
+    """Objects that don't support __getitem__ (e.g. plain int) must return
+    None instead of raising TypeError."""
+    assert _safe_get(42, "key") is None
 
 # ── change_plan ───────────────────────────────────────────────────────────────
 
@@ -380,3 +400,69 @@ async def test_change_plan_downgrade_quantity_override_wins() -> None:
     phases = mock_sched_modify.call_args.kwargs["phases"]
     assert phases[0]["items"][0]["quantity"] == 2
     assert phases[1]["items"][0]["quantity"] == 2
+
+
+@pytest.mark.anyio
+async def test_change_plan_downgrade_missing_period_end_raises() -> None:
+    """``_schedule_downgrade_at_period_end`` reads ``current_period_end`` from
+    the first item. When the field is absent the function raises ``ValueError``
+    rather than silently passing ``None`` to Stripe, which would accept it and
+    produce an undefined schedule."""
+    sub = {
+        "id": "sub_no_end",
+        "items": {
+            "data": [
+                {
+                    "id": "si_no_end",
+                    "price": {"id": "price_pro", "unit_amount": 2000},
+                    "quantity": 1,
+                    # current_period_end deliberately omitted
+                }
+            ]
+        },
+    }
+
+    with (
+        patch("stripe.Subscription.retrieve", return_value=sub),
+        patch("stripe.Subscription.modify"),
+        patch("stripe.SubscriptionSchedule.create"),
+        pytest.raises(ValueError, match="current_period_end"),
+    ):
+        await change_plan(
+            stripe_subscription_id="sub_no_end",
+            new_stripe_price_id="price_basic",
+            new_price_amount=999,  # triggers downgrade path
+        )
+
+
+@pytest.mark.anyio
+async def test_change_plan_downgrade_missing_period_start_raises() -> None:
+    """``_schedule_downgrade_at_period_end`` also validates
+    ``current_period_start``. A missing start timestamp must raise rather than
+    producing a malformed schedule."""
+    sub = {
+        "id": "sub_no_start",
+        "items": {
+            "data": [
+                {
+                    "id": "si_no_start",
+                    "price": {"id": "price_pro", "unit_amount": 2000},
+                    "quantity": 1,
+                    "current_period_end": 1_702_592_000,
+                    # current_period_start deliberately omitted
+                }
+            ]
+        },
+    }
+
+    with (
+        patch("stripe.Subscription.retrieve", return_value=sub),
+        patch("stripe.Subscription.modify"),
+        patch("stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_ns"}),
+        pytest.raises(ValueError, match="current_period_start"),
+    ):
+        await change_plan(
+            stripe_subscription_id="sub_no_start",
+            new_stripe_price_id="price_basic",
+            new_price_amount=999,
+        )
