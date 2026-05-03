@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from saasmint_core.services.subscriptions import _safe_get, change_plan, update_seat_count
+from tests.conftest import InMemorySubscriptionRepository, make_subscription
 
 # ── _safe_get ─────────────────────────────────────────────────────────────────
 
@@ -166,18 +167,26 @@ async def test_update_seat_count_increase_prorates() -> None:
     mock_sub.__getitem__ = MagicMock(
         side_effect=lambda k: {"items": {"data": [{"id": "si_seat", "quantity": 3}]}}[k]
     )
+    repo = InMemorySubscriptionRepository()
+    active = make_subscription(stripe_id="sub_abc", seat_limit=3)
+    await repo.save(active)
 
     with (
         patch("stripe.Subscription.retrieve", return_value=mock_sub),
         patch("stripe.Subscription.modify") as mock_modify,
     ):
-        await update_seat_count(stripe_subscription_id="sub_abc", quantity=5)
+        await update_seat_count(active=active, quantity=5, subscription_repo=repo)
 
     mock_modify.assert_called_once_with(
         "sub_abc",
         items=[{"id": "si_seat", "quantity": 5}],
         proration_behavior="create_prorations",
     )
+    # Optimistic mirror: local row reflects the new seat count before the
+    # webhook lands.
+    stored = await repo.get_by_id(active.id)
+    assert stored is not None
+    assert stored.seat_limit == 5
 
 
 @pytest.mark.anyio
@@ -186,18 +195,24 @@ async def test_update_seat_count_decrease_no_proration() -> None:
     mock_sub.__getitem__ = MagicMock(
         side_effect=lambda k: {"items": {"data": [{"id": "si_seat", "quantity": 5}]}}[k]
     )
+    repo = InMemorySubscriptionRepository()
+    active = make_subscription(stripe_id="sub_abc", seat_limit=5)
+    await repo.save(active)
 
     with (
         patch("stripe.Subscription.retrieve", return_value=mock_sub),
         patch("stripe.Subscription.modify") as mock_modify,
     ):
-        await update_seat_count(stripe_subscription_id="sub_abc", quantity=3)
+        await update_seat_count(active=active, quantity=3, subscription_repo=repo)
 
     mock_modify.assert_called_once_with(
         "sub_abc",
         items=[{"id": "si_seat", "quantity": 3}],
         proration_behavior="none",
     )
+    stored = await repo.get_by_id(active.id)
+    assert stored is not None
+    assert stored.seat_limit == 3
 
 
 @pytest.mark.anyio
@@ -206,12 +221,15 @@ async def test_update_seat_count_minimum_valid() -> None:
     mock_sub.__getitem__ = MagicMock(
         side_effect=lambda k: {"items": {"data": [{"id": "si_min", "quantity": 1}]}}[k]
     )
+    repo = InMemorySubscriptionRepository()
+    active = make_subscription(stripe_id="sub_abc", seat_limit=1)
+    await repo.save(active)
 
     with (
         patch("stripe.Subscription.retrieve", return_value=mock_sub),
         patch("stripe.Subscription.modify") as mock_modify,
     ):
-        await update_seat_count(stripe_subscription_id="sub_abc", quantity=1)
+        await update_seat_count(active=active, quantity=1, subscription_repo=repo)
 
     mock_modify.assert_called_once_with(
         "sub_abc",
@@ -221,15 +239,50 @@ async def test_update_seat_count_minimum_valid() -> None:
 
 
 @pytest.mark.anyio
+async def test_update_seat_count_no_save_when_quantity_unchanged() -> None:
+    """Skip the optimistic save when the new quantity already matches the
+    local row — avoids a pointless DB write on no-op submissions."""
+    mock_sub = MagicMock()
+    mock_sub.__getitem__ = MagicMock(
+        side_effect=lambda k: {"items": {"data": [{"id": "si_same", "quantity": 4}]}}[k]
+    )
+    repo = InMemorySubscriptionRepository()
+    active = make_subscription(stripe_id="sub_abc", seat_limit=4)
+    await repo.save(active)
+    save_spy = MagicMock(wraps=repo.save)
+    repo.save = save_spy  # type: ignore[method-assign]
+
+    with (
+        patch("stripe.Subscription.retrieve", return_value=mock_sub),
+        patch("stripe.Subscription.modify"),
+    ):
+        await update_seat_count(active=active, quantity=4, subscription_repo=repo)
+
+    save_spy.assert_not_called()
+
+
+@pytest.mark.anyio
 async def test_update_seat_count_zero_raises() -> None:
+    repo = InMemorySubscriptionRepository()
+    active = make_subscription(stripe_id="sub_abc")
     with pytest.raises(ValueError, match="at least 1"):
-        await update_seat_count(stripe_subscription_id="sub_abc", quantity=0)
+        await update_seat_count(active=active, quantity=0, subscription_repo=repo)
 
 
 @pytest.mark.anyio
 async def test_update_seat_count_negative_raises() -> None:
+    repo = InMemorySubscriptionRepository()
+    active = make_subscription(stripe_id="sub_abc")
     with pytest.raises(ValueError, match="at least 1"):
-        await update_seat_count(stripe_subscription_id="sub_abc", quantity=-3)
+        await update_seat_count(active=active, quantity=-3, subscription_repo=repo)
+
+
+@pytest.mark.anyio
+async def test_update_seat_count_missing_stripe_id_raises() -> None:
+    repo = InMemorySubscriptionRepository()
+    active = make_subscription(stripe_id=None)
+    with pytest.raises(ValueError, match="no stripe_id"):
+        await update_seat_count(active=active, quantity=2, subscription_repo=repo)
 
 
 # ── change_plan: defer-on-downgrade ──────────────────────────────────────────
@@ -483,7 +536,7 @@ async def test_change_plan_downgrade_reuses_existing_schedule() -> None:
         period_end=1_702_592_000,
     )
     # Inject the existing schedule id onto the sub dict so _safe_get picks it up.
-    sub["schedule"] = "sub_sched_existing"  # type: ignore[index]
+    sub["schedule"] = "sub_sched_existing"
 
     with (
         patch("stripe.Subscription.retrieve", return_value=sub),
@@ -520,7 +573,7 @@ async def test_change_plan_upgrade_with_existing_schedule_releases_schedule_firs
         period_start=1_700_000_000,
         period_end=1_702_592_000,
     )
-    sub_before_release["schedule"] = "sub_sched_pinned"  # type: ignore[index]
+    sub_before_release["schedule"] = "sub_sched_pinned"
 
     # After release, Stripe returns the sub without the schedule field.
     sub_after_release = _stripe_sub_dict(

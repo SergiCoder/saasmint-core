@@ -10,6 +10,9 @@ from stripe.params._subscription_modify_params import (
     SubscriptionModifyParamsItem,
 )
 
+from saasmint_core.domain.subscription import Subscription
+from saasmint_core.repositories.subscription import SubscriptionRepository
+
 # Returned by ``change_plan`` to tell the caller whether the switch happened
 # now (immediate Subscription.modify) or was deferred to period end via a
 # SubscriptionSchedule. The caller uses this to decide whether to skip the
@@ -227,19 +230,29 @@ async def _schedule_downgrade_at_period_end(
 
 async def update_seat_count(
     *,
-    stripe_subscription_id: str,
+    active: Subscription,
     quantity: int,
+    subscription_repo: SubscriptionRepository,
 ) -> None:
     """
     Update the seat count for an org subscription.
 
     Adding seats prorates immediately (the org is charged for the new seat
-    right away).  Removing seats applies at renewal — no mid-cycle credit.
-    DB state is synced via customer.subscription.updated webhook.
+    right away). Removing seats updates Stripe immediately too — only the
+    *billing impact* is deferred (``proration_behavior=none`` suppresses
+    the credit).
+
+    The new ``seat_limit`` is mirrored into the local row before returning
+    so the frontend's revalidate-and-refetch sees the new value without
+    waiting for the asynchronous ``customer.subscription.updated`` webhook.
+    The webhook arrives later and re-saves the same value idempotently.
     """
     if quantity < 1:
         raise ValueError("Seat count must be at least 1")
+    if active.stripe_id is None:
+        raise ValueError("Subscription has no stripe_id; cannot update seat count")
 
+    stripe_subscription_id = active.stripe_id
     # Single retrieve — read both item_id and current quantity from one Stripe
     # round-trip instead of calling `Subscription.retrieve` twice.
     sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
@@ -256,3 +269,6 @@ async def update_seat_count(
         items=[{"id": item_id, "quantity": quantity}],
         proration_behavior=proration,
     )
+
+    if active.seat_limit != quantity:
+        await subscription_repo.save(active.model_copy(update={"seat_limit": quantity}))

@@ -1019,8 +1019,9 @@ class SubscriptionView(BillingScopedView):
                 if org_id is not None:
                     await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
                 await update_seat_count(
-                    stripe_subscription_id=stripe_sub_id,
+                    active=sub,
                     quantity=data["seat_limit"],
+                    subscription_repo=repos.subscriptions,
                 )
 
         async_to_sync(_do)()
