@@ -101,6 +101,20 @@ async def change_plan(
         )
         return "scheduled_for_period_end"
 
+    # Immediate path (upgrade or same-amount switch). Stripe rejects
+    # ``Subscription.modify`` when a SubscriptionSchedule owns the sub — the
+    # schedule must be released first. This covers the case where the user had
+    # previously scheduled a downgrade and now wants to upgrade instead.
+    existing_schedule_id = _safe_get(sub, "schedule")
+    if existing_schedule_id:
+        await asyncio.to_thread(
+            stripe.SubscriptionSchedule.release, str(existing_schedule_id)
+        )
+        # Re-fetch the sub so the items/item_id reflect the released state.
+        sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
+        first_item = sub["items"]["data"][0]
+        item_id = str(first_item["id"])
+
     proration: Literal["create_prorations", "none"] = "create_prorations" if prorate else "none"
 
     # Always carry the current seat count forward. Stripe's Subscription.modify
@@ -153,13 +167,22 @@ async def _schedule_downgrade_at_period_end(
     new_stripe_price_id: str,
     quantity: int,
 ) -> None:
-    """Create a two-phase SubscriptionSchedule that swaps prices at period end.
+    """Create (or update) a two-phase SubscriptionSchedule that swaps prices at period end.
 
     Phase 1 mirrors the current state (same price, same quantity) and ends
     at ``current_period_end``. Phase 2 starts at the same instant on the
-    new price. Stripe requires the subscription to first be promoted to a
-    schedule via ``from_subscription`` — that returns a one-phase schedule
-    matching the current state, which we then ``modify`` to append phase 2.
+    new price.
+
+    When no schedule exists yet, Stripe requires the subscription to first be
+    promoted to a schedule via ``from_subscription`` — that returns a one-phase
+    schedule matching the current state, which we then ``modify`` to append
+    phase 2.
+
+    When a schedule already pins the sub (e.g. the user is revising a previously
+    scheduled downgrade), we skip ``SubscriptionSchedule.create`` and go
+    straight to ``SubscriptionSchedule.modify`` on the existing schedule.
+    Stripe rejects a second ``create(from_subscription=...)`` call when the
+    subscription is already managed by a schedule.
     """
     first_item = sub["items"]["data"][0]
     period_end = _read_period_field(sub, first_item, "current_period_end")
@@ -167,13 +190,20 @@ async def _schedule_downgrade_at_period_end(
 
     current_price_id = str(first_item["price"]["id"])
 
-    schedule = await asyncio.to_thread(
-        stripe.SubscriptionSchedule.create,
-        from_subscription=str(sub["id"]),
-    )
+    existing_schedule_id = _safe_get(sub, "schedule")
+    if existing_schedule_id:
+        # Sub is already managed by a schedule — modify it in place.
+        schedule_id = str(existing_schedule_id)
+    else:
+        schedule = await asyncio.to_thread(
+            stripe.SubscriptionSchedule.create,
+            from_subscription=str(sub["id"]),
+        )
+        schedule_id = schedule["id"]
+
     await asyncio.to_thread(
         stripe.SubscriptionSchedule.modify,
-        schedule["id"],
+        schedule_id,
         end_behavior="release",
         phases=[
             {
