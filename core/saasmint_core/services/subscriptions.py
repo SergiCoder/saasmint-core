@@ -193,6 +193,20 @@ async def _schedule_downgrade_at_period_end(
 
     current_price_id = str(first_item["price"]["id"])
 
+    # Defensive: Stripe rejects a SubscriptionSchedule whose phases mix
+    # currencies. The view-layer guard in apps/billing/views.py
+    # (_resolve_plan_change_price) already prevents this, but assert here
+    # so a future caller can't accidentally bypass it.
+    current_currency = str(first_item["price"].get("currency") or "").lower()
+    new_price = await asyncio.to_thread(stripe.Price.retrieve, new_stripe_price_id)
+    new_currency = str(new_price.currency or "").lower()
+    if current_currency and new_currency and current_currency != new_currency:
+        raise ValueError(
+            f"Cannot schedule downgrade: subscription is in {current_currency.upper()} "
+            f"but new price is in {new_currency.upper()}. "
+            "Stripe pins subscription currency for life."
+        )
+
     existing_schedule_id = _safe_get(sub, "schedule")
     if existing_schedule_id:
         # Sub is already managed by a schedule — modify it in place.

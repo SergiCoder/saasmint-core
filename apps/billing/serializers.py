@@ -41,6 +41,31 @@ def _localized_display(
     return format_amount(price.amount, "usd"), "usd"
 
 
+def _local_display(
+    price: PlanPrice | ProductPrice, preferred_currency: str | None
+) -> tuple[float | None, str | None]:
+    """Return ``(local_display_amount, local_currency)`` for the dual-display card.
+
+    Populated only when *preferred_currency* is set in the serializer context
+    (which the view does **only** when the user's preferred currency is
+    non-billable and we therefore fell back to USD for the actual charge).
+    For users whose preference is itself billable, the view sets this to
+    ``None`` and both elements come back ``None`` — the FE renders the
+    standard single-line card.
+
+    Unlike :func:`_localized_display`, no fallback to USD here: a missing
+    ``LocalizedPrice`` row means we have no useful local approximation to
+    show, and the primary ``display_amount`` already covers the customer's
+    actual charge.
+    """
+    if preferred_currency is None:
+        return None, None
+    for lp in price.localized_prices.all():
+        if lp.currency == preferred_currency:
+            return format_amount(lp.amount_minor, preferred_currency), preferred_currency
+    return None, None
+
+
 def _validate_redirect_url(url: str) -> str:
     """Ensure a redirect URL belongs to an allowed domain."""
     allowed_origins: list[str] = getattr(settings, "CORS_ALLOWED_ORIGINS", [])
@@ -87,12 +112,21 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
 
     display_amount = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
+    local_display_amount = serializers.SerializerMethodField()
+    local_currency = serializers.SerializerMethodField()
 
     if TYPE_CHECKING:
         context: dict[str, Any]
 
     class Meta:
-        fields = ("id", "amount", "display_amount", "currency")
+        fields = (
+            "id",
+            "amount",
+            "display_amount",
+            "currency",
+            "local_display_amount",
+            "local_currency",
+        )
         read_only_fields = ("id", "amount")
 
     def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
@@ -100,6 +134,12 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
 
     def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
         return _localized_display(obj, self.context.get("currency", "usd"))[1]
+
+    def get_local_display_amount(self, obj: PlanPrice | ProductPrice) -> float | None:
+        return _local_display(obj, self.context.get("preferred_currency"))[0]
+
+    def get_local_currency(self, obj: PlanPrice | ProductPrice) -> str | None:
+        return _local_display(obj, self.context.get("preferred_currency"))[1]
 
 
 class PlanPriceSerializer(_PriceSerializer):
@@ -167,6 +207,7 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "cancel_at",
             "scheduled_plan",
             "scheduled_change_at",
+            "currency",
             "created_at",
         )
         read_only_fields = fields

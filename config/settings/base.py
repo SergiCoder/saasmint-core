@@ -52,6 +52,10 @@ class _Env(BaseSettings):
     oauth_microsoft_client_secret: str = ""
     marketing_inquiries_to: str = ""  # admin inbox for landing-CTA / Contact-form submissions
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
+    # Currencies the catalog actually charges in (real Stripe Prices minted per entry).
+    # Other entries in SUPPORTED_CURRENCIES stay display-only; their Stripe Prices are
+    # never minted and Checkout falls back to USD for them.
+    billing_currencies: list[str] = ["usd", "eur", "gbp", "jpy", "cny"]
 
 
 env = _Env()  # type: ignore[call-arg]  # pydantic-settings reads fields from env vars at construction; mypy sees no positional args but none are needed
@@ -258,6 +262,25 @@ CELERY_BEAT_SCHEDULE = {
 # Stripe
 STRIPE_SECRET_KEY = env.stripe_secret_key
 STRIPE_WEBHOOK_SECRET = env.stripe_webhook_secret
+
+# Multi-currency billing
+from saasmint_core.services.currency import SUPPORTED_CURRENCIES  # noqa: E402
+
+BILLING_CURRENCIES: list[str] = [c.lower() for c in env.billing_currencies]
+_unsupported = [c for c in BILLING_CURRENCIES if c not in SUPPORTED_CURRENCIES]
+if _unsupported:
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        f"BILLING_CURRENCIES contains unsupported codes: {_unsupported}. "
+        f"Add them to SUPPORTED_CURRENCIES first."
+    )
+if "usd" not in BILLING_CURRENCIES:
+    from django.core.exceptions import ImproperlyConfigured
+
+    raise ImproperlyConfigured(
+        "BILLING_CURRENCIES must include 'usd' (the source-of-truth fallback)."
+    )
 
 # Email (Resend)
 RESEND_API_KEY = env.resend_api_key

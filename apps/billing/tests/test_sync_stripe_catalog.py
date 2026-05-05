@@ -88,7 +88,7 @@ class TestLookupKeys:
         assert _slug("Pack — Plus") == "pack_plus"
         assert _slug("ABC___xyz") == "abc_xyz"
 
-    def test_plan_lookup_key(self):
+    def test_plan_lookup_key_usd_unsuffixed(self):
         plan = Plan.objects.create(
             name="Personal Pro Monthly",
             context="personal",
@@ -96,13 +96,31 @@ class TestLookupKeys:
             interval="month",
             is_active=True,
         )
-        assert _plan_lookup_key(plan) == "plan_personal_pro_month"
+        # USD stays unsuffixed for backwards-compat with already-minted Stripe Prices.
+        assert _plan_lookup_key(plan, "usd") == "plan_personal_pro_month"
 
-    def test_product_lookup_key(self):
+    def test_plan_lookup_key_non_usd_suffixed(self):
+        plan = Plan.objects.create(
+            name="Personal Pro Monthly",
+            context="personal",
+            tier=PlanTier.PRO,
+            interval="month",
+            is_active=True,
+        )
+        assert _plan_lookup_key(plan, "eur") == "plan_personal_pro_month_eur"
+        assert _plan_lookup_key(plan, "jpy") == "plan_personal_pro_month_jpy"
+
+    def test_product_lookup_key_usd_unsuffixed(self):
         product = Product.objects.create(
             name="100 Credits", type="one_time", credits=100, is_active=True
         )
-        assert _product_lookup_key(product) == "product_100_credits"
+        assert _product_lookup_key(product, "usd") == "product_100_credits"
+
+    def test_product_lookup_key_non_usd_suffixed(self):
+        product = Product.objects.create(
+            name="100 Credits", type="one_time", credits=100, is_active=True
+        )
+        assert _product_lookup_key(product, "cny") == "product_100_credits_cny"
 
 
 # ── early-exit when stripe key is missing ─────────────────────────────────────
@@ -136,6 +154,14 @@ def paid_plan_with_price():
 
 
 class TestSyncPlans:
+    """Single-currency upsert mechanics. Multi-currency behavior is in
+    :class:`TestMultiCurrencySync` below — keeping this class scoped to USD
+    lets the existing call-count assertions stay simple."""
+
+    @pytest.fixture(autouse=True)
+    def _usd_only(self, settings):
+        settings.BILLING_CURRENCIES = ["usd"]
+
     def test_creates_new_stripe_product_and_price_when_none_exists(self, paid_plan_with_price):
         plan, price = paid_plan_with_price
 
@@ -152,7 +178,7 @@ class TestSyncPlans:
             _run()
 
         mock_list.assert_called_once()
-        assert mock_list.call_args.kwargs["lookup_keys"] == [_plan_lookup_key(plan)]
+        assert mock_list.call_args.kwargs["lookup_keys"] == [_plan_lookup_key(plan, "usd")]
         mock_pcreate.assert_called_once()
         # Created Product carries plan name, description, kind metadata
         kwargs = mock_pcreate.call_args.kwargs
@@ -168,7 +194,7 @@ class TestSyncPlans:
         assert price_kwargs["unit_amount"] == 1900
         assert price_kwargs["currency"] == "usd"
         assert price_kwargs["recurring"] == {"interval": "month"}
-        assert price_kwargs["lookup_key"] == _plan_lookup_key(plan)
+        assert price_kwargs["lookup_key"] == _plan_lookup_key(plan, "usd")
         assert price_kwargs["transfer_lookup_key"] is True
 
         mock_pmodify.assert_not_called()
@@ -317,6 +343,12 @@ def product_with_price():
 
 
 class TestSyncProducts:
+    """USD-scoped product sync tests; multi-currency coverage in TestMultiCurrencySync."""
+
+    @pytest.fixture(autouse=True)
+    def _usd_only(self, settings):
+        settings.BILLING_CURRENCIES = ["usd"]
+
     def test_creates_new_one_time_price(self, product_with_price):
         product, price = product_with_price
         new_price = MagicMock(id="price_new_credits")
@@ -334,7 +366,7 @@ class TestSyncProducts:
         # Product (one-time) prices have no recurring
         assert "recurring" not in kwargs
         assert kwargs["unit_amount"] == 999
-        assert kwargs["lookup_key"] == _product_lookup_key(product)
+        assert kwargs["lookup_key"] == _product_lookup_key(product, "usd")
         price.refresh_from_db()
         assert price.stripe_price_id == "price_new_credits"
 

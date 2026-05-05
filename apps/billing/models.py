@@ -170,6 +170,11 @@ class Subscription(models.Model):
         blank=True,
     )
     scheduled_change_at = models.DateTimeField(null=True, blank=True)
+    # ISO 4217 lowercase. Mirrored from Stripe — Stripe pins the currency on a
+    # subscription for life, so plan changes must resolve a Stripe Price in the
+    # same currency. Default ``"usd"`` matches the historical behavior for any
+    # row that pre-dates this column.
+    currency = models.CharField(max_length=3, default="usd")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -271,6 +276,13 @@ class LocalizedPrice(models.Model):
     amount_minor = models.IntegerField(
         help_text="Friendly-rounded display amount in target currency's minor units."
     )
+    # Stripe Price ID for billable non-USD currencies (in BILLING_CURRENCIES).
+    # NULL for display-only currencies — those rows exist purely so the API can
+    # render a localized price tag without ever charging in that currency.
+    # USD continues to live on PlanPrice/ProductPrice.stripe_price_id.
+    # NULL (not "") because the partial-unique constraint
+    # ``uniq_localized_stripe_price_id`` filters on ``stripe_price_id__isnull=False``.
+    stripe_price_id = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001  # see comment above
     synced_at = models.DateTimeField()
 
     class Meta:
@@ -293,6 +305,13 @@ class LocalizedPrice(models.Model):
                 fields=("product_price", "currency"),
                 condition=models.Q(product_price__isnull=False),
                 name="uniq_localized_product_price_currency",
+            ),
+            # Stripe Price IDs are globally unique. Partial-unique because most
+            # rows (display-only currencies) leave the column NULL.
+            models.UniqueConstraint(
+                fields=("stripe_price_id",),
+                condition=models.Q(stripe_price_id__isnull=False),
+                name="uniq_localized_stripe_price_id",
             ),
         ]
 

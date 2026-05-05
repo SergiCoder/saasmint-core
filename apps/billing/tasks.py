@@ -44,9 +44,16 @@ def sync_localized_prices() -> int:
     so the API can serve a stable price tag without per-request FX math. Runs
     daily via Celery Beat and on every deploy via ``infra/entrypoint.sh``.
 
-    Returns the number of rows written (for logging / management command
-    output). On API failure logs and returns 0 — existing rows are kept,
-    so a flaky upstream never erases the catalog.
+    Stability gate: ``amount_minor`` is only rewritten when the freshly
+    friendly-rounded value differs from the existing row. This prevents tiny
+    daily FX moves from churning customer-visible Stripe Prices for billable
+    currencies (``sync_stripe_catalog`` re-mints whenever ``amount_minor``
+    changes). ``stripe_price_id`` is never touched here — only by
+    ``sync_stripe_catalog`` after it observes an ``amount_minor`` change.
+
+    Returns the number of rows that were *changed* (created or whose
+    ``amount_minor`` moved). On FX-API failure logs and returns 0 — existing
+    rows are preserved so a flaky upstream never erases the catalog.
     """
     from saasmint_core.services.currency import (
         SUPPORTED_CURRENCIES,
@@ -71,14 +78,25 @@ def sync_localized_prices() -> int:
     api_rates: dict[str, float] = {k.lower(): v for k, v in data["rates"].items()}
     now = datetime.now(UTC)
 
-    def _rows_for_price(price_id: UUID, amount: int, *, price_kwarg: str) -> list[LocalizedPrice]:
-        """Build unsaved ``LocalizedPrice`` instances for every non-USD currency.
+    def _upsert_for_price(
+        amount: int,
+        *,
+        plan_price_id: UUID | None = None,
+        product_price_id: UUID | None = None,
+    ) -> int:
+        """Upsert ``LocalizedPrice`` rows for one (price, every-non-USD-currency) pair.
 
-        Closes over ``api_rates``, ``now``, and the imported currency helpers to
-        avoid repeating the inner loop for plan prices and product prices.
-        ``price_kwarg`` is ``"plan_price_id"`` or ``"product_price_id"``.
+        Returns the number of rows created or updated. Existing rows whose
+        friendly-rounded value didn't move only get ``synced_at`` refreshed
+        (cheap), and aren't counted toward the changed total — the count
+        reflects what actually moved, which is what callers care about.
         """
-        rows: list[LocalizedPrice] = []
+        owner_kwargs = (
+            {"plan_price_id": plan_price_id}
+            if plan_price_id is not None
+            else {"product_price_id": product_price_id}
+        )
+        changed = 0
         for currency in SUPPORTED_CURRENCIES:
             if currency == "usd":
                 continue
@@ -87,42 +105,38 @@ def sync_localized_prices() -> int:
                 logger.warning("No FX rate for currency %s", currency)
                 continue
             display = round_friendly(format_amount(amount, "usd") * rate, currency)
-            rows.append(
-                LocalizedPrice(
-                    **{price_kwarg: price_id},
+            new_amount = _to_minor_units(display, currency)
+            existing = LocalizedPrice.objects.filter(currency=currency, **owner_kwargs).first()
+            if existing is None:
+                LocalizedPrice.objects.create(
                     currency=currency,
-                    amount_minor=_to_minor_units(display, currency),
+                    amount_minor=new_amount,
                     synced_at=now,
+                    **owner_kwargs,
                 )
-            )
-        return rows
+                changed += 1
+            elif existing.amount_minor != new_amount:
+                existing.amount_minor = new_amount
+                existing.synced_at = now
+                existing.save(update_fields=["amount_minor", "synced_at"])
+                changed += 1
+            else:
+                # Stability gate: friendly-rounded value didn't move. Refresh
+                # synced_at as a heartbeat so monitoring can spot a stale sync,
+                # but leave amount_minor + stripe_price_id alone.
+                existing.synced_at = now
+                existing.save(update_fields=["synced_at"])
+        return changed
 
-    rows: list[LocalizedPrice] = []
-    for plan_price in PlanPrice.objects.all().only("id", "amount"):
-        rows.extend(_rows_for_price(plan_price.id, plan_price.amount, price_kwarg="plan_price_id"))
-
-    for product_price in ProductPrice.objects.all().only("id", "amount"):
-        rows.extend(
-            _rows_for_price(product_price.id, product_price.amount, price_kwarg="product_price_id")
-        )
-
-    if not rows:
-        logger.info("No catalog prices found; nothing to localize.")
-        return 0
-
-    # Postgres ``ON CONFLICT`` can't target a partial unique index implicitly,
-    # so we can't use ``bulk_create(update_conflicts=True)`` against
-    # ``LocalizedPrice`` (the XOR ``plan_price``/``product_price`` shape forces
-    # *two* partial indexes). The table is bounded — at most
-    # ``len(plans+products) * len(SUPPORTED_CURRENCIES)`` rows — so delete-then-
-    # insert inside a single transaction is simpler than coalesce-on-conflict
-    # gymnastics. Other readers see either the old set or the new set, never a
-    # half-empty table.
     with transaction.atomic():
-        LocalizedPrice.objects.all().delete()
-        LocalizedPrice.objects.bulk_create(rows)
-    logger.info("Localized prices synced: %d rows", len(rows))
-    return len(rows)
+        changed = 0
+        for plan_price in PlanPrice.objects.all().only("id", "amount"):
+            changed += _upsert_for_price(plan_price.amount, plan_price_id=plan_price.id)
+        for product_price in ProductPrice.objects.all().only("id", "amount"):
+            changed += _upsert_for_price(product_price.amount, product_price_id=product_price.id)
+
+    logger.info("Localized prices synced: %d rows changed", changed)
+    return changed
 
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs

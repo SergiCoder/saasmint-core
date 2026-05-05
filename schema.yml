@@ -428,6 +428,21 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreditBalance'
           description: ''
+  /api/v1/billing/currencies/:
+    get:
+      operationId: billing_currencies_retrieve
+      description: Currencies the catalog actually charges in (``billable``) versus
+        those that are catalog-displayable but fall back to USD at Checkout (``display_only``).
+        Drives the FE currency dropdown.
+      tags:
+      - billing
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingCurrenciesResponse'
+          description: ''
   /api/v1/billing/plans/:
     get:
       operationId: billing_plans_retrieve
@@ -1314,6 +1329,20 @@ components:
           format: uri
       required:
       - avatar_url
+    BillingCurrenciesResponse:
+      type: object
+      properties:
+        billable:
+          type: array
+          items:
+            type: string
+        display_only:
+          type: array
+          items:
+            type: string
+      required:
+      - billable
+      - display_only
     ChangePasswordRequest:
       type: object
       properties:
@@ -1884,7 +1913,7 @@ components:
       description: |-
         Shared base for PlanPrice / ProductPrice serializers.
 
-        Declaring the three display-currency fields and their getters once on a
+        Declaring the two display-currency fields and their getters once on a
         ModelSerializer base lets concrete subclasses supply only the Meta.model
         binding. DRF's metaclass walks `_declared_fields` on base Serializer
         classes (unlike plain mixins), so the fields flow through inheritance.
@@ -1907,11 +1936,22 @@ components:
         currency:
           type: string
           readOnly: true
+        local_display_amount:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+        local_currency:
+          type: string
+          nullable: true
+          readOnly: true
       required:
       - amount
       - currency
       - display_amount
       - id
+      - local_currency
+      - local_display_amount
     PortalRequestRequest:
       type: object
       properties:
@@ -2014,7 +2054,7 @@ components:
       description: |-
         Shared base for PlanPrice / ProductPrice serializers.
 
-        Declaring the three display-currency fields and their getters once on a
+        Declaring the two display-currency fields and their getters once on a
         ModelSerializer base lets concrete subclasses supply only the Meta.model
         binding. DRF's metaclass walks `_declared_fields` on base Serializer
         classes (unlike plain mixins), so the fields flow through inheritance.
@@ -2037,11 +2077,22 @@ components:
         currency:
           type: string
           readOnly: true
+        local_display_amount:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+        local_currency:
+          type: string
+          nullable: true
+          readOnly: true
       required:
       - amount
       - currency
       - display_amount
       - id
+      - local_currency
+      - local_display_amount
     RefreshRequest:
       type: object
       properties:
@@ -2186,6 +2237,9 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        currency:
+          type: string
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -2194,6 +2248,7 @@ components:
       - cancel_at
       - canceled_at
       - created_at
+      - currency
       - current_period_end
       - current_period_start
       - id

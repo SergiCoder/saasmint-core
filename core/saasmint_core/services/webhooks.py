@@ -296,6 +296,11 @@ async def sync_subscription_from_data(
         # events that should clear them — not a subscription sync.
         scheduled_plan_id=existing.scheduled_plan_id if existing else None,
         scheduled_change_at=existing.scheduled_change_at if existing else None,
+        # Mirror the Stripe-pinned currency. Read from the subscription itself
+        # if Stripe sent it, falling back to the line-item price's currency.
+        currency=str(
+            sub_data.get("currency") or first_item["price"].get("currency") or "usd"
+        ).lower(),
         created_at=existing.created_at if existing else datetime.now(UTC),
     )
 

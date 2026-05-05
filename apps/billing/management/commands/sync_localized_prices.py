@@ -15,5 +15,5 @@ class Command(BaseCommand):
     help = "Recompute LocalizedPrice rows for every (PlanPrice|ProductPrice, currency)."
 
     def handle(self, *args: object, **options: object) -> None:
-        written = sync_localized_prices()
-        self.stdout.write(self.style.SUCCESS(f"Localized prices synced: {written} rows."))
+        changed = sync_localized_prices()
+        self.stdout.write(self.style.SUCCESS(f"Localized prices synced: {changed} rows changed."))
