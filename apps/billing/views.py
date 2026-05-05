@@ -109,38 +109,16 @@ _SUBSCRIPTION_CONTEXT_PARAM = OpenApiParameter(
 )
 
 
-def _resolve_display_currency(
-    query_currency: str | None,
-    user: User | None,
-) -> str:
-    """Resolve the display currency.
-
-    Priority: explicit query param → ``user.preferred_currency`` (if any) → USD.
-    """
-    if query_currency is not None and query_currency != "":
-        qp = query_currency.lower()
-        if qp not in SUPPORTED_CURRENCIES:
-            raise ValidationError({"currency": [f"Unsupported currency: {query_currency!r}."]})
-        return qp
-
-    if user is not None:
-        preferred = user.preferred_currency
-        if preferred and preferred.lower() in SUPPORTED_CURRENCIES:
-            return preferred.lower()
-
-    return "usd"
-
-
 def _resolve_billing_currency(
     query_currency: str | None,
     user: User | None,
 ) -> tuple[str, str | None]:
     """Resolve the *billing* currency (the one Stripe actually charges).
 
-    Same precedence as :func:`_resolve_display_currency` (query param →
-    ``user.preferred_currency`` → ``"usd"``), with one extra constraint: the
-    resolved currency must be in :data:`settings.BILLING_CURRENCIES`. If it
-    isn't, falls back to USD with a logged warning.
+    Precedence: explicit query param → ``user.preferred_currency`` → ``"usd"``.
+    One extra constraint: the resolved currency must be in
+    :data:`settings.BILLING_CURRENCIES`. If it isn't, falls back to USD with a
+    logged warning.
 
     Returns ``(billing_currency, preferred_for_dual_display)``. The second
     element is the user's ``preferred_currency`` only when it differs from
@@ -584,12 +562,14 @@ class CheckoutSessionView(BillingScopedView):
 
     @extend_schema(
         request=CheckoutRequestSerializer,
+        parameters=[_CURRENCY_PARAM],
         responses={
             200: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()}),
             400: OpenApiResponse(
                 description=(
                     "Request body failed validation (e.g. ``org_name`` missing for a"
-                    " team-context plan, invalid quantity for the plan's context)."
+                    " team-context plan, invalid quantity for the plan's context),"
+                    " or unsupported ``?currency=`` value."
                 )
             ),
             404: OpenApiResponse(description="Invalid plan price."),
@@ -817,6 +797,7 @@ class ProductCheckoutSessionView(BillingScopedView):
     @extend_schema(
         request=ProductCheckoutRequestSerializer,
         parameters=[
+            _CURRENCY_PARAM,
             OpenApiParameter(
                 name="context",
                 description=(
@@ -835,8 +816,8 @@ class ProductCheckoutSessionView(BillingScopedView):
             200: inline_serializer("ProductCheckoutResponse", {"url": drf_serializers.URLField()}),
             400: OpenApiResponse(
                 description=(
-                    "Invalid ``?context=`` value, or non-org-member caller"
-                    " requested ``?context=team``."
+                    "Invalid ``?context=`` value, non-org-member caller"
+                    " requested ``?context=team``, or unsupported ``?currency=`` value."
                 )
             ),
             403: OpenApiResponse(

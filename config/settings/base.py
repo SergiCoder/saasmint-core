@@ -264,20 +264,17 @@ STRIPE_SECRET_KEY = env.stripe_secret_key
 STRIPE_WEBHOOK_SECRET = env.stripe_webhook_secret
 
 # Multi-currency billing
+from django.core.exceptions import ImproperlyConfigured  # noqa: E402
 from saasmint_core.services.currency import SUPPORTED_CURRENCIES  # noqa: E402
 
 BILLING_CURRENCIES: list[str] = [c.lower() for c in env.billing_currencies]
 _unsupported = [c for c in BILLING_CURRENCIES if c not in SUPPORTED_CURRENCIES]
 if _unsupported:
-    from django.core.exceptions import ImproperlyConfigured
-
     raise ImproperlyConfigured(
         f"BILLING_CURRENCIES contains unsupported codes: {_unsupported}. "
         f"Add them to SUPPORTED_CURRENCIES first."
     )
 if "usd" not in BILLING_CURRENCIES:
-    from django.core.exceptions import ImproperlyConfigured
-
     raise ImproperlyConfigured(
         "BILLING_CURRENCIES must include 'usd' (the source-of-truth fallback)."
     )
