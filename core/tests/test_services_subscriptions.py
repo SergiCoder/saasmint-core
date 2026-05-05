@@ -295,6 +295,7 @@ def _stripe_sub_dict(
     price_id: str = "price_pro",
     unit_amount: int = 2000,
     quantity: int = 1,
+    currency: str = "usd",
     period_start: int = 1_700_000_000,
     period_end: int = 1_702_592_000,
 ) -> dict[str, object]:
@@ -310,7 +311,11 @@ def _stripe_sub_dict(
             "data": [
                 {
                     "id": item_id,
-                    "price": {"id": price_id, "unit_amount": unit_amount},
+                    "price": {
+                        "id": price_id,
+                        "unit_amount": unit_amount,
+                        "currency": currency,
+                    },
                     "quantity": quantity,
                     "current_period_start": period_start,
                     "current_period_end": period_end,
@@ -318,6 +323,18 @@ def _stripe_sub_dict(
             ]
         },
     }
+
+
+def _retrieved_price(*, currency: str = "usd") -> MagicMock:
+    """Build a ``stripe.Price.retrieve`` return value carrying *currency*.
+
+    ``_schedule_downgrade_at_period_end`` calls ``Price.retrieve`` for the
+    incoming new price ID to assert it matches the subscription's currency
+    before building the schedule phases — without this mock the call hits
+    the live Stripe API in tests."""
+    p = MagicMock()
+    p.currency = currency
+    return p
 
 
 @pytest.mark.anyio
@@ -333,6 +350,7 @@ async def test_change_plan_downgrade_defers_via_schedule() -> None:
     with (
         patch("stripe.Subscription.retrieve", return_value=sub),
         patch("stripe.Subscription.modify") as mock_modify,
+        patch("stripe.Price.retrieve", return_value=_retrieved_price()),
         patch(
             "stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_new"}
         ) as mock_create,
@@ -438,6 +456,7 @@ async def test_change_plan_downgrade_quantity_override_wins() -> None:
     with (
         patch("stripe.Subscription.retrieve", return_value=sub),
         patch("stripe.Subscription.modify"),
+        patch("stripe.Price.retrieve", return_value=_retrieved_price()),
         patch(
             "stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_q"}
         ),
@@ -541,6 +560,7 @@ async def test_change_plan_downgrade_reuses_existing_schedule() -> None:
     with (
         patch("stripe.Subscription.retrieve", return_value=sub),
         patch("stripe.Subscription.modify"),
+        patch("stripe.Price.retrieve", return_value=_retrieved_price()),
         patch("stripe.SubscriptionSchedule.create") as mock_create,
         patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
     ):
@@ -639,6 +659,7 @@ async def test_change_plan_downgrade_period_fallback_from_subscription_level() -
     with (
         patch("stripe.Subscription.retrieve", return_value=sub),
         patch("stripe.Subscription.modify"),
+        patch("stripe.Price.retrieve", return_value=_retrieved_price()),
         patch(
             "stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_fb"}
         ) as mock_create,

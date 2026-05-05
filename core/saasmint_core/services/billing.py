@@ -94,6 +94,7 @@ async def create_checkout_session(
     stripe_customer_id: str,
     price_id: str,
     client_reference_id: str,
+    billing_currency: str,
     quantity: int = 1,
     locale: str = "en",
     success_url: str,
@@ -101,7 +102,14 @@ async def create_checkout_session(
     trial_period_days: int | None = None,
     metadata: dict[str, str] | None = None,
 ) -> str:
-    """Create a Stripe Checkout Session and return the hosted URL."""
+    """Create a Stripe Checkout Session and return the hosted URL.
+
+    *billing_currency* must match the Stripe Price's currency. It controls two
+    Checkout flags: ``adaptive_pricing`` (Stripe's auto-localization) is on for
+    USD only — for other currencies the Price is already correct and the flag
+    would be redundant; ``automatic_tax`` is always on so VAT/GST is collected
+    once the merchant configures tax registrations in the dashboard.
+    """
     subscription_data: dict[str, object] = {}
     if trial_period_days is not None:
         subscription_data["trial_period_days"] = trial_period_days
@@ -114,10 +122,10 @@ async def create_checkout_session(
         "locale": locale,
         "success_url": success_url,
         "cancel_url": cancel_url,
+        "allow_promotion_codes": True,
+        "adaptive_pricing": {"enabled": billing_currency == "usd"},
+        "automatic_tax": {"enabled": True},
     }
-
-    params["allow_promotion_codes"] = True
-    params["adaptive_pricing"] = {"enabled": True}
 
     # Session-level metadata carries org fields for checkout.session.completed
     if metadata is not None:
@@ -135,6 +143,7 @@ async def create_product_checkout_session(
     stripe_customer_id: str,
     price_id: str,
     client_reference_id: str,
+    billing_currency: str,
     locale: str = "en",
     success_url: str,
     cancel_url: str,
@@ -145,7 +154,8 @@ async def create_product_checkout_session(
     Uses ``mode=payment`` rather than ``mode=subscription``, so there's no
     ``subscription_data``/trial applicable. ``metadata`` is carried through to
     ``checkout.session.completed`` so the webhook can grant credits to the
-    right owner (user or org).
+    right owner (user or org). See :func:`create_checkout_session` for the
+    rationale on ``adaptive_pricing`` / ``automatic_tax``.
     """
     params: dict[str, object] = {
         "customer": stripe_customer_id,
@@ -156,7 +166,8 @@ async def create_product_checkout_session(
         "success_url": success_url,
         "cancel_url": cancel_url,
         "allow_promotion_codes": True,
-        "adaptive_pricing": {"enabled": True},
+        "adaptive_pricing": {"enabled": billing_currency == "usd"},
+        "automatic_tax": {"enabled": True},
     }
     if metadata is not None:
         params["metadata"] = metadata

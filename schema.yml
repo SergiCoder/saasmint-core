@@ -428,6 +428,21 @@ paths:
               schema:
                 $ref: '#/components/schemas/CreditBalance'
           description: ''
+  /api/v1/billing/currencies/:
+    get:
+      operationId: billing_currencies_retrieve
+      description: Currencies the catalog actually charges in (``billable``) versus
+        those that are catalog-displayable but fall back to USD at Checkout (``display_only``).
+        Drives the FE currency dropdown.
+      tags:
+      - billing
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingCurrenciesResponse'
+          description: ''
   /api/v1/billing/plans/:
     get:
       operationId: billing_plans_retrieve
@@ -1314,6 +1329,20 @@ components:
           format: uri
       required:
       - avatar_url
+    BillingCurrenciesResponse:
+      type: object
+      properties:
+        billable:
+          type: array
+          items:
+            type: string
+        display_only:
+          type: array
+          items:
+            type: string
+      required:
+      - billable
+      - display_only
     ChangePasswordRequest:
       type: object
       properties:
@@ -1884,7 +1913,7 @@ components:
       description: |-
         Shared base for PlanPrice / ProductPrice serializers.
 
-        Declaring the three display-currency fields and their getters once on a
+        Declaring the two display-currency fields and their getters once on a
         ModelSerializer base lets concrete subclasses supply only the Meta.model
         binding. DRF's metaclass walks `_declared_fields` on base Serializer
         classes (unlike plain mixins), so the fields flow through inheritance.
@@ -1907,15 +1936,22 @@ components:
         currency:
           type: string
           readOnly: true
-        approximate:
-          type: boolean
+        local_display_amount:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+        local_currency:
+          type: string
+          nullable: true
           readOnly: true
       required:
       - amount
-      - approximate
       - currency
       - display_amount
       - id
+      - local_currency
+      - local_display_amount
     PortalRequestRequest:
       type: object
       properties:
@@ -2018,7 +2054,7 @@ components:
       description: |-
         Shared base for PlanPrice / ProductPrice serializers.
 
-        Declaring the three display-currency fields and their getters once on a
+        Declaring the two display-currency fields and their getters once on a
         ModelSerializer base lets concrete subclasses supply only the Meta.model
         binding. DRF's metaclass walks `_declared_fields` on base Serializer
         classes (unlike plain mixins), so the fields flow through inheritance.
@@ -2041,15 +2077,22 @@ components:
         currency:
           type: string
           readOnly: true
-        approximate:
-          type: boolean
+        local_display_amount:
+          type: number
+          format: double
+          nullable: true
+          readOnly: true
+        local_currency:
+          type: string
+          nullable: true
           readOnly: true
       required:
       - amount
-      - approximate
       - currency
       - display_amount
       - id
+      - local_currency
+      - local_display_amount
     RefreshRequest:
       type: object
       properties:
@@ -2151,9 +2194,16 @@ components:
         seats_used:
           type: integer
           description: |-
-            Number of seats currently occupied. Always 1 for personal
-            subscriptions. For team subscriptions, reflects the current
-            org member count.
+            Number of seats currently occupied.
+
+            Always 1 for personal subscriptions. For team subscriptions,
+            reflects the current org member count.
+
+            When the queryset was annotated with ``org_member_count`` (as
+            ``_get_active_subscriptions_for_user`` does), that value is read
+            directly from the annotation to avoid a second COUNT query per
+            serialized object. Falls back to a live COUNT for callers that
+            skip the annotation (e.g. direct serializer use in tests).
           readOnly: true
         trial_ends_at:
           type: string
@@ -2182,12 +2232,14 @@ components:
           allOf:
           - $ref: '#/components/schemas/Plan'
           readOnly: true
-          nullable: true
         scheduled_change_at:
           type: string
           format: date-time
           readOnly: true
           nullable: true
+        currency:
+          type: string
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -2196,6 +2248,7 @@ components:
       - cancel_at
       - canceled_at
       - created_at
+      - currency
       - current_period_end
       - current_period_start
       - id
@@ -2331,25 +2384,6 @@ components:
           items:
             type: string
           readOnly: true
-        has_stripe_customer:
-          type: boolean
-          description: |-
-            Whether the user has a personal Stripe customer.
-
-            The user's billing currency is locked at first purchase on this
-            customer (rule 12). After that, even cancellation leaves the
-            customer row in place, so the lock survives — frontend uses this
-            flag to gate the "your billing currency can't be changed" notice
-            on the profile form. Org-scoped Stripe customers don't count;
-            the user's currency is independent of any org's billing currency
-            (rule 3 — distinct customers per scope).
-
-            Performance: a single indexed ``EXISTS`` on the unique ``user_id``
-            (OneToOneField) — ``SELECT 1 ... LIMIT 1``. The flag must reflect
-            live DB state (the row can be hard-deleted out from under the
-            cached ``User`` instance), so we deliberately do not short-circuit
-            via ``_state.fields_cache``.
-          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -2364,7 +2398,6 @@ components:
       - created_at
       - email
       - full_name
-      - has_stripe_customer
       - id
       - is_verified
       - job_title

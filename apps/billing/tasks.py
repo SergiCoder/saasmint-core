@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from uuid import UUID
 
+import httpx
 import stripe
 from asgiref.sync import async_to_sync
+from django.db import transaction
 from django.db.utils import OperationalError
 
 from apps.billing.repositories import get_webhook_repos
@@ -15,45 +17,154 @@ from config.celery import app
 
 logger = logging.getLogger(__name__)
 
+_FX_API_URL = "https://open.er-api.com/v6/latest/USD"
+
+
+def _to_minor_units(display_amount: float, currency: str) -> int:
+    """Inverse of ``format_amount``: display units → integer minor units.
+
+    Zero-decimal currencies (JPY, KRW, …) are already in whole units; others
+    multiply by 100. ``round`` guards against float drift introduced by
+    ``round_friendly`` returning values like ``9.99`` that aren't exactly
+    representable in IEEE-754.
+    """
+    from saasmint_core.services.currency import ZERO_DECIMAL_CURRENCIES
+
+    if currency.lower() in ZERO_DECIMAL_CURRENCIES:
+        return round(display_amount)
+    return round(display_amount * 100)
+
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
-def sync_exchange_rates() -> None:
-    """Fetch USD-based exchange rates from Stripe and persist to DB."""
-    from saasmint_core.services.currency import SUPPORTED_CURRENCIES
+def sync_localized_prices() -> int:
+    """Recompute every ``LocalizedPrice`` row from the live FX rate snapshot.
 
-    from apps.billing.models import ExchangeRate
+    USD is the source of truth — Stripe always charges USD. This task derives
+    a *display* price (friendly-rounded) for every supported non-USD currency
+    so the API can serve a stable price tag without per-request FX math. Runs
+    daily via Celery Beat and on every deploy via ``infra/entrypoint.sh``.
+
+    Stability gate: ``amount_minor`` is only rewritten when the freshly
+    friendly-rounded value differs from the existing row. This prevents tiny
+    daily FX moves from churning customer-visible Stripe Prices for billable
+    currencies (``sync_stripe_catalog`` re-mints whenever ``amount_minor``
+    changes). ``stripe_price_id`` is never touched here — only by
+    ``sync_stripe_catalog`` after it observes an ``amount_minor`` change.
+
+    Returns the number of rows that were *changed* (created or whose
+    ``amount_minor`` moved). On FX-API failure logs and returns 0 — existing
+    rows are preserved so a flaky upstream never erases the catalog.
+    """
+    from saasmint_core.services.currency import (
+        SUPPORTED_CURRENCIES,
+        format_amount,
+        round_friendly,
+    )
+
+    from apps.billing.models import LocalizedPrice, PlanPrice, ProductPrice
 
     try:
-        rates_obj = stripe.ExchangeRate.retrieve("usd")
-    except stripe.StripeError:
-        logger.exception("Failed to fetch exchange rates from Stripe")
-        return
+        resp = httpx.get(_FX_API_URL, timeout=httpx.Timeout(10.0))
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        logger.exception("Failed to fetch FX rates from %s", _FX_API_URL)
+        return 0
 
+    if data.get("result") != "success":
+        logger.error("FX API returned non-success payload: %s", data)
+        return 0
+
+    api_rates: dict[str, float] = {k.lower(): v for k, v in data["rates"].items()}
     now = datetime.now(UTC)
-    # Stripe stubs type ``ExchangeRate.rates`` as ``float``; the runtime value is
-    # a ``dict[str, float]``. Cast once, then iterate — the audit flagged that
-    # materialising a whole intermediate ``dict`` via ``dict(rates_obj.rates)``
-    # was wasteful when we only read each currency once.
-    raw_rates: dict[str, float] = rates_obj.rates  # type: ignore[assignment]  # Stripe stubs type mismatch
 
-    rows: list[ExchangeRate] = []
-    for currency in SUPPORTED_CURRENCIES:
-        if currency == "usd":
-            continue
-        rate = raw_rates.get(currency)
-        if rate is None:
-            logger.warning("No rate returned by Stripe for currency: %s", currency)
-            continue
-        rows.append(ExchangeRate(currency=currency, rate=Decimal(str(rate)), fetched_at=now))
+    def _compute_new_amounts(amount: int) -> dict[str, int]:
+        """Return ``{currency: new_amount_minor}`` for all non-USD currencies."""
+        result: dict[str, int] = {}
+        for currency in SUPPORTED_CURRENCIES:
+            if currency == "usd":
+                continue
+            rate = api_rates.get(currency)
+            if rate is None:
+                logger.warning("No FX rate for currency %s", currency)
+                continue
+            display = round_friendly(format_amount(amount, "usd") * rate, currency)
+            result[currency] = _to_minor_units(display, currency)
+        return result
 
-    if rows:
-        ExchangeRate.objects.bulk_create(
-            rows,
-            update_conflicts=True,
-            unique_fields=["currency"],
-            update_fields=["rate", "fetched_at"],
+    def _upsert_for_price(
+        amount: int,
+        *,
+        plan_price_id: UUID | None = None,
+        product_price_id: UUID | None = None,
+    ) -> int:
+        """Upsert ``LocalizedPrice`` rows for one (price, every-non-USD-currency) pair.
+
+        Fetches all existing rows for this price in a single SELECT, computes
+        the new amounts in Python, then applies updates/creates in bulk.
+        Returns the number of rows that were *changed* (created or whose
+        ``amount_minor`` moved). Rows whose friendly-rounded value didn't move
+        get their ``synced_at`` refreshed as a heartbeat but are not counted.
+        """
+        owner_kwargs: dict[str, UUID | None] = (
+            {"plan_price_id": plan_price_id}
+            if plan_price_id is not None
+            else {"product_price_id": product_price_id}
         )
-    logger.info("Exchange rates synced: %d currencies updated", len(rows))
+        new_amounts = _compute_new_amounts(amount)
+
+        # Single SELECT for all existing rows belonging to this price.
+        existing_by_currency: dict[str, LocalizedPrice] = {
+            lp.currency: lp
+            for lp in LocalizedPrice.objects.filter(**owner_kwargs).only(
+                "id", "currency", "amount_minor", "synced_at"
+            )
+        }
+
+        to_create: list[LocalizedPrice] = []
+        to_update_changed: list[LocalizedPrice] = []
+        to_update_heartbeat: list[LocalizedPrice] = []
+
+        for currency, new_amount in new_amounts.items():
+            existing = existing_by_currency.get(currency)
+            if existing is None:
+                to_create.append(
+                    LocalizedPrice(
+                        currency=currency,
+                        amount_minor=new_amount,
+                        synced_at=now,
+                        **owner_kwargs,
+                    )
+                )
+            elif existing.amount_minor != new_amount:
+                existing.amount_minor = new_amount
+                existing.synced_at = now
+                to_update_changed.append(existing)
+            else:
+                # Stability gate: friendly-rounded value didn't move. Refresh
+                # synced_at as a heartbeat so monitoring can spot a stale sync,
+                # but leave amount_minor + stripe_price_id alone.
+                existing.synced_at = now
+                to_update_heartbeat.append(existing)
+
+        if to_create:
+            LocalizedPrice.objects.bulk_create(to_create)
+        if to_update_changed:
+            LocalizedPrice.objects.bulk_update(to_update_changed, ["amount_minor", "synced_at"])
+        if to_update_heartbeat:
+            LocalizedPrice.objects.bulk_update(to_update_heartbeat, ["synced_at"])
+
+        return len(to_create) + len(to_update_changed)
+
+    with transaction.atomic():
+        changed = 0
+        for plan_price in PlanPrice.objects.all().only("id", "amount"):
+            changed += _upsert_for_price(plan_price.amount, plan_price_id=plan_price.id)
+        for product_price in ProductPrice.objects.all().only("id", "amount"):
+            changed += _upsert_for_price(product_price.amount, product_price_id=product_price.id)
+
+    logger.info("Localized prices synced: %d rows changed", changed)
+    return changed
 
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs

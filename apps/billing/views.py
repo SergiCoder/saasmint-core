@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import logging
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import UUID
 
 from asgiref.sync import async_to_sync, sync_to_async
-from django.core.cache import cache
-from django.db.models import Count, OuterRef, Subquery
+from django.conf import settings
+from django.db.models import Count, OuterRef, Prefetch, QuerySet, Subquery
 from drf_spectacular.utils import (
     OpenApiParameter,
     OpenApiResponse,
@@ -44,7 +44,7 @@ from saasmint_core.services.subscriptions import (
 from apps.base_views import BillingScopedView
 from apps.billing.models import (
     ACTIVE_SUBSCRIPTION_STATUSES,
-    ExchangeRate,
+    LocalizedPrice,
     PlanContext,
     PlanPrice,
     ProductPrice,
@@ -109,58 +109,173 @@ _SUBSCRIPTION_CONTEXT_PARAM = OpenApiParameter(
 )
 
 
-def _resolve_display_currency(
+def _resolve_billing_currency(
     query_currency: str | None,
     user: User | None,
-) -> str:
-    """Resolve the display currency.
+) -> tuple[str, str | None]:
+    """Resolve the *billing* currency (the one Stripe actually charges).
 
-    Priority: explicit query param → ``user.preferred_currency`` (if any) → USD.
+    Precedence: explicit query param → ``user.preferred_currency`` → ``"usd"``.
+    One extra constraint: the resolved currency must be in
+    :data:`settings.BILLING_CURRENCIES`. If it isn't, falls back to USD with a
+    logged warning.
+
+    Returns ``(billing_currency, preferred_for_dual_display)``. The second
+    element is the user's ``preferred_currency`` only when it differs from
+    the resolved billing currency (i.e. fallback occurred); the catalog
+    serializer uses it to populate the ``local_*`` fields on the response so
+    the FE can render a dual-currency card. When billing matches preference,
+    the second element is ``None`` and the FE shows a single-line card.
     """
-    if query_currency is not None and query_currency != "":
-        qp = query_currency.lower()
-        if qp not in SUPPORTED_CURRENCIES:
-            raise ValidationError({"currency": [f"Unsupported currency: {query_currency!r}."]})
-        return qp
+    requested = query_currency.lower() if query_currency else None
+    if requested is not None:
+        if requested not in SUPPORTED_CURRENCIES:
+            raise ValidationError(
+                {"currency": [f"Unsupported currency: {query_currency!r}."]}
+            )
+    user_pref: str | None = None
+    if user is not None and user.preferred_currency:
+        candidate = user.preferred_currency.lower()
+        if candidate in SUPPORTED_CURRENCIES:
+            user_pref = candidate
 
-    if user is not None:
-        preferred = user.preferred_currency
-        if preferred and preferred.lower() in SUPPORTED_CURRENCIES:
-            return preferred.lower()
+    target = requested or user_pref or "usd"
+    if target in settings.BILLING_CURRENCIES:
+        billing = target
+    else:
+        logger.info(
+            "Currency %s not in BILLING_CURRENCIES; falling back to usd for charge",
+            target,
+        )
+        billing = "usd"
 
-    return "usd"
+    # Dual display only when the user's preference differs from what we charge.
+    dual_pref = user_pref if user_pref and user_pref != billing else None
+    return billing, dual_pref
 
 
-def _get_exchange_rate(currency: str) -> tuple[str, float]:
-    """Return ``(currency, rate)`` for conversion from USD.
+def _currency_context(request: Request) -> dict[str, Any]:
+    """Build serializer context dict with the resolved billing + preferred currencies.
 
-    Rates are cached for 10 minutes (they update hourly via Celery beat).
-    Falls back to ``("usd", 1.0)`` if the rate is unavailable.
+    ``currency``: the *billing* currency the customer is (or would be) charged
+    in (``str``). The serializer reads precomputed ``LocalizedPrice`` rows
+    for this currency via the prefetched ``localized_prices`` reverse
+    relation. No FX math at request time.
+
+    ``preferred_currency``: the user's preferred currency (``str | None``)
+    *only* when it differs from the billing currency (fallback case). Drives
+    the dual-display ``local_*`` fields on the price serializer.
+
+    Returns ``dict[str, Any]`` to match DRF's serializer-context contract;
+    callers should treat ``ctx["currency"]`` as ``str`` and
+    ``ctx.get("preferred_currency")`` as ``str | None``.
+    """
+    user: User | None = request.user if request.user.is_authenticated else None
+    billing, dual_pref = _resolve_billing_currency(request.query_params.get("currency"), user)
+    return {"currency": billing, "preferred_currency": dual_pref}
+
+
+def _localized_prices_queryset(
+    currency: str, preferred_currency: str | None = None
+) -> QuerySet[LocalizedPrice]:
+    """Build the LocalizedPrice queryset for prefetching.
+
+    Includes the billing currency row (if non-USD) and the preferred-currency
+    row (when set, drives the dual-display ``local_*`` fields). USD never
+    needs a row — the serializer short-circuits to the catalog ``amount``.
+    Returning a multi-currency queryset is fine: each price has at most one
+    row per currency, so the prefetched list is at most length 2.
+    """
+    wanted = {c for c in (currency, preferred_currency) if c and c != "usd"}
+    if not wanted:
+        return LocalizedPrice.objects.none()
+    return LocalizedPrice.objects.filter(currency__in=wanted)
+
+
+def _localized_prices_prefetch(
+    currency: str, preferred_currency: str | None = None
+) -> Prefetch[str]:
+    """Prefetch the LocalizedPrice rows for the billing + preferred currencies."""
+    return Prefetch(
+        "price__localized_prices",
+        queryset=_localized_prices_queryset(currency, preferred_currency),
+    )
+
+
+def _localized_subscription_prefetches(
+    currency: str, preferred_currency: str | None = None
+) -> list[Prefetch[str]]:
+    """Prefetches for SubscriptionSerializer's nested plan + scheduled_plan prices."""
+    qs = _localized_prices_queryset(currency, preferred_currency)
+    return [
+        Prefetch("plan__price__localized_prices", queryset=qs),
+        Prefetch("scheduled_plan__price__localized_prices", queryset=qs),
+    ]
+
+
+def _resolve_plan_stripe_price_id(plan_price: PlanPrice, currency: str) -> str:
+    """Return the Stripe Price ID for *plan_price* in *currency*.
+
+    USD reads ``plan_price.stripe_price_id`` (the historical column). Other
+    currencies read ``LocalizedPrice.stripe_price_id`` for the matching pair;
+    if absent (currency not billable, or sync_stripe_catalog hasn't minted it
+    yet), falls back to the USD ID so the customer can still complete checkout.
     """
     if currency == "usd":
-        return "usd", 1.0
-
-    cache_key = f"exchange_rate:{currency}"
-    cached: float | None = cache.get(cache_key)
-    if cached is not None:
-        return currency, cached
-
-    try:
-        er = ExchangeRate.objects.get(currency=currency)
-        rate = float(er.rate)
-        cache.set(cache_key, rate, timeout=600)
-        return currency, rate
-    except ExchangeRate.DoesNotExist:
-        logger.warning("No exchange rate found for %s, falling back to USD", currency)
-        return "usd", 1.0
+        return plan_price.stripe_price_id
+    row = (
+        LocalizedPrice.objects.filter(
+            plan_price=plan_price, currency=currency, stripe_price_id__isnull=False
+        )
+        .only("stripe_price_id")
+        .first()
+    )
+    return row.stripe_price_id if row and row.stripe_price_id else plan_price.stripe_price_id
 
 
-def _currency_context(request: Request) -> dict[str, object]:
-    """Build serializer context dict with currency and rate."""
-    user: User | None = request.user if request.user.is_authenticated else None
-    resolved = _resolve_display_currency(request.query_params.get("currency"), user)
-    currency, rate = _get_exchange_rate(resolved)
-    return {"currency": currency, "rate": rate}
+def _resolve_product_stripe_price_id(product_price: ProductPrice, currency: str) -> str:
+    """Return the Stripe Price ID for *product_price* in *currency*. See plan variant."""
+    if currency == "usd":
+        return product_price.stripe_price_id
+    row = (
+        LocalizedPrice.objects.filter(
+            product_price=product_price, currency=currency, stripe_price_id__isnull=False
+        )
+        .only("stripe_price_id")
+        .first()
+    )
+    return row.stripe_price_id if row and row.stripe_price_id else product_price.stripe_price_id
+
+
+def _resolve_plan_change_price(plan_price: PlanPrice, currency: str) -> tuple[str, int]:
+    """Resolve ``(stripe_price_id, unit_amount)`` for a plan change to *currency*.
+
+    Stripe pins a subscription's currency for life, so a PATCH that changes
+    the plan must produce a Stripe Price ID in the *same* currency as the
+    existing subscription. If the requested plan has no minted Stripe Price
+    in that currency, returning a USD fallback would silently flip the
+    subscription's currency at modify time — Stripe would reject. So instead
+    we raise 400 and let the FE surface the unavailability.
+
+    The returned ``unit_amount`` is in the same currency as the Stripe Price
+    so that ``change_plan``'s deferred-downgrade comparison (new vs current
+    unit_amount) is apples-to-apples.
+    """
+    if currency == "usd":
+        return plan_price.stripe_price_id, plan_price.amount
+
+    row = (
+        LocalizedPrice.objects.filter(
+            plan_price=plan_price, currency=currency, stripe_price_id__isnull=False
+        )
+        .only("stripe_price_id", "amount_minor")
+        .first()
+    )
+    if row is None or not row.stripe_price_id:
+        raise ValidationError(
+            {"plan_price_id": ["Plan unavailable in your subscription's currency."]}
+        )
+    return row.stripe_price_id, row.amount_minor
 
 
 def _validate_quantity_for_context(context: PlanContext, quantity: int) -> int:
@@ -369,8 +484,15 @@ class PlanListView(APIView):
         # Users without an owned org can upgrade to a team plan via team-context
         # checkout (see CheckoutSessionView), so hiding team plans from them
         # would make the upgrade undiscoverable.
-        qs = PlanModel.objects.filter(is_active=True).select_related("price")
-        data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
+        ctx = _currency_context(request)
+        qs = (
+            PlanModel.objects.filter(is_active=True)
+            .select_related("price")
+            .prefetch_related(
+                _localized_prices_prefetch(ctx["currency"], ctx.get("preferred_currency"))
+            )
+        )
+        data = PlanSerializer(qs, many=True, context=ctx).data
         return Response(_catalog_envelope(list(data)))
 
 
@@ -396,9 +518,43 @@ class ProductListView(APIView):
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
-        products = ProductModel.objects.filter(is_active=True).select_related("price")
-        data = ProductSerializer(products, many=True, context=_currency_context(request)).data
+        ctx = _currency_context(request)
+        products = (
+            ProductModel.objects.filter(is_active=True)
+            .select_related("price")
+            .prefetch_related(
+                _localized_prices_prefetch(ctx["currency"], ctx.get("preferred_currency"))
+            )
+        )
+        data = ProductSerializer(products, many=True, context=ctx).data
         return Response(_catalog_envelope(list(data)))
+
+
+class BillingCurrenciesView(APIView):
+    """GET /api/v1/billing/currencies — list billable + display-only currencies."""
+
+    permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]  # DRF declares as instance var; ClassVar needed for RUF012
+
+    @extend_schema(
+        responses=inline_serializer(
+            "BillingCurrenciesResponse",
+            {
+                "billable": drf_serializers.ListField(child=drf_serializers.CharField()),
+                "display_only": drf_serializers.ListField(child=drf_serializers.CharField()),
+            },
+        ),
+        description=(
+            "Currencies the catalog actually charges in (``billable``) versus those"
+            " that are catalog-displayable but fall back to USD at Checkout"
+            " (``display_only``). Drives the FE currency dropdown."
+        ),
+        tags=["billing"],
+        auth=[],
+    )
+    def get(self, request: Request) -> Response:
+        billable = sorted(settings.BILLING_CURRENCIES)
+        display_only = sorted(SUPPORTED_CURRENCIES - set(billable))
+        return Response({"billable": billable, "display_only": display_only})
 
 
 class CheckoutSessionView(BillingScopedView):
@@ -406,12 +562,14 @@ class CheckoutSessionView(BillingScopedView):
 
     @extend_schema(
         request=CheckoutRequestSerializer,
+        parameters=[_CURRENCY_PARAM],
         responses={
             200: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()}),
             400: OpenApiResponse(
                 description=(
                     "Request body failed validation (e.g. ``org_name`` missing for a"
-                    " team-context plan, invalid quantity for the plan's context)."
+                    " team-context plan, invalid quantity for the plan's context),"
+                    " or unsupported ``?currency=`` value."
                 )
             ),
             404: OpenApiResponse(description="Invalid plan price."),
@@ -432,6 +590,11 @@ class CheckoutSessionView(BillingScopedView):
 
         plan_price = _get_active_plan_price(data["plan_price_id"])
         quantity = _validate_quantity_for_plan(plan_price, data["seat_limit"])
+
+        billing_currency, _ = _resolve_billing_currency(
+            request.query_params.get("currency"), user
+        )
+        stripe_price_id = _resolve_plan_stripe_price_id(plan_price, billing_currency)
 
         is_team = plan_price.plan.context == PlanContext.TEAM
 
@@ -489,7 +652,8 @@ class CheckoutSessionView(BillingScopedView):
             return await create_checkout_session(
                 stripe_customer_id=stripe_customer_id,
                 client_reference_id=str(user.id),
-                price_id=plan_price.stripe_price_id,
+                price_id=stripe_price_id,
+                billing_currency=billing_currency,
                 quantity=quantity,
                 locale=user.preferred_locale,
                 success_url=data["success_url"],
@@ -633,6 +797,7 @@ class ProductCheckoutSessionView(BillingScopedView):
     @extend_schema(
         request=ProductCheckoutRequestSerializer,
         parameters=[
+            _CURRENCY_PARAM,
             OpenApiParameter(
                 name="context",
                 description=(
@@ -651,8 +816,8 @@ class ProductCheckoutSessionView(BillingScopedView):
             200: inline_serializer("ProductCheckoutResponse", {"url": drf_serializers.URLField()}),
             400: OpenApiResponse(
                 description=(
-                    "Invalid ``?context=`` value, or non-org-member caller"
-                    " requested ``?context=team``."
+                    "Invalid ``?context=`` value, non-org-member caller"
+                    " requested ``?context=team``, or unsupported ``?currency=`` value."
                 )
             ),
             403: OpenApiResponse(
@@ -683,6 +848,11 @@ class ProductCheckoutSessionView(BillingScopedView):
         product_price = _get_active_product_price(data["product_price_id"])
         org_id = _resolve_product_purchase_context(user, context)
 
+        billing_currency, _ = _resolve_billing_currency(
+            request.query_params.get("currency"), user
+        )
+        stripe_price_id = _resolve_product_stripe_price_id(product_price, billing_currency)
+
         metadata: dict[str, str] = {"product_id": str(product_price.product_id)}
         if org_id is not None:
             metadata["org_id"] = str(org_id)
@@ -702,7 +872,8 @@ class ProductCheckoutSessionView(BillingScopedView):
             return await create_product_checkout_session(
                 stripe_customer_id=customer.stripe_id,
                 client_reference_id=str(user.id),
-                price_id=product_price.stripe_price_id,
+                price_id=stripe_price_id,
+                billing_currency=billing_currency,
                 locale=user.preferred_locale,
                 success_url=data["success_url"],
                 cancel_url=data["cancel_url"],
@@ -751,7 +922,9 @@ class CreditBalanceView(BillingScopedView):
         return Response(CreditBalanceSerializer({"balances": balances}).data)
 
 
-def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
+def _get_active_subscriptions_for_user(
+    user: User, *, currency: str = "usd", preferred_currency: str | None = None
+) -> list[SubscriptionModel]:
     """Return every active subscription the user has billing visibility into.
 
     A user can hold up to two concurrent active subscriptions (rules 5a/5b
@@ -784,6 +957,8 @@ def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
     # without firing an FK lookup per sub.
     base = SubscriptionModel.objects.select_related(
         "plan__price", "scheduled_plan__price", "stripe_customer"
+    ).prefetch_related(
+        *_localized_subscription_prefetches(currency, preferred_currency)
     ).annotate(
         org_member_count=Subquery(org_member_count_sq)
     ).filter(
@@ -933,8 +1108,13 @@ class SubscriptionView(BillingScopedView):
     )
     def get(self, request: Request) -> Response:
         user = get_user(request)
-        subs = _get_active_subscriptions_for_user(user)
-        data = SubscriptionSerializer(subs, many=True, context=_currency_context(request)).data
+        ctx = _currency_context(request)
+        subs = _get_active_subscriptions_for_user(
+            user,
+            currency=ctx["currency"],
+            preferred_currency=ctx.get("preferred_currency"),
+        )
+        data = SubscriptionSerializer(subs, many=True, context=ctx).data
         return Response(_catalog_envelope(list(data)))
 
     @extend_schema(
@@ -994,17 +1174,20 @@ class SubscriptionView(BillingScopedView):
                         subscription_repo=repos.subscriptions,
                     )
             elif plan_price:
-                # Passing ``new_price_amount`` opts into the deferred-downgrade
-                # path: ``change_plan`` compares against the current Stripe
-                # price unit amount and creates a SubscriptionSchedule when
-                # the new price is lower. Upgrades and same-amount switches
-                # still apply immediately so the user pays the prorated diff.
+                # Stripe pins the subscription's currency for life — plan
+                # changes must resolve a Stripe Price in the same currency.
+                # We also feed ``new_price_amount`` in that currency so the
+                # deferred-downgrade comparison stays apples-to-apples.
+                sub_currency = sub.currency
+                new_price_id, new_price_amount = await sync_to_async(
+                    _resolve_plan_change_price, thread_sensitive=True
+                )(plan_price, sub_currency)
                 if "seat_limit" in data and org_id is not None:
                     await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
                 await change_plan(
                     stripe_subscription_id=stripe_sub_id,
-                    new_stripe_price_id=plan_price.stripe_price_id,
-                    new_price_amount=plan_price.amount,
+                    new_stripe_price_id=new_price_id,
+                    new_price_amount=new_price_amount,
                     prorate=data["prorate"],
                     quantity=data.get("seat_limit"),
                 )
@@ -1025,7 +1208,13 @@ class SubscriptionView(BillingScopedView):
                 )
 
         async_to_sync(_do)()
-        sub = _refetch_subscription_after_mutation(user, context=context)
+        ctx = _currency_context(request)
+        sub = _refetch_subscription_after_mutation(
+            user,
+            context=context,
+            currency=ctx["currency"],
+            preferred_currency=ctx.get("preferred_currency"),
+        )
         if "cancel_at_period_end" in data:
             recipients = _billing_notice_recipients(user, org_id)
             if recipients:
@@ -1034,7 +1223,7 @@ class SubscriptionView(BillingScopedView):
                     sub.plan.name,
                     "scheduled" if data["cancel_at_period_end"] else "resumed",
                 )
-        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
+        return Response(SubscriptionSerializer(sub, context=ctx).data)
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
@@ -1079,12 +1268,18 @@ class SubscriptionView(BillingScopedView):
             )
 
         async_to_sync(_do)()
-        sub = _refetch_subscription_after_mutation(user, context=context)
+        ctx = _currency_context(request)
+        sub = _refetch_subscription_after_mutation(
+            user,
+            context=context,
+            currency=ctx["currency"],
+            preferred_currency=ctx.get("preferred_currency"),
+        )
         recipients = _billing_notice_recipients(user, org_id)
         if recipients:
             send_subscription_cancel_notice_task.delay(recipients, sub.plan.name, "scheduled")
         return Response(
-            SubscriptionSerializer(sub, context=_currency_context(request)).data,
+            SubscriptionSerializer(sub, context=ctx).data,
             status=status.HTTP_202_ACCEPTED,
         )
 
@@ -1142,19 +1337,37 @@ class ScheduledChangeView(BillingScopedView):
             )
 
         async_to_sync(_do)()
-        sub = _refetch_subscription_after_mutation(user, context=context)
-        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
+        ctx = _currency_context(request)
+        sub = _refetch_subscription_after_mutation(
+            user,
+            context=context,
+            currency=ctx["currency"],
+            preferred_currency=ctx.get("preferred_currency"),
+        )
+        return Response(SubscriptionSerializer(sub, context=ctx).data)
 
 
-def _refetch_subscription_after_mutation(user: User, *, context: str) -> SubscriptionModel:
+def _refetch_subscription_after_mutation(
+    user: User,
+    *,
+    context: str,
+    currency: str = "usd",
+    preferred_currency: str | None = None,
+) -> SubscriptionModel:
     """Return the (single) sub matching *context* after a PATCH/DELETE round-trip.
 
     The webhook may not have caught up yet; we want the row our DB knows about
     in this scope, not whichever sub happens to sort newest. Picks the team
     sub for ``context="team"`` (matched on ``stripe_customer.org_id``) and the
     personal sub otherwise. Raises ``NotFound`` if the sub disappeared.
+
+    ``currency`` and ``preferred_currency`` are forwarded to the underlying
+    queryset's ``LocalizedPrice`` prefetch so the serialized response can
+    render the display + dual-display amounts without firing per-row lookups.
     """
-    subs = _get_active_subscriptions_for_user(user)
+    subs = _get_active_subscriptions_for_user(
+        user, currency=currency, preferred_currency=preferred_currency
+    )
     if context == _SUBSCRIPTION_CONTEXT_TEAM:
         for sub in subs:
             if sub.stripe_customer is not None and sub.stripe_customer.org_id is not None:

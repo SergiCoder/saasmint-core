@@ -93,4 +93,7 @@ class Subscription(BaseModel):
     # ``None`` ⇔ no pending plan change.
     scheduled_plan_id: UUID | None = None
     scheduled_change_at: datetime | None = None
+    # Stripe pins this on the subscription for life — plan changes must
+    # resolve a Stripe Price in the same currency. Lowercase ISO 4217.
+    currency: str = "usd"
     created_at: datetime

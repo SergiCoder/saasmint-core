@@ -108,6 +108,7 @@ class DjangoSubscriptionRepository:
             cancel_at=obj.cancel_at,
             scheduled_plan_id=obj.scheduled_plan_id,
             scheduled_change_at=obj.scheduled_change_at,
+            currency=obj.currency,
             created_at=obj.created_at,
         )
 
@@ -173,6 +174,7 @@ class DjangoSubscriptionRepository:
                 "cancel_at": subscription.cancel_at,
                 "scheduled_plan_id": subscription.scheduled_plan_id,
                 "scheduled_change_at": subscription.scheduled_change_at,
+                "currency": subscription.currency,
             },
         )
         return subscription

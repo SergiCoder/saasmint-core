@@ -7,18 +7,63 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 from rest_framework import serializers
-from saasmint_core.services.currency import format_amount, round_friendly
+from saasmint_core.services.currency import format_amount
 
 from apps.billing.models import Plan, PlanPrice, PlanTier, Product, ProductPrice, Subscription
 
 
-def _convert_amount(amount: int, currency: str, rate: float) -> float:
-    """Convert a USD-cents amount to a display amount in the target currency."""
-    converted = round(amount * rate)  # round() returns int when ndigits is omitted
-    raw = format_amount(converted, currency)
-    if currency != "usd":
-        return round_friendly(raw, currency)
-    return raw
+def _localized_display(
+    price: PlanPrice | ProductPrice, currency: str
+) -> tuple[float, str]:
+    """Return ``(display_amount, effective_currency)`` for ``price``.
+
+    Reads a precomputed ``LocalizedPrice`` row written by the daily
+    ``sync_localized_prices`` task. USD always returns the catalog amount
+    (the source of truth Stripe charges); any other currency falls back to
+    the USD ``amount`` when the localized row is missing (catalog newer
+    than the last sync, or sync upstream is down).
+
+    The second element of the tuple is the currency that actually
+    denominates ``display_amount`` — callers must use this value for the
+    ``currency`` field in the response so the two fields are consistent.
+    When a localized row exists the effective currency matches the
+    requested one; on fallback it is always ``"usd"``.
+
+    The ``localized_prices`` reverse-relation is expected to be prefetched
+    by the calling view — list endpoints attach a ``Prefetch`` filtered to
+    the resolved currency, so iterating ``.all()`` here costs no DB hit.
+    """
+    if currency == "usd":
+        return format_amount(price.amount, "usd"), "usd"
+    for lp in price.localized_prices.all():
+        if lp.currency == currency:
+            return format_amount(lp.amount_minor, currency), currency
+    return format_amount(price.amount, "usd"), "usd"
+
+
+def _local_display(
+    price: PlanPrice | ProductPrice, preferred_currency: str | None
+) -> tuple[float | None, str | None]:
+    """Return ``(local_display_amount, local_currency)`` for the dual-display card.
+
+    Populated only when *preferred_currency* is set in the serializer context
+    (which the view does **only** when the user's preferred currency is
+    non-billable and we therefore fell back to USD for the actual charge).
+    For users whose preference is itself billable, the view sets this to
+    ``None`` and both elements come back ``None`` — the FE renders the
+    standard single-line card.
+
+    Unlike :func:`_localized_display`, no fallback to USD here: a missing
+    ``LocalizedPrice`` row means we have no useful local approximation to
+    show, and the primary ``display_amount`` already covers the customer's
+    actual charge.
+    """
+    if preferred_currency is None:
+        return None, None
+    for lp in price.localized_prices.all():
+        if lp.currency == preferred_currency:
+            return format_amount(lp.amount_minor, preferred_currency), preferred_currency
+    return None, None
 
 
 def _validate_redirect_url(url: str) -> str:
@@ -56,7 +101,7 @@ def _validate_redirect_url(url: str) -> str:
 class _PriceSerializer(serializers.ModelSerializer[Any]):
     """Shared base for PlanPrice / ProductPrice serializers.
 
-    Declaring the three display-currency fields and their getters once on a
+    Declaring the two display-currency fields and their getters once on a
     ModelSerializer base lets concrete subclasses supply only the Meta.model
     binding. DRF's metaclass walks `_declared_fields` on base Serializer
     classes (unlike plain mixins), so the fields flow through inheritance.
@@ -67,28 +112,34 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
 
     display_amount = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
-    approximate = serializers.SerializerMethodField()
+    local_display_amount = serializers.SerializerMethodField()
+    local_currency = serializers.SerializerMethodField()
 
     if TYPE_CHECKING:
         context: dict[str, Any]
 
     class Meta:
-        fields = ("id", "amount", "display_amount", "currency", "approximate")
+        fields = (
+            "id",
+            "amount",
+            "display_amount",
+            "currency",
+            "local_display_amount",
+            "local_currency",
+        )
         read_only_fields = ("id", "amount")
 
     def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
-        return _convert_amount(
-            obj.amount,
-            self.context.get("currency", "usd"),
-            self.context.get("rate", 1.0),
-        )
+        return _localized_display(obj, self.context.get("currency", "usd"))[0]
 
     def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
-        return str(self.context.get("currency", "usd"))
+        return _localized_display(obj, self.context.get("currency", "usd"))[1]
 
-    def get_approximate(self, obj: PlanPrice | ProductPrice) -> bool:
-        currency: str = self.context.get("currency", "usd")
-        return currency != "usd"
+    def get_local_display_amount(self, obj: PlanPrice | ProductPrice) -> float | None:
+        return _local_display(obj, self.context.get("preferred_currency"))[0]
+
+    def get_local_currency(self, obj: PlanPrice | ProductPrice) -> str | None:
+        return _local_display(obj, self.context.get("preferred_currency"))[1]
 
 
 class PlanPriceSerializer(_PriceSerializer):
@@ -156,6 +207,7 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
             "cancel_at",
             "scheduled_plan",
             "scheduled_change_at",
+            "currency",
             "created_at",
         )
         read_only_fields = fields
