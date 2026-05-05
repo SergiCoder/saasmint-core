@@ -7,18 +7,30 @@ from urllib.parse import urlparse
 
 from django.conf import settings
 from rest_framework import serializers
-from saasmint_core.services.currency import format_amount, round_friendly
+from saasmint_core.services.currency import format_amount
 
 from apps.billing.models import Plan, PlanPrice, PlanTier, Product, ProductPrice, Subscription
 
 
-def _convert_amount(amount: int, currency: str, rate: float) -> float:
-    """Convert a USD-cents amount to a display amount in the target currency."""
-    converted = round(amount * rate)  # round() returns int when ndigits is omitted
-    raw = format_amount(converted, currency)
-    if currency != "usd":
-        return round_friendly(raw, currency)
-    return raw
+def _localized_amount_for(price: PlanPrice | ProductPrice, currency: str) -> float:
+    """Return the friendly-rounded display amount for ``price`` in ``currency``.
+
+    Reads a precomputed ``LocalizedPrice`` row written by the daily
+    ``sync_localized_prices`` task. USD always returns the catalog amount
+    (the source of truth Stripe charges); any other currency falls back to
+    USD when the localized row is missing (catalog newer than the last
+    sync, or sync upstream is down).
+
+    The ``localized_prices`` reverse-relation is expected to be prefetched
+    by the calling view — list endpoints attach a ``Prefetch`` filtered to
+    the resolved currency, so iterating ``.all()`` here costs no DB hit.
+    """
+    if currency == "usd":
+        return format_amount(price.amount, "usd")
+    for lp in price.localized_prices.all():
+        if lp.currency == currency:
+            return format_amount(lp.amount_minor, currency)
+    return format_amount(price.amount, "usd")
 
 
 def _validate_redirect_url(url: str) -> str:
@@ -67,28 +79,19 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
 
     display_amount = serializers.SerializerMethodField()
     currency = serializers.SerializerMethodField()
-    approximate = serializers.SerializerMethodField()
 
     if TYPE_CHECKING:
         context: dict[str, Any]
 
     class Meta:
-        fields = ("id", "amount", "display_amount", "currency", "approximate")
+        fields = ("id", "amount", "display_amount", "currency")
         read_only_fields = ("id", "amount")
 
     def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
-        return _convert_amount(
-            obj.amount,
-            self.context.get("currency", "usd"),
-            self.context.get("rate", 1.0),
-        )
+        return _localized_amount_for(obj, self.context.get("currency", "usd"))
 
     def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
         return str(self.context.get("currency", "usd"))
-
-    def get_approximate(self, obj: PlanPrice | ProductPrice) -> bool:
-        currency: str = self.context.get("currency", "usd")
-        return currency != "usd"
 
 
 class PlanPriceSerializer(_PriceSerializer):

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
 
+import httpx
 import stripe
 from asgiref.sync import async_to_sync
+from django.db import transaction
 from django.db.utils import OperationalError
 
 from apps.billing.repositories import get_webhook_repos
@@ -15,45 +16,113 @@ from config.celery import app
 
 logger = logging.getLogger(__name__)
 
+_FX_API_URL = "https://open.er-api.com/v6/latest/USD"
+
+
+def _to_minor_units(display_amount: float, currency: str) -> int:
+    """Inverse of ``format_amount``: display units → integer minor units.
+
+    Zero-decimal currencies (JPY, KRW, …) are already in whole units; others
+    multiply by 100. ``round`` guards against float drift introduced by
+    ``round_friendly`` returning values like ``9.99`` that aren't exactly
+    representable in IEEE-754.
+    """
+    from saasmint_core.services.currency import ZERO_DECIMAL_CURRENCIES
+
+    if currency.lower() in ZERO_DECIMAL_CURRENCIES:
+        return round(display_amount)
+    return round(display_amount * 100)
+
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
-def sync_exchange_rates() -> None:
-    """Fetch USD-based exchange rates from Stripe and persist to DB."""
-    from saasmint_core.services.currency import SUPPORTED_CURRENCIES
+def sync_localized_prices() -> int:
+    """Recompute every ``LocalizedPrice`` row from the live FX rate snapshot.
 
-    from apps.billing.models import ExchangeRate
+    USD is the source of truth — Stripe always charges USD. This task derives
+    a *display* price (friendly-rounded) for every supported non-USD currency
+    so the API can serve a stable price tag without per-request FX math. Runs
+    daily via Celery Beat and on every deploy via ``infra/entrypoint.sh``.
+
+    Returns the number of rows written (for logging / management command
+    output). On API failure logs and returns 0 — existing rows are kept,
+    so a flaky upstream never erases the catalog.
+    """
+    from saasmint_core.services.currency import (
+        SUPPORTED_CURRENCIES,
+        format_amount,
+        round_friendly,
+    )
+
+    from apps.billing.models import LocalizedPrice, PlanPrice, ProductPrice
 
     try:
-        rates_obj = stripe.ExchangeRate.retrieve("usd")
-    except stripe.StripeError:
-        logger.exception("Failed to fetch exchange rates from Stripe")
-        return
+        resp = httpx.get(_FX_API_URL, timeout=httpx.Timeout(10.0))
+        resp.raise_for_status()
+        data = resp.json()
+    except (httpx.HTTPError, ValueError):
+        logger.exception("Failed to fetch FX rates from %s", _FX_API_URL)
+        return 0
 
+    if data.get("result") != "success":
+        logger.error("FX API returned non-success payload: %s", data)
+        return 0
+
+    api_rates: dict[str, float] = {k.lower(): v for k, v in data["rates"].items()}
     now = datetime.now(UTC)
-    # Stripe stubs type ``ExchangeRate.rates`` as ``float``; the runtime value is
-    # a ``dict[str, float]``. Cast once, then iterate — the audit flagged that
-    # materialising a whole intermediate ``dict`` via ``dict(rates_obj.rates)``
-    # was wasteful when we only read each currency once.
-    raw_rates: dict[str, float] = rates_obj.rates  # type: ignore[assignment]  # Stripe stubs type mismatch
 
-    rows: list[ExchangeRate] = []
-    for currency in SUPPORTED_CURRENCIES:
-        if currency == "usd":
-            continue
-        rate = raw_rates.get(currency)
-        if rate is None:
-            logger.warning("No rate returned by Stripe for currency: %s", currency)
-            continue
-        rows.append(ExchangeRate(currency=currency, rate=Decimal(str(rate)), fetched_at=now))
+    rows: list[LocalizedPrice] = []
+    for plan_price in PlanPrice.objects.all().only("id", "amount"):
+        for currency in SUPPORTED_CURRENCIES:
+            if currency == "usd":
+                continue
+            rate = api_rates.get(currency)
+            if rate is None:
+                logger.warning("No FX rate for currency %s", currency)
+                continue
+            display = round_friendly(format_amount(plan_price.amount, "usd") * rate, currency)
+            rows.append(
+                LocalizedPrice(
+                    plan_price_id=plan_price.id,
+                    currency=currency,
+                    amount_minor=_to_minor_units(display, currency),
+                    synced_at=now,
+                )
+            )
 
-    if rows:
-        ExchangeRate.objects.bulk_create(
-            rows,
-            update_conflicts=True,
-            unique_fields=["currency"],
-            update_fields=["rate", "fetched_at"],
-        )
-    logger.info("Exchange rates synced: %d currencies updated", len(rows))
+    for product_price in ProductPrice.objects.all().only("id", "amount"):
+        for currency in SUPPORTED_CURRENCIES:
+            if currency == "usd":
+                continue
+            rate = api_rates.get(currency)
+            if rate is None:
+                continue
+            display = round_friendly(format_amount(product_price.amount, "usd") * rate, currency)
+            rows.append(
+                LocalizedPrice(
+                    product_price_id=product_price.id,
+                    currency=currency,
+                    amount_minor=_to_minor_units(display, currency),
+                    synced_at=now,
+                )
+            )
+
+    if not rows:
+        logger.info("No catalog prices found; nothing to localize.")
+        return 0
+
+    # Postgres ``ON CONFLICT`` can't target a partial unique index implicitly,
+    # so we can't use ``bulk_create(update_conflicts=True)`` against
+    # ``LocalizedPrice`` (the XOR ``plan_price``/``product_price`` shape forces
+    # *two* partial indexes). The table is bounded — at most
+    # ``len(plans+products) * len(SUPPORTED_CURRENCIES)`` rows — so delete-then-
+    # insert inside a single transaction is simpler than coalesce-on-conflict
+    # gymnastics. Other readers see either the old set or the new set, never a
+    # half-empty table.
+    with transaction.atomic():
+        LocalizedPrice.objects.all().delete()
+        LocalizedPrice.objects.bulk_create(rows)
+    logger.info("Localized prices synced: %d rows", len(rows))
+    return len(rows)
 
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs

@@ -1907,12 +1907,8 @@ components:
         currency:
           type: string
           readOnly: true
-        approximate:
-          type: boolean
-          readOnly: true
       required:
       - amount
-      - approximate
       - currency
       - display_amount
       - id
@@ -2041,12 +2037,8 @@ components:
         currency:
           type: string
           readOnly: true
-        approximate:
-          type: boolean
-          readOnly: true
       required:
       - amount
-      - approximate
       - currency
       - display_amount
       - id
@@ -2151,9 +2143,16 @@ components:
         seats_used:
           type: integer
           description: |-
-            Number of seats currently occupied. Always 1 for personal
-            subscriptions. For team subscriptions, reflects the current
-            org member count.
+            Number of seats currently occupied.
+
+            Always 1 for personal subscriptions. For team subscriptions,
+            reflects the current org member count.
+
+            When the queryset was annotated with ``org_member_count`` (as
+            ``_get_active_subscriptions_for_user`` does), that value is read
+            directly from the annotation to avoid a second COUNT query per
+            serialized object. Falls back to a live COUNT for callers that
+            skip the annotation (e.g. direct serializer use in tests).
           readOnly: true
         trial_ends_at:
           type: string
@@ -2182,7 +2181,6 @@ components:
           allOf:
           - $ref: '#/components/schemas/Plan'
           readOnly: true
-          nullable: true
         scheduled_change_at:
           type: string
           format: date-time
@@ -2331,25 +2329,6 @@ components:
           items:
             type: string
           readOnly: true
-        has_stripe_customer:
-          type: boolean
-          description: |-
-            Whether the user has a personal Stripe customer.
-
-            The user's billing currency is locked at first purchase on this
-            customer (rule 12). After that, even cancellation leaves the
-            customer row in place, so the lock survives — frontend uses this
-            flag to gate the "your billing currency can't be changed" notice
-            on the profile form. Org-scoped Stripe customers don't count;
-            the user's currency is independent of any org's billing currency
-            (rule 3 — distinct customers per scope).
-
-            Performance: a single indexed ``EXISTS`` on the unique ``user_id``
-            (OneToOneField) — ``SELECT 1 ... LIMIT 1``. The flag must reflect
-            live DB state (the row can be hard-deleted out from under the
-            cached ``User`` instance), so we deliberately do not short-circuit
-            via ``_state.fields_cache``.
-          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -2364,7 +2343,6 @@ components:
       - created_at
       - email
       - full_name
-      - has_stripe_customer
       - id
       - is_verified
       - job_title

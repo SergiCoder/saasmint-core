@@ -6,7 +6,7 @@ from django.http import HttpRequest
 from apps.billing.models import (
     CreditBalance,
     CreditTransaction,
-    ExchangeRate,
+    LocalizedPrice,
     Plan,
     PlanPrice,
     Product,
@@ -93,11 +93,20 @@ class SubscriptionAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-s
         return "—"
 
 
-@admin.register(ExchangeRate)
-class ExchangeRateAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
-    list_display = ("currency", "rate", "fetched_at")
+@admin.register(LocalizedPrice)
+class LocalizedPriceAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs generic; not subscriptable at runtime
+    list_display = ("currency", "plan_price", "product_price", "amount_minor", "synced_at")
+    list_filter = ("currency",)
     ordering = ("currency",)
-    readonly_fields = ("currency", "rate", "fetched_at")
+    readonly_fields = (
+        "id",
+        "plan_price",
+        "product_price",
+        "currency",
+        "amount_minor",
+        "synced_at",
+    )
+    list_select_related = ("plan_price__plan", "product_price__product")
 
     def has_add_permission(self, request: HttpRequest) -> bool:
         return False

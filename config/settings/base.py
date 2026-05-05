@@ -245,8 +245,8 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 CELERY_BEAT_SCHEDULE = {
-    "sync-exchange-rates": {
-        "task": "apps.billing.tasks.sync_exchange_rates",
+    "sync-localized-prices": {
+        "task": "apps.billing.tasks.sync_localized_prices",
         "schedule": 86400,  # once per day
     },
     "cleanup-expired-refresh-tokens": {

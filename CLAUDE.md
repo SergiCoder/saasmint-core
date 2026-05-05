@@ -12,20 +12,32 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 
 ## Billing model
 
-- **Catalog**: USD-only. `PlanPrice`/`ProductPrice` store `amount` in cents. Endpoints accept `?currency=` for display conversion via `ExchangeRate` (synced daily from Stripe in prod; seeded locally in dev). Stripe charges remain USD.
+- **Catalog**: USD-only. `PlanPrice`/`ProductPrice` store `amount` in cents — **the source of truth Stripe charges against**. Endpoints accept `?currency=` for display only; the response's `display_amount` comes from precomputed `LocalizedPrice` rows (one per `(price, currency)`, friendly-rounded by the daily `sync_localized_prices` task). Missing row → fall back to USD `amount`. **Stripe charges always use USD**, regardless of `?currency=`.
 - **Plans**: `(context, tier, interval)` — `context` is `personal`|`team`, `tier` is `IntegerChoices` (`2=basic`, `3=pro`; `1=free` reserved for legacy, not seeded).
 - **Subscription = pure Stripe mirror**. Every row has a `stripe_id`, synced via webhooks. Free tier = absence of a row. `GET /billing/subscriptions/me/` returns paginated `{count,next,previous,results}` with 0–2 rows (one personal, one team for concurrent billers).
 - **Products**: one-time purchases (credit packs / Boost). `POST /billing/product-checkout-sessions/` (Stripe Checkout `mode=payment`). Webhook `_on_product_checkout_completed` grants credits via `CreditTransaction` + `CreditBalance`.
 - **Credits**: `CreditBalance` (denormalized, XOR `user`/`org`) + `CreditTransaction` (immutable, unique on `stripe_session_id` for idempotency). `GET /billing/credits/me/` → `{balances:[...]}`.
 - **Context selector**: subscription mutations and product checkout accept `?context=personal|team`. Default: `team` for org members, `personal` otherwise. `?context=team` requires `OrgMember.role=OWNER`. The `is_billing=True` gate only applies to team-context.
 - **Org membership**: derived from `OrgMember.objects.filter(user_id=...).exists()`. The legacy `User.account_type` and the org-owner registration endpoint were removed — there is now exactly one register path: `POST /auth/register/`.
-- **Team checkout**: mints a fresh org-scoped Stripe customer at init; webhook persists the `StripeCustomer` row inside `_create_org_with_owner`. Personal and team subs always live on distinct customers (each retains its own currency + payment method).
+- **Team checkout**: mints a fresh org-scoped Stripe customer at init; webhook persists the `StripeCustomer` row inside `_create_org_with_owner`. Personal and team subs always live on distinct customers — the split is **for invoicing isolation** (separate tax IDs, addresses, receipts, payment methods per scope), not currency.
 - **Owner uniqueness**: DB-enforced via partial unique index on `OrgMember(user) WHERE role='owner'` (`uniq_org_owner_per_user`). The view-layer `.exists()` check is a UX fast-path; the constraint is the authoritative TOCTOU guard.
 - **Personal→team upgrade**: `keep_personal_subscription` field on `CheckoutRequestSerializer` (default `false`) controls whether the existing personal sub is scheduled to cancel at period end.
-- **`has_stripe_customer`** on `GET /account/me/` gates the "currency locked" notice. Only user-scoped customers count.
 - **Stripe API**: pinned to `2026-03-25.dahlia`. `cancel_at_period_end=True` → `cancel_at="min_period_end"`; `current_period_start/end` live on subscription items. `Subscription.cancel_at` mirrors Stripe's scheduled-cutover (distinct from `canceled_at`). Cancel/resume mutations write the Stripe response back locally before returning so PATCH-then-GET sees new state without waiting for the webhook.
 - **Deferred downgrades**: PATCH `/subscriptions/me/` with a `plan_price_id` whose `amount < current price unit_amount` creates a Stripe `SubscriptionSchedule` (current price → period end → new price) instead of switching immediately. Upgrades/same-amount switches still apply now. The `subscription_schedule.{created,updated}` webhooks mirror the pending switch onto `Subscription.scheduled_plan` + `scheduled_change_at`; `.{released,canceled,aborted}` clear them. `DELETE /subscriptions/me/scheduled-change/` releases an active schedule (user keeps current plan); like cancel/resume, it writes the cleared `scheduled_plan`/`scheduled_change_at` state locally before returning so PATCH-then-GET sees it without webhook lag. Cancel/cancel-now first releases any pinning schedule via `sub.schedule` lookup so Stripe doesn't reject the cancel or modify call.
-- **Seeding**: `seed_catalog` (idempotent, USD-only) → `sync_stripe_catalog` (replaces placeholder `stripe_price_id`s with real ones, idempotent via `lookup_key`). Both run from `infra/entrypoint.sh` after `migrate` on every deploy.
+- **Seeding**: `seed_catalog` (idempotent, USD-only) → `sync_stripe_catalog` (replaces placeholder `stripe_price_id`s with real ones, idempotent via `lookup_key`) → `sync_localized_prices` (recomputes `LocalizedPrice` rows from the FX feed). All three run from `infra/entrypoint.sh` after `migrate` on every deploy.
+
+## Updating prices
+
+The catalog has three layers; touch them in order. Each step is idempotent.
+
+1. **Edit the USD amount in `apps/billing/management/commands/seed_catalog.py`.** USD cents are the source of truth Stripe charges against — every other amount derives from this. To change a price, change it here.
+2. **Run `seed_catalog`** (`make manage CMD=seed_catalog`, or just redeploy — `infra/entrypoint.sh` runs it). Updates `PlanPrice.amount` / `ProductPrice.amount` in the DB.
+3. **Run `sync_stripe_catalog`** to mint a new immutable Stripe `Price` and repoint `stripe_price_id` via `lookup_key`. Existing subscriptions stay on the old Stripe price until they renew or are migrated; new checkouts use the new one.
+4. **Run `sync_localized_prices`** (or wait for the daily Celery beat tick) to regenerate `LocalizedPrice` rows for every `(price, currency)`. The task fetches USD→all rates from `open.er-api.com` and applies `format_amount` + `round_friendly` (charm-pricing for two-decimal currencies, nearest 10/100 for zero-decimal). Failure is non-fatal: existing rows are preserved so a flaky upstream never erases the catalog.
+
+**Adding a new currency**: append the ISO code to `SUPPORTED_CURRENCIES` in `core/saasmint_core/services/currency.py` (and `ZERO_DECIMAL_CURRENCIES` if applicable), then run `sync_localized_prices`. No migration. The new currency is immediately accepted on `?currency=`; until `sync_localized_prices` finishes, the API falls back to the USD `amount` for that currency.
+
+**What never changes**: Stripe charges in USD. The `display_amount` field is FE-only — the actual `Stripe.PaymentIntent`/`Subscription` is created against the USD `Price`, and Stripe's own FX kicks in at charge time on the customer's card. Display drift can never cause us to bill the wrong amount.
 
 ## Pre-push checklist
 

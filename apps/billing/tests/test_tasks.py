@@ -12,7 +12,7 @@ from apps.billing.models import StripeEvent
 from apps.billing.tasks import (
     process_stripe_webhook,
     send_subscription_cancel_notice_task,
-    sync_exchange_rates,
+    sync_localized_prices,
 )
 
 
@@ -154,77 +154,160 @@ class TestProcessStripeWebhookRetry:
 
 
 # ---------------------------------------------------------------------------
-# sync_exchange_rates
+# sync_localized_prices
 # ---------------------------------------------------------------------------
 
 
+def _fx_response(rates: dict[str, float]) -> MagicMock:
+    """Build a mock httpx.Response in the open.er-api.com success shape."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "result": "success",
+        "rates": {k.upper(): v for k, v in rates.items()},
+    }
+    return resp
+
+
+def _seed_plan_price(amount: int = 999) -> object:
+    from apps.billing.models import Plan, PlanPrice
+
+    plan = Plan.objects.create(
+        name="Pro Monthly", context="personal", tier=3, interval="month"
+    )
+    return PlanPrice.objects.create(plan=plan, stripe_price_id=f"price_{plan.id}", amount=amount)
+
+
+def _seed_product_price(amount: int = 1500) -> object:
+    from apps.billing.models import Product, ProductPrice
+
+    product = Product.objects.create(name="Boost", type="one_time", credits=100)
+    return ProductPrice.objects.create(
+        product=product, stripe_price_id=f"price_{product.id}", amount=amount
+    )
+
+
 @pytest.mark.django_db
-class TestSyncExchangeRates:
-    def test_creates_exchange_rate_rows(self):
-        from apps.billing.models import ExchangeRate
+class TestSyncLocalizedPrices:
+    def test_creates_rows_for_plan_and_product_across_currencies(self):
+        from apps.billing.models import LocalizedPrice
 
-        mock_obj = MagicMock()
-        mock_obj.rates = {"eur": 0.91, "gbp": 0.79, "jpy": 149.5}
+        plan_price = _seed_plan_price(999)  # $9.99
+        product_price = _seed_product_price(1500)  # $15.00
 
-        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj):
-            sync_exchange_rates.apply().get()
+        rates = {"eur": 0.9, "jpy": 150.0}
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response(rates)):
+            sync_localized_prices.apply().get()
 
-        assert ExchangeRate.objects.filter(currency="eur").exists()
-        assert ExchangeRate.objects.filter(currency="gbp").exists()
-        assert ExchangeRate.objects.filter(currency="jpy").exists()
+        assert LocalizedPrice.objects.filter(plan_price=plan_price, currency="eur").exists()
+        assert LocalizedPrice.objects.filter(plan_price=plan_price, currency="jpy").exists()
+        assert LocalizedPrice.objects.filter(product_price=product_price, currency="eur").exists()
+        assert LocalizedPrice.objects.filter(product_price=product_price, currency="jpy").exists()
 
-    def test_updates_existing_rates_on_second_run(self):
-        from decimal import Decimal
+    def test_friendly_rounding_applied(self):
+        """A messy raw conversion ($9.99 times 0.9 = €8.991) snaps to a charm price."""
+        from apps.billing.models import LocalizedPrice
 
-        from apps.billing.models import ExchangeRate
+        plan_price = _seed_plan_price(999)
 
-        mock_obj_1 = MagicMock()
-        mock_obj_1.rates = {"eur": 0.91}
-        mock_obj_2 = MagicMock()
-        mock_obj_2.rates = {"eur": 0.95}
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+            sync_localized_prices.apply().get()
 
-        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj_1):
-            sync_exchange_rates.apply().get()
+        eur = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur")
+        # round_friendly snaps 8.991 to 8.99 → 899 cents.
+        assert eur.amount_minor == 899
 
-        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj_2):
-            sync_exchange_rates.apply().get()
+    def test_zero_decimal_currency_stored_as_whole_units(self):
+        from apps.billing.models import LocalizedPrice
 
-        assert ExchangeRate.objects.count() == 1
-        assert ExchangeRate.objects.get(currency="eur").rate == Decimal("0.95")
+        plan_price = _seed_plan_price(999)  # $9.99 * 150 = ~Y1498.5 -> Y1500
 
-    def test_handles_stripe_error_gracefully(self):
-        from apps.billing.models import ExchangeRate
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"jpy": 150.0})):
+            sync_localized_prices.apply().get()
 
-        with patch("stripe.ExchangeRate.retrieve", side_effect=StripeError("fail")):
-            sync_exchange_rates.apply().get()
+        jpy = LocalizedPrice.objects.get(plan_price=plan_price, currency="jpy")
+        assert jpy.amount_minor == 1500
 
-        assert ExchangeRate.objects.count() == 0
+    def test_idempotent_on_second_run(self):
+        from apps.billing.models import LocalizedPrice
 
-    def test_skips_currencies_missing_from_stripe_response(self):
-        """Currencies in SUPPORTED_CURRENCIES but absent from Stripe rates are skipped."""
-        from apps.billing.models import ExchangeRate
+        _seed_plan_price(999)
 
-        mock_obj = MagicMock()
-        mock_obj.rates = {"eur": 0.91}
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+            sync_localized_prices.apply().get()
+            count_after_first = LocalizedPrice.objects.count()
+            sync_localized_prices.apply().get()
+            count_after_second = LocalizedPrice.objects.count()
 
-        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj):
-            sync_exchange_rates.apply().get()
+        assert count_after_first == count_after_second
 
-        assert ExchangeRate.objects.count() == 1
-        assert ExchangeRate.objects.filter(currency="eur").exists()
+    def test_updates_existing_rows_when_rate_changes(self):
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = _seed_plan_price(999)
+
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+            sync_localized_prices.apply().get()
+        first = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 1.1})):
+            sync_localized_prices.apply().get()
+        second = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+
+        assert first != second
+        assert LocalizedPrice.objects.filter(plan_price=plan_price, currency="eur").count() == 1
+
+    def test_handles_api_failure_gracefully(self):
+        """Upstream FX API down → no rows mutated, existing rows preserved."""
+        import httpx
+
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = _seed_plan_price(999)
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+            sync_localized_prices.apply().get()
+        before = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+
+        with patch("apps.billing.tasks.httpx.get", side_effect=httpx.HTTPError("boom")):
+            written = sync_localized_prices.apply().get()
+
+        assert written == 0
+        # Existing row unchanged — a flaky upstream must never erase the catalog.
+        after = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+        assert before == after
+
+    def test_skips_currency_missing_from_api_response(self):
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = _seed_plan_price(999)
+
+        # Only EUR is returned; every other supported currency is silently skipped.
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+            sync_localized_prices.apply().get()
+
+        assert LocalizedPrice.objects.filter(plan_price=plan_price, currency="eur").exists()
+        assert not LocalizedPrice.objects.filter(plan_price=plan_price, currency="gbp").exists()
 
     def test_usd_never_stored(self):
-        """USD is skipped even if present in Stripe rates (it's the base currency)."""
-        from apps.billing.models import ExchangeRate
+        from apps.billing.models import LocalizedPrice
 
-        mock_obj = MagicMock()
-        mock_obj.rates = {"usd": 1.0, "eur": 0.91}
+        _seed_plan_price(999)
 
-        with patch("stripe.ExchangeRate.retrieve", return_value=mock_obj):
-            sync_exchange_rates.apply().get()
+        rates = {"usd": 1.0, "eur": 0.9}
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response(rates)):
+            sync_localized_prices.apply().get()
 
-        assert not ExchangeRate.objects.filter(currency="usd").exists()
-        assert ExchangeRate.objects.filter(currency="eur").exists()
+        assert not LocalizedPrice.objects.filter(currency="usd").exists()
+        assert LocalizedPrice.objects.filter(currency="eur").exists()
+
+    def test_no_op_when_catalog_empty(self):
+        from apps.billing.models import LocalizedPrice
+
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+            written = sync_localized_prices.apply().get()
+
+        assert written == 0
+        assert LocalizedPrice.objects.count() == 0
 
 
 # ---------------------------------------------------------------------------

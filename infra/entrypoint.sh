@@ -10,8 +10,8 @@ uv run python manage.py seed_catalog
 echo "==> Syncing Stripe catalog (idempotent)..."
 uv run python manage.py sync_stripe_catalog
 
-echo "==> Syncing exchange rates from Stripe..."
-uv run python manage.py sync_exchange_rates || echo "  (non-fatal: exchange rate sync failed, Beat will retry daily)"
+echo "==> Syncing localized prices from FX feed..."
+uv run python manage.py sync_localized_prices || echo "  (non-fatal: localized price sync failed, Beat will retry daily)"
 
 echo "==> Collecting static files..."
 uv run python manage.py collectstatic --no-input

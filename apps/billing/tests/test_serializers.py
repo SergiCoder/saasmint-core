@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
 
-from apps.billing.models import Product, ProductPrice
+from apps.billing.models import LocalizedPrice, Product, ProductPrice
 from apps.billing.serializers import (
     CheckoutRequestSerializer,
     PlanPriceSerializer,
@@ -328,25 +329,38 @@ class TestUpdateSubscriptionSerializer:
 
 @pytest.mark.django_db
 class TestPlanPriceSerializerCurrency:
-    """PlanPriceSerializer with non-USD currency context."""
+    """PlanPriceSerializer reads precomputed LocalizedPrice rows.
 
-    def test_converts_amount_with_eur_context(self, plan_price):
-        ctx = {"currency": "eur", "rate": 0.91}
-        data = PlanPriceSerializer(plan_price, context=ctx).data
+    The catalog ``amount`` is USD cents (the source of truth Stripe charges).
+    ``display_amount`` comes from a ``LocalizedPrice`` row keyed on
+    ``(plan_price, currency)`` written by the ``sync_localized_prices`` task —
+    serializers never multiply by an FX rate at request time.
+    """
+
+    def test_reads_eur_localized_amount(self, plan_price):
+        LocalizedPrice.objects.create(
+            plan_price=plan_price, currency="eur", amount_minor=899, synced_at=datetime.now(UTC)
+        )
+        data = PlanPriceSerializer(plan_price, context={"currency": "eur"}).data
         assert data["currency"] == "eur"
-        # 999 * 0.91 = 909.09 → round → 909 → /100 → 9.09 → friendly → 8.99
-        # (nearest of {8.99, 9.49, 9.99}; 8.99 is 0.10 away)
         assert data["display_amount"] == 8.99
-        assert data["approximate"] is True
-        assert data["amount"] == 999  # original unchanged
+        assert data["amount"] == 999  # source of truth (USD cents) unchanged
 
-    def test_converts_amount_with_jpy_zero_decimal(self, plan_price):
-        ctx = {"currency": "jpy", "rate": 149.5}
-        data = PlanPriceSerializer(plan_price, context=ctx).data
+    def test_zero_decimal_currency_renders_whole_units(self, plan_price):
+        LocalizedPrice.objects.create(
+            plan_price=plan_price, currency="jpy", amount_minor=1500, synced_at=datetime.now(UTC)
+        )
+        data = PlanPriceSerializer(plan_price, context={"currency": "jpy"}).data
         assert data["currency"] == "jpy"
-        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → friendly → 149400.0
-        assert data["display_amount"] == 149400.0
-        assert data["approximate"] is True
+        assert data["display_amount"] == 1500.0
+
+    def test_falls_back_to_usd_when_localized_row_missing(self, plan_price):
+        """No LocalizedPrice row → display_amount mirrors the USD catalog
+        amount. Guards against catalog-newer-than-last-sync and FX-feed-down
+        windows where the serializer would otherwise have nothing to render.
+        """
+        data = PlanPriceSerializer(plan_price, context={"currency": "eur"}).data
+        assert data["display_amount"] == 9.99
 
 
 @pytest.mark.django_db
@@ -365,19 +379,19 @@ class TestProductPriceSerializer:
     def test_model_fields_read_only(self):
         assert set(ProductPriceSerializer.Meta.read_only_fields) == {"id", "amount"}
 
-    def test_converts_amount_with_currency_context(self):
+    def test_reads_localized_amount_for_currency(self):
         product = Product.objects.create(
             name="Credits", type="one_time", credits=50, is_active=True
         )
         price = ProductPrice.objects.create(
             product=product, stripe_price_id="price_pp_ctx", amount=500
         )
-        ctx = {"currency": "gbp", "rate": 0.79}
-        data = ProductPriceSerializer(price, context=ctx).data
+        LocalizedPrice.objects.create(
+            product_price=price, currency="gbp", amount_minor=399, synced_at=datetime.now(UTC)
+        )
+        data = ProductPriceSerializer(price, context={"currency": "gbp"}).data
         assert data["currency"] == "gbp"
-        # 500 * 0.79 = 395 → round → 395 → /100 → 3.95 → friendly → 3.99 (rounds up)
         assert data["display_amount"] == 3.99
-        assert data["approximate"] is True
 
 
 @pytest.mark.django_db

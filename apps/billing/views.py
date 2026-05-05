@@ -7,8 +7,7 @@ from typing import ClassVar
 from uuid import UUID
 
 from asgiref.sync import async_to_sync, sync_to_async
-from django.core.cache import cache
-from django.db.models import Count, OuterRef, Subquery
+from django.db.models import Count, OuterRef, Prefetch, QuerySet, Subquery
 from drf_spectacular.utils import (
     OpenApiParameter,
     OpenApiResponse,
@@ -44,7 +43,7 @@ from saasmint_core.services.subscriptions import (
 from apps.base_views import BillingScopedView
 from apps.billing.models import (
     ACTIVE_SUBSCRIPTION_STATUSES,
-    ExchangeRate,
+    LocalizedPrice,
     PlanContext,
     PlanPrice,
     ProductPrice,
@@ -131,36 +130,40 @@ def _resolve_display_currency(
     return "usd"
 
 
-def _get_exchange_rate(currency: str) -> tuple[str, float]:
-    """Return ``(currency, rate)`` for conversion from USD.
-
-    Rates are cached for 10 minutes (they update hourly via Celery beat).
-    Falls back to ``("usd", 1.0)`` if the rate is unavailable.
-    """
-    if currency == "usd":
-        return "usd", 1.0
-
-    cache_key = f"exchange_rate:{currency}"
-    cached: float | None = cache.get(cache_key)
-    if cached is not None:
-        return currency, cached
-
-    try:
-        er = ExchangeRate.objects.get(currency=currency)
-        rate = float(er.rate)
-        cache.set(cache_key, rate, timeout=600)
-        return currency, rate
-    except ExchangeRate.DoesNotExist:
-        logger.warning("No exchange rate found for %s, falling back to USD", currency)
-        return "usd", 1.0
-
-
 def _currency_context(request: Request) -> dict[str, object]:
-    """Build serializer context dict with currency and rate."""
+    """Build serializer context dict with the resolved display currency.
+
+    Display amounts are precomputed by the daily ``sync_localized_prices``
+    task and stored on :class:`LocalizedPrice` rows; the serializer reads
+    those rows directly via the prefetched ``localized_prices`` reverse
+    relation. No FX math at request time.
+    """
     user: User | None = request.user if request.user.is_authenticated else None
     resolved = _resolve_display_currency(request.query_params.get("currency"), user)
-    currency, rate = _get_exchange_rate(resolved)
-    return {"currency": currency, "rate": rate}
+    return {"currency": resolved}
+
+
+def _localized_prices_queryset(currency: str) -> QuerySet[LocalizedPrice]:
+    """Empty queryset for USD (serializer short-circuits to catalog amount);
+    a single-currency filter otherwise so each price's prefetched
+    ``.localized_prices.all()`` is a list of length 0 or 1."""
+    if currency == "usd":
+        return LocalizedPrice.objects.none()
+    return LocalizedPrice.objects.filter(currency=currency)
+
+
+def _localized_prices_prefetch(currency: str) -> Prefetch[str]:
+    """Prefetch the LocalizedPrice row for the resolved display currency."""
+    return Prefetch("price__localized_prices", queryset=_localized_prices_queryset(currency))
+
+
+def _localized_subscription_prefetches(currency: str) -> list[Prefetch[str]]:
+    """Prefetches for SubscriptionSerializer's nested plan + scheduled_plan prices."""
+    qs = _localized_prices_queryset(currency)
+    return [
+        Prefetch("plan__price__localized_prices", queryset=qs),
+        Prefetch("scheduled_plan__price__localized_prices", queryset=qs),
+    ]
 
 
 def _validate_quantity_for_context(context: PlanContext, quantity: int) -> int:
@@ -369,8 +372,13 @@ class PlanListView(APIView):
         # Users without an owned org can upgrade to a team plan via team-context
         # checkout (see CheckoutSessionView), so hiding team plans from them
         # would make the upgrade undiscoverable.
-        qs = PlanModel.objects.filter(is_active=True).select_related("price")
-        data = PlanSerializer(qs, many=True, context=_currency_context(request)).data
+        ctx = _currency_context(request)
+        qs = (
+            PlanModel.objects.filter(is_active=True)
+            .select_related("price")
+            .prefetch_related(_localized_prices_prefetch(str(ctx["currency"])))
+        )
+        data = PlanSerializer(qs, many=True, context=ctx).data
         return Response(_catalog_envelope(list(data)))
 
 
@@ -396,8 +404,13 @@ class ProductListView(APIView):
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
-        products = ProductModel.objects.filter(is_active=True).select_related("price")
-        data = ProductSerializer(products, many=True, context=_currency_context(request)).data
+        ctx = _currency_context(request)
+        products = (
+            ProductModel.objects.filter(is_active=True)
+            .select_related("price")
+            .prefetch_related(_localized_prices_prefetch(str(ctx["currency"])))
+        )
+        data = ProductSerializer(products, many=True, context=ctx).data
         return Response(_catalog_envelope(list(data)))
 
 
@@ -751,7 +764,9 @@ class CreditBalanceView(BillingScopedView):
         return Response(CreditBalanceSerializer({"balances": balances}).data)
 
 
-def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
+def _get_active_subscriptions_for_user(
+    user: User, *, currency: str = "usd"
+) -> list[SubscriptionModel]:
     """Return every active subscription the user has billing visibility into.
 
     A user can hold up to two concurrent active subscriptions (rules 5a/5b
@@ -784,6 +799,8 @@ def _get_active_subscriptions_for_user(user: User) -> list[SubscriptionModel]:
     # without firing an FK lookup per sub.
     base = SubscriptionModel.objects.select_related(
         "plan__price", "scheduled_plan__price", "stripe_customer"
+    ).prefetch_related(
+        *_localized_subscription_prefetches(currency)
     ).annotate(
         org_member_count=Subquery(org_member_count_sq)
     ).filter(
@@ -933,8 +950,9 @@ class SubscriptionView(BillingScopedView):
     )
     def get(self, request: Request) -> Response:
         user = get_user(request)
-        subs = _get_active_subscriptions_for_user(user)
-        data = SubscriptionSerializer(subs, many=True, context=_currency_context(request)).data
+        ctx = _currency_context(request)
+        subs = _get_active_subscriptions_for_user(user, currency=str(ctx["currency"]))
+        data = SubscriptionSerializer(subs, many=True, context=ctx).data
         return Response(_catalog_envelope(list(data)))
 
     @extend_schema(
@@ -1025,7 +1043,10 @@ class SubscriptionView(BillingScopedView):
                 )
 
         async_to_sync(_do)()
-        sub = _refetch_subscription_after_mutation(user, context=context)
+        ctx = _currency_context(request)
+        sub = _refetch_subscription_after_mutation(
+            user, context=context, currency=str(ctx["currency"])
+        )
         if "cancel_at_period_end" in data:
             recipients = _billing_notice_recipients(user, org_id)
             if recipients:
@@ -1034,7 +1055,7 @@ class SubscriptionView(BillingScopedView):
                     sub.plan.name,
                     "scheduled" if data["cancel_at_period_end"] else "resumed",
                 )
-        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
+        return Response(SubscriptionSerializer(sub, context=ctx).data)
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
@@ -1079,12 +1100,15 @@ class SubscriptionView(BillingScopedView):
             )
 
         async_to_sync(_do)()
-        sub = _refetch_subscription_after_mutation(user, context=context)
+        ctx = _currency_context(request)
+        sub = _refetch_subscription_after_mutation(
+            user, context=context, currency=str(ctx["currency"])
+        )
         recipients = _billing_notice_recipients(user, org_id)
         if recipients:
             send_subscription_cancel_notice_task.delay(recipients, sub.plan.name, "scheduled")
         return Response(
-            SubscriptionSerializer(sub, context=_currency_context(request)).data,
+            SubscriptionSerializer(sub, context=ctx).data,
             status=status.HTTP_202_ACCEPTED,
         )
 
@@ -1142,19 +1166,28 @@ class ScheduledChangeView(BillingScopedView):
             )
 
         async_to_sync(_do)()
-        sub = _refetch_subscription_after_mutation(user, context=context)
-        return Response(SubscriptionSerializer(sub, context=_currency_context(request)).data)
+        ctx = _currency_context(request)
+        sub = _refetch_subscription_after_mutation(
+            user, context=context, currency=str(ctx["currency"])
+        )
+        return Response(SubscriptionSerializer(sub, context=ctx).data)
 
 
-def _refetch_subscription_after_mutation(user: User, *, context: str) -> SubscriptionModel:
+def _refetch_subscription_after_mutation(
+    user: User, *, context: str, currency: str = "usd"
+) -> SubscriptionModel:
     """Return the (single) sub matching *context* after a PATCH/DELETE round-trip.
 
     The webhook may not have caught up yet; we want the row our DB knows about
     in this scope, not whichever sub happens to sort newest. Picks the team
     sub for ``context="team"`` (matched on ``stripe_customer.org_id``) and the
     personal sub otherwise. Raises ``NotFound`` if the sub disappeared.
+
+    ``currency`` is forwarded to the underlying queryset's
+    ``LocalizedPrice`` prefetch so the serialized response can render the
+    display amount without firing a per-row lookup.
     """
-    subs = _get_active_subscriptions_for_user(user)
+    subs = _get_active_subscriptions_for_user(user, currency=currency)
     if context == _SUBSCRIPTION_CONTEXT_TEAM:
         for sub in subs:
             if sub.stripe_customer is not None and sub.stripe_customer.org_id is not None:

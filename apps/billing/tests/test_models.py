@@ -170,31 +170,76 @@ class TestProductPrice:
 
 
 @pytest.mark.django_db
-class TestExchangeRate:
-    def test_str(self, db):
-        from apps.billing.models import ExchangeRate
+class TestLocalizedPrice:
+    def _plan_price(self, amount: int = 999):
+        from apps.billing.models import Plan, PlanPrice
 
-        er = ExchangeRate.objects.create(
-            currency="eur",
-            rate="0.91000000",
-            fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        plan = Plan.objects.create(name="P", context="personal", tier=3, interval="month")
+        return PlanPrice.objects.create(
+            plan=plan, stripe_price_id=f"price_{plan.id}", amount=amount
         )
-        assert "EUR" in str(er)
-        assert "0.91" in str(er)
 
-    def test_unique_currency(self, db):
-        from apps.billing.models import ExchangeRate
+    def _product_price(self, amount: int = 1500):
+        from apps.billing.models import Product, ProductPrice
 
-        ExchangeRate.objects.create(
-            currency="gbp",
-            rate="0.79",
-            fetched_at=datetime(2026, 4, 1, tzinfo=UTC),
+        product = Product.objects.create(name="Pack", type="one_time", credits=10)
+        return ProductPrice.objects.create(
+            product=product, stripe_price_id=f"price_{product.id}", amount=amount
+        )
+
+    def test_str(self, db):
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = self._plan_price(999)
+        lp = LocalizedPrice.objects.create(
+            plan_price=plan_price,
+            currency="eur",
+            amount_minor=899,
+            synced_at=datetime(2026, 4, 1, tzinfo=UTC),
+        )
+        assert "EUR" in str(lp)
+        assert "899" in str(lp)
+
+    def test_xor_owner_constraint_rejects_both_set(self, db):
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = self._plan_price(999)
+        product_price = self._product_price(1500)
+        with pytest.raises(IntegrityError):
+            LocalizedPrice.objects.create(
+                plan_price=plan_price,
+                product_price=product_price,
+                currency="eur",
+                amount_minor=899,
+                synced_at=datetime(2026, 4, 1, tzinfo=UTC),
+            )
+
+    def test_xor_owner_constraint_rejects_neither_set(self, db):
+        from apps.billing.models import LocalizedPrice
+
+        with pytest.raises(IntegrityError):
+            LocalizedPrice.objects.create(
+                currency="eur",
+                amount_minor=899,
+                synced_at=datetime(2026, 4, 1, tzinfo=UTC),
+            )
+
+    def test_unique_per_plan_price_currency(self, db):
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = self._plan_price(999)
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
+            currency="eur",
+            amount_minor=899,
+            synced_at=datetime(2026, 4, 1, tzinfo=UTC),
         )
         with pytest.raises(IntegrityError):
-            ExchangeRate.objects.create(
-                currency="gbp",
-                rate="0.80",
-                fetched_at=datetime(2026, 4, 2, tzinfo=UTC),
+            LocalizedPrice.objects.create(
+                plan_price=plan_price,
+                currency="eur",
+                amount_minor=999,
+                synced_at=datetime(2026, 4, 2, tzinfo=UTC),
             )
 
 

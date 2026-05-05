@@ -236,23 +236,69 @@ class ProductPrice(models.Model):
         return f"{self.product.name} — ${self.amount / 100:.2f}"
 
 
-class ExchangeRate(models.Model):
-    """USD-based exchange rate for display-currency conversion.
+class LocalizedPrice(models.Model):
+    """Pre-computed display price for a (PlanPrice|ProductPrice, currency) pair.
 
-    Synced daily from Stripe by the ``sync_exchange_rates`` Celery task.
-    One row per supported currency (excluding USD).
+    The catalog ``amount`` is USD cents (the source of truth Stripe charges
+    against). ``LocalizedPrice`` is a derived projection: each row holds the
+    USD amount times the FX rate, friendly-rounded, stored in the target currency's
+    minor units. Recomputed daily by ``sync_localized_prices`` so users see
+    a stable rounded price tag (€9.99) instead of a per-request flicker
+    (€9.27 → €9.31).
+
+    Exactly one of ``plan_price``/``product_price`` is set (XOR), mirroring
+    the discriminator pattern used by :class:`StripeCustomer` and
+    :class:`CreditBalance`. USD is never stored — clients fall back to the
+    catalog ``amount`` directly when no row exists for the requested currency.
     """
 
-    currency = models.CharField(max_length=3, primary_key=True)
-    rate = models.DecimalField(max_digits=18, decimal_places=8)
-    fetched_at = models.DateTimeField()
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    plan_price = models.ForeignKey(
+        PlanPrice,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="localized_prices",
+    )
+    product_price = models.ForeignKey(
+        ProductPrice,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="localized_prices",
+    )
+    currency = models.CharField(max_length=3)
+    amount_minor = models.IntegerField(
+        help_text="Friendly-rounded display amount in target currency's minor units."
+    )
+    synced_at = models.DateTimeField()
 
     class Meta:
-        db_table = "exchange_rates"
+        db_table = "localized_prices"
         ordering = ("currency",)
+        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
+            models.CheckConstraint(
+                condition=(
+                    models.Q(plan_price__isnull=False, product_price__isnull=True)
+                    | models.Q(plan_price__isnull=True, product_price__isnull=False)
+                ),
+                name="localizedprice_has_owner",
+            ),
+            models.UniqueConstraint(
+                fields=("plan_price", "currency"),
+                condition=models.Q(plan_price__isnull=False),
+                name="uniq_localized_plan_price_currency",
+            ),
+            models.UniqueConstraint(
+                fields=("product_price", "currency"),
+                condition=models.Q(product_price__isnull=False),
+                name="uniq_localized_product_price_currency",
+            ),
+        ]
 
     def __str__(self) -> str:
-        return f"{self.currency.upper()}: {self.rate}"
+        owner = self.plan_price if self.plan_price_id else self.product_price
+        return f"{owner} → {self.currency.upper()} {self.amount_minor}"
 
 
 class StripeEvent(models.Model):

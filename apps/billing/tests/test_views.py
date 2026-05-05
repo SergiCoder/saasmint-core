@@ -10,7 +10,7 @@ import pytest
 from rest_framework.test import APIClient
 from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
 
-from apps.billing.models import ExchangeRate, Plan, PlanPrice, Product, ProductPrice
+from apps.billing.models import LocalizedPrice, Plan, PlanPrice, Product, ProductPrice
 
 
 @pytest.fixture
@@ -434,10 +434,11 @@ class TestCheckoutSessionView:
         the pricing page cannot cause us to quote the user in a currency
         we don't actually charge in.
         """
-        ExchangeRate.objects.create(
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="eur",
-            rate="0.90",
-            fetched_at=datetime.now(UTC),
+            amount_minor=899,
+            synced_at=datetime.now(UTC),
         )
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
@@ -1255,31 +1256,29 @@ class TestUpdateSubscriptionQuantityValidation:
 class TestCurrencyConversion:
     """Display-currency conversion on plan/product/subscription endpoints."""
 
-    def test_currency_query_param_converts_amount(self, plan, plan_price):
-        ExchangeRate.objects.create(
+    def test_currency_query_param_returns_localized_amount(self, plan, plan_price):
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="eur",
-            rate="0.91",
-            fetched_at=datetime.now(UTC),
+            amount_minor=899,
+            synced_at=datetime.now(UTC),
         )
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/?currency=eur")
         price = resp.data["results"][0]["price"]
         assert price["currency"] == "eur"
-        # 999 cents * 0.91 = 909.09 → round → 909 minor units → 9.09 → friendly → 8.99
-        # (nearest of {8.99, 9.49, 9.99}; 8.99 is 0.10 away)
         assert price["display_amount"] == 8.99
-        assert price["approximate"] is True
-        # Original USD cents still present
+        # Source-of-truth USD cents still present (Stripe always charges this).
         assert price["amount"] == 999
 
-    def test_falls_back_to_usd_when_rate_missing(self, plan, plan_price):
+    def test_falls_back_to_usd_when_localized_row_missing(self, plan, plan_price):
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/?currency=eur")
         price = resp.data["results"][0]["price"]
-        # No ExchangeRate for EUR → fallback to USD
-        assert price["currency"] == "usd"
+        # No LocalizedPrice row for EUR → display falls back to USD amount;
+        # the resolved currency is still echoed so the FE knows what was asked.
+        assert price["currency"] == "eur"
         assert price["display_amount"] == 9.99
-        assert price["approximate"] is False
 
     def test_invalid_currency_returns_400(self, plan, plan_price):
         client = APIClient()
@@ -1287,45 +1286,49 @@ class TestCurrencyConversion:
         assert resp.status_code == 400
 
     def test_authenticated_user_preferred_currency(self, authed_client, user, plan, plan_price):
-        ExchangeRate.objects.create(
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="gbp",
-            rate="0.79",
-            fetched_at=datetime.now(UTC),
+            amount_minor=799,
+            synced_at=datetime.now(UTC),
         )
         user.preferred_currency = "gbp"
         user.save()
         resp = authed_client.get("/api/v1/billing/plans/")
         assert resp.data["results"][0]["price"]["currency"] == "gbp"
+        assert resp.data["results"][0]["price"]["display_amount"] == 7.99
 
     def test_query_param_overrides_user_preference(self, authed_client, user, plan, plan_price):
-        ExchangeRate.objects.create(
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="eur",
-            rate="0.91",
-            fetched_at=datetime.now(UTC),
+            amount_minor=899,
+            synced_at=datetime.now(UTC),
         )
-        ExchangeRate.objects.create(
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="gbp",
-            rate="0.79",
-            fetched_at=datetime.now(UTC),
+            amount_minor=799,
+            synced_at=datetime.now(UTC),
         )
         user.preferred_currency = "gbp"
         user.save()
         resp = authed_client.get("/api/v1/billing/plans/?currency=eur")
         assert resp.data["results"][0]["price"]["currency"] == "eur"
+        assert resp.data["results"][0]["price"]["display_amount"] == 8.99
 
-    def test_zero_decimal_currency_conversion(self, plan, plan_price):
-        ExchangeRate.objects.create(
+    def test_zero_decimal_currency_renders_whole_units(self, plan, plan_price):
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="jpy",
-            rate="149.5",
-            fetched_at=datetime.now(UTC),
+            amount_minor=1500,
+            synced_at=datetime.now(UTC),
         )
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/?currency=jpy")
         price = resp.data["results"][0]["price"]
         assert price["currency"] == "jpy"
-        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → friendly → 149400.0
-        assert price["display_amount"] == 149400.0
-        assert price["approximate"] is True
+        assert price["display_amount"] == 1500.0
 
     def test_subscription_includes_currency(self, authed_client, subscription):
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")
@@ -1333,23 +1336,27 @@ class TestCurrencyConversion:
         assert "currency" in price
         assert "display_amount" in price
 
-    def test_product_endpoint_currency_conversion(self, authed_client):
-        """Products endpoint also respects ?currency= param."""
+    def test_product_endpoint_localized_amount(self, authed_client):
+        """Products endpoint also reads LocalizedPrice rows for ?currency=."""
         product = Product.objects.create(
             name="50 Credits", type="one_time", credits=50, is_active=True
         )
-        ProductPrice.objects.create(product=product, stripe_price_id="price_prod_cur", amount=500)
-        ExchangeRate.objects.create(currency="eur", rate="0.91", fetched_at=datetime.now(UTC))
+        product_price = ProductPrice.objects.create(
+            product=product, stripe_price_id="price_prod_cur", amount=500
+        )
+        LocalizedPrice.objects.create(
+            product_price=product_price,
+            currency="eur",
+            amount_minor=449,
+            synced_at=datetime.now(UTC),
+        )
         resp = authed_client.get("/api/v1/billing/products/?currency=eur")
         price = resp.data["results"][0]["price"]
         assert price["currency"] == "eur"
-        # 500 * 0.91 = 455 → /100 → 4.55 → friendly → 4.49
-        # (nearest of {3.99, 4.49, 4.99}; 4.49 is 0.06 away)
         assert price["display_amount"] == 4.49
-        assert price["approximate"] is True
 
     def test_user_default_currency_returns_usd(self, authed_client, user, plan, plan_price):
-        """User with default preferred_currency='usd' gets USD without exchange rate lookup."""
+        """User with default preferred_currency='usd' gets the catalog amount directly."""
         assert user.preferred_currency == "usd"
         resp = authed_client.get("/api/v1/billing/plans/")
         assert resp.data["results"][0]["price"]["currency"] == "usd"
