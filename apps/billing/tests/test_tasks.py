@@ -14,6 +14,7 @@ from apps.billing.tasks import (
     send_subscription_cancel_notice_task,
     sync_localized_prices,
 )
+from apps.billing.tests.conftest import fx_response, seed_plan_price, seed_product_price
 
 
 def _seed_event(
@@ -158,45 +159,16 @@ class TestProcessStripeWebhookRetry:
 # ---------------------------------------------------------------------------
 
 
-def _fx_response(rates: dict[str, float]) -> MagicMock:
-    """Build a mock httpx.Response in the open.er-api.com success shape."""
-    resp = MagicMock()
-    resp.raise_for_status = MagicMock()
-    resp.json.return_value = {
-        "result": "success",
-        "rates": {k.upper(): v for k, v in rates.items()},
-    }
-    return resp
-
-
-def _seed_plan_price(amount: int = 999) -> object:
-    from apps.billing.models import Plan, PlanPrice
-
-    plan = Plan.objects.create(
-        name="Pro Monthly", context="personal", tier=3, interval="month"
-    )
-    return PlanPrice.objects.create(plan=plan, stripe_price_id=f"price_{plan.id}", amount=amount)
-
-
-def _seed_product_price(amount: int = 1500) -> object:
-    from apps.billing.models import Product, ProductPrice
-
-    product = Product.objects.create(name="Boost", type="one_time", credits=100)
-    return ProductPrice.objects.create(
-        product=product, stripe_price_id=f"price_{product.id}", amount=amount
-    )
-
-
 @pytest.mark.django_db
 class TestSyncLocalizedPrices:
     def test_creates_rows_for_plan_and_product_across_currencies(self):
         from apps.billing.models import LocalizedPrice
 
-        plan_price = _seed_plan_price(999)  # $9.99
-        product_price = _seed_product_price(1500)  # $15.00
+        plan_price = seed_plan_price(999)  # $9.99
+        product_price = seed_product_price(1500)  # $15.00
 
         rates = {"eur": 0.9, "jpy": 150.0}
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response(rates)):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response(rates)):
             sync_localized_prices.apply().get()
 
         assert LocalizedPrice.objects.filter(plan_price=plan_price, currency="eur").exists()
@@ -208,9 +180,9 @@ class TestSyncLocalizedPrices:
         """A messy raw conversion ($9.99 times 0.9 = €8.991) snaps to a charm price."""
         from apps.billing.models import LocalizedPrice
 
-        plan_price = _seed_plan_price(999)
+        plan_price = seed_plan_price(999)
 
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             sync_localized_prices.apply().get()
 
         eur = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur")
@@ -220,9 +192,9 @@ class TestSyncLocalizedPrices:
     def test_zero_decimal_currency_stored_as_whole_units(self):
         from apps.billing.models import LocalizedPrice
 
-        plan_price = _seed_plan_price(999)  # $9.99 * 150 = ~Y1498.5 -> Y1500
+        plan_price = seed_plan_price(999)  # $9.99 * 150 = ~Y1498.5 -> Y1500
 
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"jpy": 150.0})):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"jpy": 150.0})):
             sync_localized_prices.apply().get()
 
         jpy = LocalizedPrice.objects.get(plan_price=plan_price, currency="jpy")
@@ -231,9 +203,9 @@ class TestSyncLocalizedPrices:
     def test_idempotent_on_second_run(self):
         from apps.billing.models import LocalizedPrice
 
-        _seed_plan_price(999)
+        seed_plan_price(999)
 
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             sync_localized_prices.apply().get()
             count_after_first = LocalizedPrice.objects.count()
             sync_localized_prices.apply().get()
@@ -244,13 +216,13 @@ class TestSyncLocalizedPrices:
     def test_updates_existing_rows_when_rate_changes(self):
         from apps.billing.models import LocalizedPrice
 
-        plan_price = _seed_plan_price(999)
+        plan_price = seed_plan_price(999)
 
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             sync_localized_prices.apply().get()
         first = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
 
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 1.1})):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 1.1})):
             sync_localized_prices.apply().get()
         second = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
 
@@ -263,8 +235,8 @@ class TestSyncLocalizedPrices:
 
         from apps.billing.models import LocalizedPrice
 
-        plan_price = _seed_plan_price(999)
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        plan_price = seed_plan_price(999)
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             sync_localized_prices.apply().get()
         before = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
 
@@ -279,10 +251,10 @@ class TestSyncLocalizedPrices:
     def test_skips_currency_missing_from_api_response(self):
         from apps.billing.models import LocalizedPrice
 
-        plan_price = _seed_plan_price(999)
+        plan_price = seed_plan_price(999)
 
         # Only EUR is returned; every other supported currency is silently skipped.
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             sync_localized_prices.apply().get()
 
         assert LocalizedPrice.objects.filter(plan_price=plan_price, currency="eur").exists()
@@ -291,10 +263,10 @@ class TestSyncLocalizedPrices:
     def test_usd_never_stored(self):
         from apps.billing.models import LocalizedPrice
 
-        _seed_plan_price(999)
+        seed_plan_price(999)
 
         rates = {"usd": 1.0, "eur": 0.9}
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response(rates)):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response(rates)):
             sync_localized_prices.apply().get()
 
         assert not LocalizedPrice.objects.filter(currency="usd").exists()
@@ -303,7 +275,7 @@ class TestSyncLocalizedPrices:
     def test_no_op_when_catalog_empty(self):
         from apps.billing.models import LocalizedPrice
 
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             written = sync_localized_prices.apply().get()
 
         assert written == 0
@@ -316,8 +288,8 @@ class TestSyncLocalizedPrices:
 
         from apps.billing.models import LocalizedPrice
 
-        plan_price = _seed_plan_price(999)
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        plan_price = seed_plan_price(999)
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             sync_localized_prices.apply().get()
         before = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
 
@@ -337,8 +309,8 @@ class TestSyncLocalizedPrices:
         existing rows untouched."""
         from apps.billing.models import LocalizedPrice
 
-        plan_price = _seed_plan_price(999)
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        plan_price = seed_plan_price(999)
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             sync_localized_prices.apply().get()
         before = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
 
@@ -357,8 +329,8 @@ class TestSyncLocalizedPrices:
         0 rows written, existing rows preserved."""
         from apps.billing.models import LocalizedPrice
 
-        plan_price = _seed_plan_price(999)
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        plan_price = seed_plan_price(999)
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             sync_localized_prices.apply().get()
         before = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
 
@@ -377,8 +349,8 @@ class TestSyncLocalizedPrices:
         (plan rows + product rows across all currencies)."""
         from apps.billing.models import LocalizedPrice
 
-        _seed_plan_price(999)
-        _seed_product_price(1500)
+        seed_plan_price(999)
+        seed_product_price(1500)
 
         # Provide exactly 2 currencies so the count is deterministic.
         with patch(
@@ -389,7 +361,7 @@ class TestSyncLocalizedPrices:
             pass  # Can't mock module-level import easily; use actual SUPPORTED_CURRENCIES count.
 
         rates = {"eur": 0.9, "gbp": 0.85}
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response(rates)):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response(rates)):
             written = sync_localized_prices.apply().get()
 
         # 2 prices (1 plan + 1 product) x only currencies present in rates response

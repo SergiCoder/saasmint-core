@@ -3,31 +3,14 @@
 from __future__ import annotations
 
 from io import StringIO
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from django.core.management import call_command
 
+from apps.billing.tests.conftest import fx_response, seed_plan_price
+
 pytestmark = pytest.mark.django_db
-
-
-def _fx_response(rates: dict[str, float]) -> MagicMock:
-    resp = MagicMock()
-    resp.raise_for_status = MagicMock()
-    resp.json.return_value = {
-        "result": "success",
-        "rates": {k.upper(): v for k, v in rates.items()},
-    }
-    return resp
-
-
-def _seed_plan_price(amount: int = 999) -> object:
-    from apps.billing.models import Plan, PlanPrice
-
-    plan = Plan.objects.create(
-        name="Pro Monthly", context="personal", tier=3, interval="month"
-    )
-    return PlanPrice.objects.create(plan=plan, stripe_price_id=f"price_{plan.id}", amount=amount)
 
 
 class TestSyncLocalizedPricesCommand:
@@ -36,9 +19,9 @@ class TestSyncLocalizedPricesCommand:
         row count returned by the underlying task."""
         from apps.billing.models import LocalizedPrice
 
-        _seed_plan_price(999)
+        seed_plan_price(999)
         stdout = StringIO()
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             call_command("sync_localized_prices", stdout=stdout)
 
         assert LocalizedPrice.objects.filter(currency="eur").exists()
@@ -52,8 +35,8 @@ class TestSyncLocalizedPricesCommand:
         """Running the command twice must not create duplicate rows."""
         from apps.billing.models import LocalizedPrice
 
-        _seed_plan_price(999)
-        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+        seed_plan_price(999)
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
             call_command("sync_localized_prices", stdout=StringIO())
             count_first = LocalizedPrice.objects.count()
             call_command("sync_localized_prices", stdout=StringIO())

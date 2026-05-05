@@ -20,8 +20,10 @@ from apps.billing.models import (
     PlanPrice,
     PlanTier,
     Product,
+    ProductPrice,
     Subscription,
 )
+from apps.billing.tests.conftest import fx_response
 
 pytestmark = pytest.mark.django_db
 
@@ -48,16 +50,6 @@ class TestBillingCurrenciesEndpoint:
 # ── sync_localized_prices stability gate ──────────────────────────────────────
 
 
-def _fx_response(rates: dict[str, float]) -> MagicMock:
-    resp = MagicMock()
-    resp.raise_for_status = MagicMock()
-    resp.json.return_value = {
-        "result": "success",
-        "rates": {k.upper(): v for k, v in rates.items()},
-    }
-    return resp
-
-
 class TestStabilityGate:
     def test_preserves_stripe_price_id_when_amount_unchanged(self, plan_price):
         # Seed an existing localized row with a Stripe Price ID that came
@@ -73,7 +65,7 @@ class TestStabilityGate:
         # value. amount=999 USD cents * 0.9 = 8.99 → 899 EUR cents.
         with patch(
             "apps.billing.tasks.httpx.get",
-            return_value=_fx_response({"eur": 0.9, "gbp": 0.8, "jpy": 150, "cny": 7}),
+            return_value=fx_response({"eur": 0.9, "gbp": 0.8, "jpy": 150, "cny": 7}),
         ):
             call_command("sync_localized_prices", stdout=StringIO())
 
@@ -94,7 +86,7 @@ class TestStabilityGate:
         # 999 cents * 1.1 = 10.989 → round_friendly snaps to a different bucket.
         with patch(
             "apps.billing.tasks.httpx.get",
-            return_value=_fx_response({"eur": 1.1, "gbp": 0.8, "jpy": 150, "cny": 7}),
+            return_value=fx_response({"eur": 1.1, "gbp": 0.8, "jpy": 150, "cny": 7}),
         ):
             call_command("sync_localized_prices", stdout=StringIO())
 
@@ -489,3 +481,165 @@ class TestDualDisplay:
         # Anon user → no preferred currency → no dual display.
         assert result["local_display_amount"] is None
         assert result["local_currency"] is None
+
+
+# ── _resolve_product_stripe_price_id: non-USD paths ──────────────────────────
+
+
+class TestProductStripePriceIdResolution:
+    """Cover the non-USD branches of _resolve_product_stripe_price_id which
+    are exercised via ProductCheckoutSessionView."""
+
+    def test_eur_user_gets_eur_stripe_price_at_product_checkout(
+        self, authed_client, user, settings
+    ):
+        """When a LocalizedPrice row with a stripe_price_id exists for the
+        billing currency, that ID (not the USD one) must be passed to
+        create_product_checkout_session."""
+        settings.BILLING_CURRENCIES = ["usd", "eur"]
+        product = Product.objects.create(
+            name="Boost 100", type="one_time", credits=100, is_active=True
+        )
+        product_price = ProductPrice.objects.create(
+            product=product, stripe_price_id="price_boost_usd", amount=1500
+        )
+        eur_row = LocalizedPrice.objects.create(
+            product_price=product_price,
+            currency="eur",
+            amount_minor=1399,
+            stripe_price_id="price_boost_eur",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        user.preferred_currency = "eur"
+        user.save()
+
+        with (
+            patch(
+                "apps.billing.views.get_or_create_customer",
+                new_callable=AsyncMock,
+            ) as mock_cust,
+            patch(
+                "apps.billing.views.create_product_checkout_session",
+                new_callable=AsyncMock,
+            ) as mock_session,
+        ):
+            mock_cust.return_value = MagicMock(stripe_id="cus_test_eur")
+            mock_session.return_value = "https://checkout.stripe.com/p"
+            resp = authed_client.post(
+                "/api/v1/billing/product-checkout-sessions/",
+                {
+                    "product_price_id": str(product_price.id),
+                    "success_url": "https://localhost:3000/ok",
+                    "cancel_url": "https://localhost:3000/cancel",
+                },
+                format="json",
+            )
+
+        assert resp.status_code == 200
+        kwargs = mock_session.call_args.kwargs
+        assert kwargs["price_id"] == eur_row.stripe_price_id
+        assert kwargs["billing_currency"] == "eur"
+
+    def test_falls_back_to_usd_price_when_eur_row_has_no_stripe_price_id(
+        self, authed_client, user, settings
+    ):
+        """A LocalizedPrice row without a stripe_price_id (display-only) must
+        not be used for checkout — the fallback USD ID is returned instead."""
+        settings.BILLING_CURRENCIES = ["usd", "eur"]
+        product = Product.objects.create(
+            name="Boost 50", type="one_time", credits=50, is_active=True
+        )
+        product_price = ProductPrice.objects.create(
+            product=product, stripe_price_id="price_boost50_usd", amount=800
+        )
+        # Row exists but stripe_price_id is NULL — display-only for this product.
+        LocalizedPrice.objects.create(
+            product_price=product_price,
+            currency="eur",
+            amount_minor=739,
+            stripe_price_id=None,
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        user.preferred_currency = "eur"
+        user.save()
+
+        with (
+            patch(
+                "apps.billing.views.get_or_create_customer",
+                new_callable=AsyncMock,
+            ) as mock_cust,
+            patch(
+                "apps.billing.views.create_product_checkout_session",
+                new_callable=AsyncMock,
+            ) as mock_session,
+        ):
+            mock_cust.return_value = MagicMock(stripe_id="cus_test_fb")
+            mock_session.return_value = "https://checkout.stripe.com/p"
+            authed_client.post(
+                "/api/v1/billing/product-checkout-sessions/",
+                {
+                    "product_price_id": str(product_price.id),
+                    "success_url": "https://localhost:3000/ok",
+                    "cancel_url": "https://localhost:3000/cancel",
+                },
+                format="json",
+            )
+
+        kwargs = mock_session.call_args.kwargs
+        # No EUR Stripe Price minted → fallback to USD price ID.
+        assert kwargs["price_id"] == "price_boost50_usd"
+
+
+# ── _resolve_plan_change_price: non-USD success path ─────────────────────────
+
+
+class TestPlanChangePriceResolution:
+    """Unit-test _resolve_plan_change_price directly to cover the non-USD
+    success path.
+
+    The failure path (raises 400) is exercised end-to-end in
+    TestSubscriptionPatchCurrency.test_rejects_cross_currency_plan_change.
+    """
+
+    def test_returns_eur_stripe_price_id_and_minor_amount_when_row_exists(
+        self, plan_price
+    ):
+        """When a LocalizedPrice row with a non-null stripe_price_id exists,
+        _resolve_plan_change_price must return that ID and the row's
+        amount_minor (not the USD amount) so the deferred-downgrade
+        comparison stays apples-to-apples."""
+        from apps.billing.views import _resolve_plan_change_price
+
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
+            currency="eur",
+            amount_minor=4499,
+            stripe_price_id="price_pro_eur",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+
+        stripe_id, unit_amount = _resolve_plan_change_price(plan_price, "eur")
+
+        assert stripe_id == "price_pro_eur"
+        assert unit_amount == 4499
+
+    def test_returns_usd_fields_for_usd_currency(self, plan_price):
+        """USD short-circuits to plan_price columns directly."""
+        from apps.billing.views import _resolve_plan_change_price
+
+        stripe_id, unit_amount = _resolve_plan_change_price(plan_price, "usd")
+
+        assert stripe_id == plan_price.stripe_price_id
+        assert unit_amount == plan_price.amount
+
+    def test_raises_400_when_no_eur_stripe_price_minted(self, plan_price):
+        """No LocalizedPrice row with a stripe_price_id → 400 validation error.
+        Stripe would reject a currency-mismatch modify, so we guard early."""
+        from rest_framework.exceptions import ValidationError
+
+        from apps.billing.views import _resolve_plan_change_price
+
+        with pytest.raises(ValidationError) as exc_info:
+            _resolve_plan_change_price(plan_price, "eur")
+
+        assert "plan_price_id" in exc_info.value.detail

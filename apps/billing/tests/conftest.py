@@ -3,12 +3,44 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
 from django.core.cache import cache
 
-from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
+from apps.billing.models import Plan, PlanPrice, Product, ProductPrice, StripeCustomer, Subscription
 from apps.users.models import User
+
+# ---------------------------------------------------------------------------
+# Shared helper functions (not fixtures — call directly in tests)
+# ---------------------------------------------------------------------------
+
+
+def fx_response(rates: dict[str, float]) -> MagicMock:
+    """Build a mock httpx.Response in the open.er-api.com success shape."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "result": "success",
+        "rates": {k.upper(): v for k, v in rates.items()},
+    }
+    return resp
+
+
+def seed_plan_price(amount: int = 999) -> PlanPrice:
+    """Create a Plan + PlanPrice row for use in tests that need a catalog entry."""
+    plan = Plan.objects.create(
+        name="Pro Monthly", context="personal", tier=3, interval="month"
+    )
+    return PlanPrice.objects.create(plan=plan, stripe_price_id=f"price_{plan.id}", amount=amount)
+
+
+def seed_product_price(amount: int = 1500) -> ProductPrice:
+    """Create a Product + ProductPrice row for use in tests that need a catalog entry."""
+    product = Product.objects.create(name="Boost", type="one_time", credits=100)
+    return ProductPrice.objects.create(
+        product=product, stripe_price_id=f"price_{product.id}", amount=amount
+    )
 
 
 @pytest.fixture(autouse=True)
