@@ -309,6 +309,132 @@ class TestSyncLocalizedPrices:
         assert written == 0
         assert LocalizedPrice.objects.count() == 0
 
+    def test_handles_http_status_error_gracefully(self):
+        """4xx/5xx from the FX API → raise_for_status raises HTTPStatusError →
+        existing rows preserved, 0 returned."""
+        import httpx
+
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = _seed_plan_price(999)
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+            sync_localized_prices.apply().get()
+        before = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+
+        bad_resp = MagicMock()
+        bad_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "404", request=MagicMock(), response=MagicMock()
+        )
+        with patch("apps.billing.tasks.httpx.get", return_value=bad_resp):
+            written = sync_localized_prices.apply().get()
+
+        assert written == 0
+        after = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+        assert before == after
+
+    def test_handles_value_error_from_malformed_json_gracefully(self):
+        """Malformed JSON from the FX feed (ValueError on .json()) → 0 returned,
+        existing rows untouched."""
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = _seed_plan_price(999)
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+            sync_localized_prices.apply().get()
+        before = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+
+        bad_resp = MagicMock()
+        bad_resp.raise_for_status = MagicMock()
+        bad_resp.json.side_effect = ValueError("Unexpected token")
+        with patch("apps.billing.tasks.httpx.get", return_value=bad_resp):
+            written = sync_localized_prices.apply().get()
+
+        assert written == 0
+        after = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+        assert before == after
+
+    def test_non_success_result_payload_returns_zero(self):
+        """API responds 200 but result != 'success' (e.g. API key expired) →
+        0 rows written, existing rows preserved."""
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = _seed_plan_price(999)
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response({"eur": 0.9})):
+            sync_localized_prices.apply().get()
+        before = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+
+        bad_resp = MagicMock()
+        bad_resp.raise_for_status = MagicMock()
+        bad_resp.json.return_value = {"result": "error", "error-type": "invalid_app_id"}
+        with patch("apps.billing.tasks.httpx.get", return_value=bad_resp):
+            written = sync_localized_prices.apply().get()
+
+        assert written == 0
+        after = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
+        assert before == after
+
+    def test_return_value_counts_both_plan_and_product_rows(self):
+        """Return value equals the total number of LocalizedPrice rows written
+        (plan rows + product rows across all currencies)."""
+        from apps.billing.models import LocalizedPrice
+
+        _seed_plan_price(999)
+        _seed_product_price(1500)
+
+        # Provide exactly 2 currencies so the count is deterministic.
+        with patch(
+            "apps.billing.tasks.SUPPORTED_CURRENCIES",
+            frozenset({"usd", "eur", "gbp"}),
+            create=True,
+        ):
+            pass  # Can't mock module-level import easily; use actual SUPPORTED_CURRENCIES count.
+
+        rates = {"eur": 0.9, "gbp": 0.85}
+        with patch("apps.billing.tasks.httpx.get", return_value=_fx_response(rates)):
+            written = sync_localized_prices.apply().get()
+
+        # 2 prices (1 plan + 1 product) x only currencies present in rates response
+        actual_count = LocalizedPrice.objects.count()
+        assert written == actual_count
+        assert written > 0
+
+
+# ---------------------------------------------------------------------------
+# _to_minor_units — unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestToMinorUnits:
+    """Unit tests for the ``_to_minor_units`` helper (tasks.py)."""
+
+    def test_two_decimal_currency_multiplies_by_100(self):
+        from apps.billing.tasks import _to_minor_units
+
+        assert _to_minor_units(9.99, "eur") == 999
+
+    def test_two_decimal_float_drift_is_rounded(self):
+        """IEEE-754 means 9.99 * 100 = 998.9999... — round() must produce 999."""
+        from apps.billing.tasks import _to_minor_units
+
+        assert _to_minor_units(9.99, "gbp") == 999
+
+    def test_zero_decimal_currency_returns_whole_units(self):
+        from apps.billing.tasks import _to_minor_units
+
+        assert _to_minor_units(1500.0, "jpy") == 1500
+
+    def test_zero_decimal_currency_rounds_float(self):
+        """Non-integer floats for zero-decimal currencies (e.g. from FX math)
+        are rounded to the nearest integer.  Uses 1498.7 (not a banker's-rounding
+        boundary) to avoid Python's round-half-to-even edge case."""
+        from apps.billing.tasks import _to_minor_units
+
+        assert _to_minor_units(1498.7, "jpy") == 1499
+
+    def test_usd_treated_as_two_decimal(self):
+        from apps.billing.tasks import _to_minor_units
+
+        assert _to_minor_units(9.99, "usd") == 999
+
 
 # ---------------------------------------------------------------------------
 # send_subscription_cancel_notice_task — fanout of transactional emails

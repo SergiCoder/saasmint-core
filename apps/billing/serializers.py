@@ -12,25 +12,33 @@ from saasmint_core.services.currency import format_amount
 from apps.billing.models import Plan, PlanPrice, PlanTier, Product, ProductPrice, Subscription
 
 
-def _localized_amount_for(price: PlanPrice | ProductPrice, currency: str) -> float:
-    """Return the friendly-rounded display amount for ``price`` in ``currency``.
+def _localized_display(
+    price: PlanPrice | ProductPrice, currency: str
+) -> tuple[float, str]:
+    """Return ``(display_amount, effective_currency)`` for ``price``.
 
     Reads a precomputed ``LocalizedPrice`` row written by the daily
     ``sync_localized_prices`` task. USD always returns the catalog amount
     (the source of truth Stripe charges); any other currency falls back to
-    USD when the localized row is missing (catalog newer than the last
-    sync, or sync upstream is down).
+    the USD ``amount`` when the localized row is missing (catalog newer
+    than the last sync, or sync upstream is down).
+
+    The second element of the tuple is the currency that actually
+    denominates ``display_amount`` — callers must use this value for the
+    ``currency`` field in the response so the two fields are consistent.
+    When a localized row exists the effective currency matches the
+    requested one; on fallback it is always ``"usd"``.
 
     The ``localized_prices`` reverse-relation is expected to be prefetched
     by the calling view — list endpoints attach a ``Prefetch`` filtered to
     the resolved currency, so iterating ``.all()`` here costs no DB hit.
     """
     if currency == "usd":
-        return format_amount(price.amount, "usd")
+        return format_amount(price.amount, "usd"), "usd"
     for lp in price.localized_prices.all():
         if lp.currency == currency:
-            return format_amount(lp.amount_minor, currency)
-    return format_amount(price.amount, "usd")
+            return format_amount(lp.amount_minor, currency), currency
+    return format_amount(price.amount, "usd"), "usd"
 
 
 def _validate_redirect_url(url: str) -> str:
@@ -68,7 +76,7 @@ def _validate_redirect_url(url: str) -> str:
 class _PriceSerializer(serializers.ModelSerializer[Any]):
     """Shared base for PlanPrice / ProductPrice serializers.
 
-    Declaring the three display-currency fields and their getters once on a
+    Declaring the two display-currency fields and their getters once on a
     ModelSerializer base lets concrete subclasses supply only the Meta.model
     binding. DRF's metaclass walks `_declared_fields` on base Serializer
     classes (unlike plain mixins), so the fields flow through inheritance.
@@ -88,10 +96,10 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
         read_only_fields = ("id", "amount")
 
     def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
-        return _localized_amount_for(obj, self.context.get("currency", "usd"))
+        return _localized_display(obj, self.context.get("currency", "usd"))[0]
 
     def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
-        return str(self.context.get("currency", "usd"))
+        return _localized_display(obj, self.context.get("currency", "usd"))[1]
 
 
 class PlanPriceSerializer(_PriceSerializer):

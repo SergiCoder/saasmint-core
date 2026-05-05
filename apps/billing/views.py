@@ -130,7 +130,7 @@ def _resolve_display_currency(
     return "usd"
 
 
-def _currency_context(request: Request) -> dict[str, object]:
+def _currency_context(request: Request) -> dict[str, str]:
     """Build serializer context dict with the resolved display currency.
 
     Display amounts are precomputed by the daily ``sync_localized_prices``
@@ -376,7 +376,7 @@ class PlanListView(APIView):
         qs = (
             PlanModel.objects.filter(is_active=True)
             .select_related("price")
-            .prefetch_related(_localized_prices_prefetch(str(ctx["currency"])))
+            .prefetch_related(_localized_prices_prefetch(ctx["currency"]))
         )
         data = PlanSerializer(qs, many=True, context=ctx).data
         return Response(_catalog_envelope(list(data)))
@@ -408,7 +408,7 @@ class ProductListView(APIView):
         products = (
             ProductModel.objects.filter(is_active=True)
             .select_related("price")
-            .prefetch_related(_localized_prices_prefetch(str(ctx["currency"])))
+            .prefetch_related(_localized_prices_prefetch(ctx["currency"]))
         )
         data = ProductSerializer(products, many=True, context=ctx).data
         return Response(_catalog_envelope(list(data)))
@@ -951,7 +951,7 @@ class SubscriptionView(BillingScopedView):
     def get(self, request: Request) -> Response:
         user = get_user(request)
         ctx = _currency_context(request)
-        subs = _get_active_subscriptions_for_user(user, currency=str(ctx["currency"]))
+        subs = _get_active_subscriptions_for_user(user, currency=ctx["currency"])
         data = SubscriptionSerializer(subs, many=True, context=ctx).data
         return Response(_catalog_envelope(list(data)))
 
@@ -1045,7 +1045,7 @@ class SubscriptionView(BillingScopedView):
         async_to_sync(_do)()
         ctx = _currency_context(request)
         sub = _refetch_subscription_after_mutation(
-            user, context=context, currency=str(ctx["currency"])
+            user, context=context, currency=ctx["currency"]
         )
         if "cancel_at_period_end" in data:
             recipients = _billing_notice_recipients(user, org_id)
@@ -1102,7 +1102,7 @@ class SubscriptionView(BillingScopedView):
         async_to_sync(_do)()
         ctx = _currency_context(request)
         sub = _refetch_subscription_after_mutation(
-            user, context=context, currency=str(ctx["currency"])
+            user, context=context, currency=ctx["currency"]
         )
         recipients = _billing_notice_recipients(user, org_id)
         if recipients:
@@ -1168,7 +1168,7 @@ class ScheduledChangeView(BillingScopedView):
         async_to_sync(_do)()
         ctx = _currency_context(request)
         sub = _refetch_subscription_after_mutation(
-            user, context=context, currency=str(ctx["currency"])
+            user, context=context, currency=ctx["currency"]
         )
         return Response(SubscriptionSerializer(sub, context=ctx).data)
 

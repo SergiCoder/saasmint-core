@@ -1275,9 +1275,10 @@ class TestCurrencyConversion:
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/?currency=eur")
         price = resp.data["results"][0]["price"]
-        # No LocalizedPrice row for EUR → display falls back to USD amount;
-        # the resolved currency is still echoed so the FE knows what was asked.
-        assert price["currency"] == "eur"
+        # No LocalizedPrice row for EUR → display falls back to the USD catalog
+        # amount, so currency must also report "usd" to stay consistent with
+        # what display_amount is actually denominated in.
+        assert price["currency"] == "usd"
         assert price["display_amount"] == 9.99
 
     def test_invalid_currency_returns_400(self, plan, plan_price):
@@ -1335,6 +1336,36 @@ class TestCurrencyConversion:
         price = resp.data["results"][0]["plan"]["price"]
         assert "currency" in price
         assert "display_amount" in price
+
+    def test_subscription_endpoint_returns_localized_plan_price(
+        self, authed_client, subscription, plan_price
+    ):
+        """GET /subscriptions/me/?currency=eur reads LocalizedPrice rows for
+        the nested plan price and returns the precomputed display amount."""
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
+            currency="eur",
+            amount_minor=899,
+            synced_at=datetime.now(UTC),
+        )
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/?currency=eur")
+        assert resp.status_code == 200
+        price = resp.data["results"][0]["plan"]["price"]
+        assert price["currency"] == "eur"
+        assert price["display_amount"] == 8.99
+        # USD cents (source of truth for Stripe charges) unchanged.
+        assert price["amount"] == 999
+
+    def test_subscription_endpoint_falls_back_to_usd_when_no_localized_row(
+        self, authed_client, subscription
+    ):
+        """No LocalizedPrice row for the requested currency → effective
+        currency is 'usd' and display_amount mirrors the catalog USD amount."""
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/?currency=eur")
+        assert resp.status_code == 200
+        price = resp.data["results"][0]["plan"]["price"]
+        assert price["currency"] == "usd"
+        assert price["display_amount"] == 9.99
 
     def test_product_endpoint_localized_amount(self, authed_client):
         """Products endpoint also reads LocalizedPrice rows for ?currency=."""

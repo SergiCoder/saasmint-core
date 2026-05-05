@@ -31,7 +31,7 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 The catalog has three layers; touch them in order. Each step is idempotent.
 
 1. **Edit the USD amount in `apps/billing/management/commands/seed_catalog.py`.** USD cents are the source of truth Stripe charges against — every other amount derives from this. To change a price, change it here.
-2. **Run `seed_catalog`** (`make manage CMD=seed_catalog`, or just redeploy — `infra/entrypoint.sh` runs it). Updates `PlanPrice.amount` / `ProductPrice.amount` in the DB.
+2. **Run `seed_catalog`** (`docker compose run --rm django uv run python manage.py seed_catalog`, or just redeploy — `infra/entrypoint.sh` runs it). Updates `PlanPrice.amount` / `ProductPrice.amount` in the DB.
 3. **Run `sync_stripe_catalog`** to mint a new immutable Stripe `Price` and repoint `stripe_price_id` via `lookup_key`. Existing subscriptions stay on the old Stripe price until they renew or are migrated; new checkouts use the new one.
 4. **Run `sync_localized_prices`** (or wait for the daily Celery beat tick) to regenerate `LocalizedPrice` rows for every `(price, currency)`. The task fetches USD→all rates from `open.er-api.com` and applies `format_amount` + `round_friendly` (charm-pricing for two-decimal currencies, nearest 10/100 for zero-decimal). Failure is non-fatal: existing rows are preserved so a flaky upstream never erases the catalog.
 

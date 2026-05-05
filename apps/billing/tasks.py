@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from uuid import UUID
 
 import httpx
 import stripe
@@ -70,8 +71,14 @@ def sync_localized_prices() -> int:
     api_rates: dict[str, float] = {k.lower(): v for k, v in data["rates"].items()}
     now = datetime.now(UTC)
 
-    rows: list[LocalizedPrice] = []
-    for plan_price in PlanPrice.objects.all().only("id", "amount"):
+    def _rows_for_price(price_id: UUID, amount: int, *, price_kwarg: str) -> list[LocalizedPrice]:
+        """Build unsaved ``LocalizedPrice`` instances for every non-USD currency.
+
+        Closes over ``api_rates``, ``now``, and the imported currency helpers to
+        avoid repeating the inner loop for plan prices and product prices.
+        ``price_kwarg`` is ``"plan_price_id"`` or ``"product_price_id"``.
+        """
+        rows: list[LocalizedPrice] = []
         for currency in SUPPORTED_CURRENCIES:
             if currency == "usd":
                 continue
@@ -79,32 +86,25 @@ def sync_localized_prices() -> int:
             if rate is None:
                 logger.warning("No FX rate for currency %s", currency)
                 continue
-            display = round_friendly(format_amount(plan_price.amount, "usd") * rate, currency)
+            display = round_friendly(format_amount(amount, "usd") * rate, currency)
             rows.append(
                 LocalizedPrice(
-                    plan_price_id=plan_price.id,
+                    **{price_kwarg: price_id},
                     currency=currency,
                     amount_minor=_to_minor_units(display, currency),
                     synced_at=now,
                 )
             )
+        return rows
+
+    rows: list[LocalizedPrice] = []
+    for plan_price in PlanPrice.objects.all().only("id", "amount"):
+        rows.extend(_rows_for_price(plan_price.id, plan_price.amount, price_kwarg="plan_price_id"))
 
     for product_price in ProductPrice.objects.all().only("id", "amount"):
-        for currency in SUPPORTED_CURRENCIES:
-            if currency == "usd":
-                continue
-            rate = api_rates.get(currency)
-            if rate is None:
-                continue
-            display = round_friendly(format_amount(product_price.amount, "usd") * rate, currency)
-            rows.append(
-                LocalizedPrice(
-                    product_price_id=product_price.id,
-                    currency=currency,
-                    amount_minor=_to_minor_units(display, currency),
-                    synced_at=now,
-                )
-            )
+        rows.extend(
+            _rows_for_price(product_price.id, product_price.amount, price_kwarg="product_price_id")
+        )
 
     if not rows:
         logger.info("No catalog prices found; nothing to localize.")
