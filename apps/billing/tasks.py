@@ -78,25 +78,9 @@ def sync_localized_prices() -> int:
     api_rates: dict[str, float] = {k.lower(): v for k, v in data["rates"].items()}
     now = datetime.now(UTC)
 
-    def _upsert_for_price(
-        amount: int,
-        *,
-        plan_price_id: UUID | None = None,
-        product_price_id: UUID | None = None,
-    ) -> int:
-        """Upsert ``LocalizedPrice`` rows for one (price, every-non-USD-currency) pair.
-
-        Returns the number of rows created or updated. Existing rows whose
-        friendly-rounded value didn't move only get ``synced_at`` refreshed
-        (cheap), and aren't counted toward the changed total — the count
-        reflects what actually moved, which is what callers care about.
-        """
-        owner_kwargs = (
-            {"plan_price_id": plan_price_id}
-            if plan_price_id is not None
-            else {"product_price_id": product_price_id}
-        )
-        changed = 0
+    def _compute_new_amounts(amount: int) -> dict[str, int]:
+        """Return ``{currency: new_amount_minor}`` for all non-USD currencies."""
+        result: dict[str, int] = {}
         for currency in SUPPORTED_CURRENCIES:
             if currency == "usd":
                 continue
@@ -105,28 +89,72 @@ def sync_localized_prices() -> int:
                 logger.warning("No FX rate for currency %s", currency)
                 continue
             display = round_friendly(format_amount(amount, "usd") * rate, currency)
-            new_amount = _to_minor_units(display, currency)
-            existing = LocalizedPrice.objects.filter(currency=currency, **owner_kwargs).first()
+            result[currency] = _to_minor_units(display, currency)
+        return result
+
+    def _upsert_for_price(
+        amount: int,
+        *,
+        plan_price_id: UUID | None = None,
+        product_price_id: UUID | None = None,
+    ) -> int:
+        """Upsert ``LocalizedPrice`` rows for one (price, every-non-USD-currency) pair.
+
+        Fetches all existing rows for this price in a single SELECT, computes
+        the new amounts in Python, then applies updates/creates in bulk.
+        Returns the number of rows that were *changed* (created or whose
+        ``amount_minor`` moved). Rows whose friendly-rounded value didn't move
+        get their ``synced_at`` refreshed as a heartbeat but are not counted.
+        """
+        owner_kwargs: dict[str, UUID | None] = (
+            {"plan_price_id": plan_price_id}
+            if plan_price_id is not None
+            else {"product_price_id": product_price_id}
+        )
+        new_amounts = _compute_new_amounts(amount)
+
+        # Single SELECT for all existing rows belonging to this price.
+        existing_by_currency: dict[str, LocalizedPrice] = {
+            lp.currency: lp
+            for lp in LocalizedPrice.objects.filter(**owner_kwargs).only(
+                "id", "currency", "amount_minor", "synced_at"
+            )
+        }
+
+        to_create: list[LocalizedPrice] = []
+        to_update_changed: list[LocalizedPrice] = []
+        to_update_heartbeat: list[LocalizedPrice] = []
+
+        for currency, new_amount in new_amounts.items():
+            existing = existing_by_currency.get(currency)
             if existing is None:
-                LocalizedPrice.objects.create(
-                    currency=currency,
-                    amount_minor=new_amount,
-                    synced_at=now,
-                    **owner_kwargs,
+                to_create.append(
+                    LocalizedPrice(
+                        currency=currency,
+                        amount_minor=new_amount,
+                        synced_at=now,
+                        **owner_kwargs,
+                    )
                 )
-                changed += 1
             elif existing.amount_minor != new_amount:
                 existing.amount_minor = new_amount
                 existing.synced_at = now
-                existing.save(update_fields=["amount_minor", "synced_at"])
-                changed += 1
+                to_update_changed.append(existing)
             else:
                 # Stability gate: friendly-rounded value didn't move. Refresh
                 # synced_at as a heartbeat so monitoring can spot a stale sync,
                 # but leave amount_minor + stripe_price_id alone.
                 existing.synced_at = now
-                existing.save(update_fields=["synced_at"])
-        return changed
+                to_update_heartbeat.append(existing)
+
+        if to_create:
+            LocalizedPrice.objects.bulk_create(to_create)
+        if to_update_changed:
+            LocalizedPrice.objects.bulk_update(to_update_changed, ["amount_minor", "synced_at"])
+        if to_update_heartbeat:
+            LocalizedPrice.objects.bulk_update(to_update_heartbeat, ["synced_at"])
+
+        return len(to_create) + len(to_update_changed)
 
     with transaction.atomic():
         changed = 0
