@@ -249,23 +249,24 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
         """Number of seats currently occupied.
 
         Always 1 for personal subscriptions. For team subscriptions,
-        reflects the current org member count.
-
-        When the queryset was annotated with ``org_member_count`` (as
-        ``_get_active_subscriptions_for_user`` does), that value is read
-        directly from the annotation to avoid a second COUNT query per
-        serialized object. Falls back to a live COUNT for callers that
-        skip the annotation (e.g. direct serializer use in tests).
+        reads the ``org_member_count`` annotation attached by
+        ``_get_active_subscriptions_for_user`` — the only path that
+        serialises team subs through this serializer in production.
+        Raises if the annotation is missing rather than firing a per-row
+        COUNT query, so a future caller that drops the annotation gets a
+        loud error instead of a silent N+1.
         """
-        from apps.orgs.models import OrgMember
-
         org_id = getattr(obj.stripe_customer, "org_id", None) if obj.stripe_customer_id else None
         if org_id is None:
             return 1
         annotated: int | None = getattr(obj, "org_member_count", None)
-        if annotated is not None:
-            return annotated
-        return OrgMember.objects.filter(org_id=org_id).count()
+        if annotated is None:
+            raise RuntimeError(
+                "SubscriptionSerializer requires the org_member_count annotation "
+                "for team subscriptions — call _get_active_subscriptions_for_user "
+                "or annotate the queryset before serialisation."
+            )
+        return annotated
 
 
 class CheckoutRequestSerializer(serializers.Serializer[object]):

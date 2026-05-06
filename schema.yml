@@ -2293,13 +2293,12 @@ components:
             Number of seats currently occupied.
 
             Always 1 for personal subscriptions. For team subscriptions,
-            reflects the current org member count.
-
-            When the queryset was annotated with ``org_member_count`` (as
-            ``_get_active_subscriptions_for_user`` does), that value is read
-            directly from the annotation to avoid a second COUNT query per
-            serialized object. Falls back to a live COUNT for callers that
-            skip the annotation (e.g. direct serializer use in tests).
+            reads the ``org_member_count`` annotation attached by
+            ``_get_active_subscriptions_for_user`` — the only path that
+            serialises team subs through this serializer in production.
+            Raises if the annotation is missing rather than firing a per-row
+            COUNT query, so a future caller that drops the annotation gets a
+            loud error instead of a silent N+1.
           readOnly: true
         trial_ends_at:
           type: string
