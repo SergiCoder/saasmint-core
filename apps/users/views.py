@@ -10,6 +10,7 @@ from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.db.models import prefetch_related_objects
 from drf_spectacular.utils import extend_schema, inline_serializer
 from PIL import Image, ImageOps, UnidentifiedImageError
 from rest_framework import serializers, status
@@ -54,7 +55,13 @@ class AccountView(AccountScopedView):
 
     @extend_schema(responses=UserSerializer, tags=["account"])
     def get(self, request: Request) -> Response:
-        return Response(UserSerializer(get_user(request)).data)
+        user = get_user(request)
+        # UserSerializer.get_linked_providers prefers the prefetch cache over a
+        # second .values_list() round-trip; populating it here lets every
+        # serialized response (including the patch path below) take the cache
+        # branch without falling back to per-request lookup.
+        prefetch_related_objects([user], "social_accounts")
+        return Response(UserSerializer(user).data)
 
     @extend_schema(request=UpdateUserSerializer, responses=UserSerializer, tags=["account"])
     def patch(self, request: Request) -> Response:
@@ -68,6 +75,7 @@ class AccountView(AccountScopedView):
                 setattr(user, field, value)
             user.save(update_fields=[*ser.validated_data.keys(), "updated_at"])
 
+        prefetch_related_objects([user], "social_accounts")
         return Response(UserSerializer(user).data)
 
     @extend_schema(
