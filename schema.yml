@@ -313,6 +313,36 @@ paths:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
           description: ''
+  /api/v1/auth/resend-verification/:
+    post:
+      operationId: auth_resend_verification_create
+      description: POST /api/v1/auth/resend-verification — re-send the verification
+        email.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendVerificationRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ResendVerificationRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ResendVerificationRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+          description: ''
   /api/v1/auth/reset-password/:
     post:
       operationId: auth_reset_password_create
@@ -376,6 +406,12 @@ paths:
       operationId: billing_checkout_sessions_create
       description: POST /api/v1/billing/checkout-sessions — create a Stripe Checkout
         Session.
+      parameters:
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
       requestBody:
@@ -402,7 +438,8 @@ paths:
           description: ''
         '400':
           description: Request body failed validation (e.g. ``org_name`` missing for
-            a team-context plan, invalid quantity for the plan's context).
+            a team-context plan, invalid quantity for the plan's context), or unsupported
+            ``?currency=`` value.
         '404':
           description: Invalid plan price.
         '409':
@@ -538,6 +575,11 @@ paths:
           the org. Default: ``team`` for org members, ``personal`` otherwise. ``team``
           requires ``role=OWNER`` on the active org. Non-org-member callers cannot
           pick ``team``.'
+      - in: query
+        name: currency
+        schema:
+          type: string
+        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
       requestBody:
@@ -563,8 +605,8 @@ paths:
                 $ref: '#/components/schemas/ProductCheckoutResponse'
           description: ''
         '400':
-          description: Invalid ``?context=`` value, or non-org-member caller requested
-            ``?context=team``.
+          description: Invalid ``?context=`` value, non-org-member caller requested
+            ``?context=team``, or unsupported ``?currency=`` value.
         '403':
           description: '``?context=team``: caller is not the org owner. Admins and
             regular members can still buy ``?context=personal``.'
@@ -2133,6 +2175,15 @@ components:
         * `google` - Google
         * `github` - GitHub
         * `microsoft` - Microsoft
+    ResendVerificationRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+      required:
+      - email
     ResetPasswordRequest:
       type: object
       properties:

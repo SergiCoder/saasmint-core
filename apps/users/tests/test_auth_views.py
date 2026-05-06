@@ -351,6 +351,88 @@ class TestForgotPasswordView:
 
 
 # ---------------------------------------------------------------------------
+# ResendVerificationView
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestResendVerificationView:
+    URL = "/api/v1/auth/resend-verification/"
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_for_unverified_user_sends_email(self, mock_delay, api, db):
+        from apps.users.models import EmailVerificationToken
+
+        user = User.objects.create_user(
+            email="unverified@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Unverified",
+            is_verified=False,
+        )
+
+        resp = api.post(self.URL, {"email": user.email}, format="json")
+
+        assert resp.status_code == 200
+        mock_delay.assert_called_once()
+        assert (
+            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
+        )
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_invalidates_prior_unused_tokens(self, mock_delay, api, db):
+        from apps.users.authentication import create_email_verification_token
+        from apps.users.models import EmailVerificationToken
+
+        user = User.objects.create_user(
+            email="unverified@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Unverified",
+            is_verified=False,
+        )
+        old_token = create_email_verification_token(user)
+        old_hash = _hash_token(old_token)
+
+        resp = api.post(self.URL, {"email": user.email}, format="json")
+
+        assert resp.status_code == 200
+        mock_delay.assert_called_once()
+
+        old_row = EmailVerificationToken.objects.get(token_hash=old_hash)
+        assert old_row.used_at is not None
+        # exactly one fresh, unused token now exists
+        assert (
+            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
+        )
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_for_already_verified_user_is_noop(
+        self, mock_delay, api, verified_user
+    ):
+        resp = api.post(self.URL, {"email": verified_user.email}, format="json")
+        assert resp.status_code == 200
+        mock_delay.assert_not_called()
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_for_nonexistent_email_returns_200(self, mock_delay, api):
+        resp = api.post(self.URL, {"email": "nobody@example.com"}, format="json")
+        assert resp.status_code == 200
+        mock_delay.assert_not_called()
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_for_inactive_user_is_noop(self, mock_delay, api, db):
+        User.objects.create_user(
+            email="inactive@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Inactive",
+            is_verified=False,
+            is_active=False,
+        )
+        resp = api.post(self.URL, {"email": "inactive@example.com"}, format="json")
+        assert resp.status_code == 200
+        mock_delay.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # ResetPasswordView
 # ---------------------------------------------------------------------------
 
@@ -405,6 +487,39 @@ class TestResetPasswordView:
             format="json",
         )
         assert resp.status_code == 400
+
+    def test_reset_password_marks_unverified_user_verified(self, api, db):
+        unverified = User.objects.create_user(
+            email="unverified-reset@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Unverified",
+            is_verified=False,
+        )
+        token = create_password_reset_token(unverified)
+
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "newpassword1"},
+            format="json",
+        )
+        assert resp.status_code == 200
+
+        unverified.refresh_from_db()
+        assert unverified.is_verified is True
+
+    def test_reset_password_keeps_verified_flag_for_already_verified(
+        self, api, verified_user
+    ):
+        token = create_password_reset_token(verified_user)
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "newpassword1"},
+            format="json",
+        )
+        assert resp.status_code == 200
+
+        verified_user.refresh_from_db()
+        assert verified_user.is_verified is True
 
 
 # ---------------------------------------------------------------------------
