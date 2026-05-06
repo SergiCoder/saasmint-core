@@ -34,7 +34,7 @@ _AUTH_CACHE_TTL = 60  # seconds
 ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
 REFRESH_TOKEN_LIFETIME = timedelta(days=7)
 EMAIL_VERIFICATION_LIFETIME = timedelta(hours=24)
-PASSWORD_RESET_LIFETIME = timedelta(hours=1)
+PASSWORD_RESET_LIFETIME = timedelta(minutes=10)
 
 _ALGORITHM = "HS256"
 

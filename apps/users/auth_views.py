@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from datetime import UTC, datetime
 from typing import ClassVar
 from urllib.parse import urlencode
 
@@ -36,6 +37,7 @@ from apps.users.auth_serializers import (
     OAuthExchangeResponseSerializer,
     RefreshSerializer,
     RegisterSerializer,
+    ResendVerificationSerializer,
     ResetPasswordSerializer,
     TokenResponseSerializer,
     VerifyEmailSerializer,
@@ -52,7 +54,7 @@ from apps.users.authentication import (
     verify_email_token,
     verify_password_reset_token,
 )
-from apps.users.models import User
+from apps.users.models import EmailVerificationToken, User
 from apps.users.oauth import (
     PROVIDERS,
     OAuthEmailNotVerifiedError,
@@ -146,6 +148,47 @@ class VerifyEmailView(AuthPublicView):
 
         refresh = create_refresh_token(user)
         return _token_response(user, refresh)
+
+
+class ResendVerificationView(AuthPublicView):
+    """POST /api/v1/auth/resend-verification — re-send the verification email."""
+
+    @extend_schema(
+        request=ResendVerificationSerializer,
+        responses={200: MessageResponseSerializer},
+        tags=["auth"],
+    )
+    def post(self, request: Request) -> Response:
+        ser = ResendVerificationSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        # Always return 200 to prevent email enumeration. Silently no-op when
+        # the address has no account, the account is inactive, or the user is
+        # already verified.
+        try:
+            user = User.objects.get(
+                email=ser.validated_data["email"],
+                is_active=True,
+                is_verified=False,
+            )
+        except User.DoesNotExist:
+            user = None
+
+        if user is not None:
+            # Invalidate any prior unused verification tokens for this user so
+            # only the freshest link works.
+            EmailVerificationToken.objects.filter(
+                user=user, used_at__isnull=True
+            ).update(used_at=datetime.now(UTC))
+            token = create_email_verification_token(user)
+            send_verification_email_task.delay(user.email, token)
+
+        return Response(
+            {
+                "detail": "If the email exists and is unverified, a new link has been sent.",
+                "code": "verification_email_queued",
+            }
+        )
 
 
 class LoginView(AuthLoginView):
@@ -249,7 +292,13 @@ class ResetPasswordView(AuthPublicView):
 
         user = verify_password_reset_token(ser.validated_data["token"])
         user.set_password(ser.validated_data["password"])
-        user.save(update_fields=["password", "updated_at"])
+        update_fields = ["password", "updated_at"]
+        # Consuming a reset link delivered to the user's email proves mailbox
+        # control — equivalent to clicking the verification link.
+        if not user.is_verified:
+            user.is_verified = True
+            update_fields.append("is_verified")
+        user.save(update_fields=update_fields)
 
         # Revoke all existing refresh tokens after password reset
         revoke_all_refresh_tokens(user)
