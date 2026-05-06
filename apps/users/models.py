@@ -170,10 +170,11 @@ class PasswordResetToken(_OneTimeToken):
 class SocialLinkRequest(_OneTimeToken):
     """Pending request to link a new OAuth provider to an existing User.
 
-    Minted on the OAuth callback when an unverified provider's email matches
-    an existing account. The user proves mailbox control by clicking the
-    confirmation link sent to that email; the click then attaches the
-    SocialAccount and signs the user in.
+    Minted on the OAuth callback when the provider's email matches an
+    existing account but cannot be auto-linked — either ``email_verified``
+    is false, or the provider is not on ``TRUSTED_FOR_AUTO_LINK``. The user
+    proves mailbox control by clicking the confirmation link sent to that
+    email; the click then attaches the SocialAccount and signs the user in.
     """
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="social_link_requests")
@@ -184,3 +185,8 @@ class SocialLinkRequest(_OneTimeToken):
 
     class Meta(_OneTimeToken.Meta):
         db_table = "social_link_requests"
+        indexes: ClassVar[list[Index]] = [
+            # Cleanup task filters expires_at__lt=now on every daily run;
+            # without this index the batch-ID-subquery does a sequential scan.
+            models.Index(fields=["expires_at"], name="idx_social_link_expires_at"),
+        ]
