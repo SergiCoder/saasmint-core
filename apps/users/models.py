@@ -95,6 +95,10 @@ class RefreshToken(models.Model):
                 name="idx_refresh_user_active",
                 condition=models.Q(revoked_at__isnull=True),
             ),
+            # cleanup_expired_refresh_tokens scans expires_at__lt=now on every
+            # daily run — without this the batch-ID subquery falls back to a
+            # sequential scan.
+            models.Index(fields=["expires_at"], name="idx_refresh_expires_at"),
         ]
 
     def __str__(self) -> str:
@@ -130,6 +134,11 @@ class EmailVerificationToken(_OneTimeToken):
 
     class Meta(_OneTimeToken.Meta):
         db_table = "email_verification_tokens"
+        indexes: ClassVar[list[Index]] = [
+            # Cleanup task filters expires_at__lt=now; without this index the
+            # batch-ID subquery does a sequential scan.
+            models.Index(fields=["expires_at"], name="idx_email_verif_expires_at"),
+        ]
 
 
 class SocialAccount(models.Model):
@@ -165,6 +174,11 @@ class PasswordResetToken(_OneTimeToken):
 
     class Meta(_OneTimeToken.Meta):
         db_table = "password_reset_tokens"
+        indexes: ClassVar[list[Index]] = [
+            # Cleanup task filters expires_at__lt=now; without this index the
+            # batch-ID subquery does a sequential scan.
+            models.Index(fields=["expires_at"], name="idx_pwd_reset_expires_at"),
+        ]
 
 
 class SocialLinkRequest(_OneTimeToken):
@@ -189,4 +203,12 @@ class SocialLinkRequest(_OneTimeToken):
             # Cleanup task filters expires_at__lt=now on every daily run;
             # without this index the batch-ID-subquery does a sequential scan.
             models.Index(fields=["expires_at"], name="idx_social_link_expires_at"),
+            # OAuth callback invalidates prior pending requests with
+            # filter(user=..., used_at__isnull=True) on every collision —
+            # partial index keeps the tree tiny since used rows accumulate.
+            models.Index(
+                fields=["user"],
+                name="idx_social_link_user_active",
+                condition=models.Q(used_at__isnull=True),
+            ),
         ]
