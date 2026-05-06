@@ -378,17 +378,39 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
     the behavior is unchanged — we just avoid K broker round-trips for a user
     who created K orgs.
     """
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+    from apps.billing.models import Subscription as SubscriptionModel
     from apps.orgs.tasks import cancel_stripe_subs_task
 
     orgs = list(Org.objects.filter(created_by_id=user_id))
     if not orgs:
         return
 
+    # One IN-query for active subs across every org, ordered so the first
+    # match per org_id is the latest. Avoids K round-trips for a user who
+    # created K orgs.
+    org_ids = [org.id for org in orgs]
+    sub_by_org: dict[UUID, SubscriptionModel] = {}
+    for sub in (
+        SubscriptionModel.objects.filter(
+            stripe_customer__org_id__in=org_ids,
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+            stripe_id__isnull=False,
+        )
+        .select_related("stripe_customer")
+        .order_by("-created_at")
+    ):
+        # Filter pins ``stripe_customer__org_id`` to one of ``org_ids`` so the
+        # join row exists and ``org_id`` is non-null — mypy doesn't see that.
+        org_id = sub.stripe_customer.org_id  # type: ignore[union-attr]
+        if org_id is not None and org_id not in sub_by_org:
+            sub_by_org[org_id] = sub
+
     pending_stripe_sub_ids: list[str] = []
     for org in orgs:
-        sub = _get_active_stripe_sub(org.id)
-        if sub is not None and sub.stripe_id is not None:
-            pending_stripe_sub_ids.append(sub.stripe_id)
+        org_sub = sub_by_org.get(org.id)
+        if org_sub is not None and org_sub.stripe_id is not None:
+            pending_stripe_sub_ids.append(org_sub.stripe_id)
         _delete_org_db_only(org)
 
     if pending_stripe_sub_ids:
