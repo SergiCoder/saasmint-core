@@ -11,6 +11,7 @@ from django.core.cache import cache
 from django.core.validators import MinLengthValidator
 from django.db import models
 from django.db.models import Index
+from django.db.models.functions import Lower
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
@@ -28,6 +29,14 @@ class RegistrationMethod(models.TextChoices):
 
 class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # The column-level ``unique=True`` is required for USERNAME_FIELD
+    # (Django's auth.E003 system check). It enforces *exact*-string
+    # uniqueness — but every email lookup in the codebase uses
+    # ``email__iexact`` (OAuth resolver, login, email_is_registered), and
+    # plain btree on a CITEXT-less EmailField cannot serve those without
+    # a sequential scan. The functional unique index on Lower("email") in
+    # Meta below carries both the case-insensitive uniqueness invariant
+    # AND the per-lookup index seek.
     email = models.EmailField(unique=True)
     full_name = models.CharField(max_length=255, validators=[MinLengthValidator(3)])
     avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no avatar set (distinguishable from empty string)
@@ -57,6 +66,13 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     class Meta:
         db_table = "users"
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            # Functional unique index: every email__iexact lookup
+            # (email_is_registered, OAuth resolver, login authenticate)
+            # lands on this index instead of degrading to a sequential
+            # scan against a case-sensitive column-level unique.
+            models.UniqueConstraint(Lower("email"), name="uniq_users_lower_email"),
+        ]
 
     def __str__(self) -> str:
         return self.email
