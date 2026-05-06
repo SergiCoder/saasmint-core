@@ -25,6 +25,14 @@ def send_password_reset_email_task(email: str, token: str) -> None:
     send_password_reset_email(email, token)
 
 
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def send_social_link_email_task(email: str, token: str, provider: str) -> None:
+    """Send OAuth provider link confirmation via Resend (async-safe)."""
+    from apps.users.email import send_social_link_email
+
+    send_social_link_email(email, token, provider)
+
+
 _REFRESH_TOKEN_DELETE_BATCH = 10_000
 
 
@@ -60,3 +68,32 @@ def cleanup_expired_refresh_tokens() -> None:
 
     if total_deleted:
         logger.info("Pruned %d expired refresh tokens", total_deleted)
+
+
+_SOCIAL_LINK_DELETE_BATCH = 10_000
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def cleanup_expired_social_link_requests() -> None:
+    """Delete SocialLinkRequest rows whose expires_at has passed."""
+    from datetime import UTC, datetime
+
+    from apps.users.models import SocialLinkRequest
+
+    now = datetime.now(UTC)
+    total_deleted = 0
+    while True:
+        ids = list(
+            SocialLinkRequest.objects.filter(expires_at__lt=now).values_list("id", flat=True)[
+                :_SOCIAL_LINK_DELETE_BATCH
+            ]
+        )
+        if not ids:
+            break
+        deleted, _ = SocialLinkRequest.objects.filter(id__in=ids).delete()
+        total_deleted += deleted
+        if deleted < _SOCIAL_LINK_DELETE_BATCH:
+            break
+
+    if total_deleted:
+        logger.info("Pruned %d expired social link requests", total_deleted)

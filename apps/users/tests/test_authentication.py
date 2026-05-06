@@ -17,13 +17,15 @@ from apps.users.authentication import (
     create_email_verification_token,
     create_password_reset_token,
     create_refresh_token,
+    create_social_link_token,
     revoke_all_refresh_tokens,
     revoke_refresh_token,
     rotate_refresh_token,
     verify_email_token,
     verify_password_reset_token,
+    verify_social_link_token,
 )
-from apps.users.models import RefreshToken, User
+from apps.users.models import RefreshToken, SocialLinkRequest, User
 
 SECRET = settings.SECRET_KEY
 
@@ -307,3 +309,87 @@ class TestPasswordResetToken:
         prt.save(update_fields=["expires_at"])
         with pytest.raises(AuthenticationFailed, match="expired"):
             verify_password_reset_token(raw)
+
+
+@pytest.mark.django_db
+class TestSocialLinkToken:
+    def test_create_persists_triple_binding(self):
+        user = User.objects.create_user(email="link@example.com", full_name="Link")
+        raw = create_social_link_token(
+            user,
+            provider="microsoft",
+            provider_user_id="ms-abc",
+            full_name="Link User",
+            avatar_url="https://example.com/a.png",
+        )
+        row = SocialLinkRequest.objects.get(token_hash=_hash_token(raw))
+        assert row.user_id == user.id
+        assert row.provider == "microsoft"
+        assert row.provider_user_id == "ms-abc"
+        assert row.full_name == "Link User"
+        assert row.avatar_url == "https://example.com/a.png"
+        assert row.used_at is None
+
+    def test_verify_returns_row_and_marks_used(self):
+        user = User.objects.create_user(email="link2@example.com", full_name="Link2")
+        raw = create_social_link_token(
+            user,
+            provider="microsoft",
+            provider_user_id="ms-2",
+            full_name="L2",
+            avatar_url=None,
+        )
+        row = verify_social_link_token(raw)
+        assert row.user_id == user.id
+        assert row.provider == "microsoft"
+        assert row.used_at is not None
+
+    def test_verify_invalid_token_raises_invalid_token(self):
+        with pytest.raises(AuthenticationFailed) as excinfo:
+            verify_social_link_token("not-a-real-token")
+        assert excinfo.value.detail.get("code") == "invalid_token"  # type: ignore[union-attr]
+
+    def test_verify_used_token_raises_token_used(self):
+        user = User.objects.create_user(email="used_slt@example.com", full_name="UsedSLT")
+        raw = create_social_link_token(
+            user,
+            provider="microsoft",
+            provider_user_id="ms-3",
+            full_name="",
+            avatar_url=None,
+        )
+        verify_social_link_token(raw)
+        with pytest.raises(AuthenticationFailed) as excinfo:
+            verify_social_link_token(raw)
+        assert excinfo.value.detail.get("code") == "token_used"  # type: ignore[union-attr]
+
+    def test_verify_expired_token_raises_token_expired(self):
+        user = User.objects.create_user(email="exp_slt@example.com", full_name="ExpSLT")
+        raw = create_social_link_token(
+            user,
+            provider="microsoft",
+            provider_user_id="ms-4",
+            full_name="",
+            avatar_url=None,
+        )
+        SocialLinkRequest.objects.filter(token_hash=_hash_token(raw)).update(
+            expires_at=datetime.now(UTC) - timedelta(minutes=1)
+        )
+        with pytest.raises(AuthenticationFailed) as excinfo:
+            verify_social_link_token(raw)
+        assert excinfo.value.detail.get("code") == "token_expired"  # type: ignore[union-attr]
+
+    def test_verify_inactive_user_raises_user_not_found(self):
+        user = User.objects.create_user(email="inact_slt@example.com", full_name="Inact")
+        raw = create_social_link_token(
+            user,
+            provider="microsoft",
+            provider_user_id="ms-5",
+            full_name="",
+            avatar_url=None,
+        )
+        user.is_active = False
+        user.save(update_fields=["is_active"])
+        with pytest.raises(AuthenticationFailed) as excinfo:
+            verify_social_link_token(raw)
+        assert excinfo.value.detail.get("code") == "user_not_found"  # type: ignore[union-attr]

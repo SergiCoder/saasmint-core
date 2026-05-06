@@ -165,3 +165,22 @@ class PasswordResetToken(_OneTimeToken):
 
     class Meta(_OneTimeToken.Meta):
         db_table = "password_reset_tokens"
+
+
+class SocialLinkRequest(_OneTimeToken):
+    """Pending request to link a new OAuth provider to an existing User.
+
+    Minted on the OAuth callback when an unverified provider's email matches
+    an existing account. The user proves mailbox control by clicking the
+    confirmation link sent to that email; the click then attaches the
+    SocialAccount and signs the user in.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="social_link_requests")
+    provider = models.CharField(max_length=20)
+    provider_user_id = models.CharField(max_length=255)
+    full_name = models.CharField(max_length=255, blank=True)
+    avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable: NULL means provider gave no avatar
+
+    class Meta(_OneTimeToken.Meta):
+        db_table = "social_link_requests"

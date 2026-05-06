@@ -39,9 +39,7 @@ def delete_org_on_subscription_cancel_task(org_id: str) -> None:
     involuntary (failed-payment retries exhausted, fraud, Stripe-side
     termination) collapse to the same code path. The voluntary/involuntary
     distinction was deliberately removed; do not reinstate a check on
-    ``cancellation_details.reason``. See
-    .claude/shared/saasmint/signup-subscription-flow.md (rule 9, discussion
-    2026-04-27).
+    ``cancellation_details.reason``.
     """
     from apps.orgs.models import Org
     from apps.orgs.services import _delete_org_db_only

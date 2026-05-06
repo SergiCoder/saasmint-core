@@ -9,6 +9,7 @@ import pytest
 from apps.users.email import (
     _send,
     send_password_reset_email,
+    send_social_link_email,
     send_verification_email,
 )
 
@@ -72,6 +73,33 @@ class TestSendPasswordResetEmail:
     def test_warns_if_unsolicited(self, email_settings):
         with patch("apps.users.email.resend.Emails.send") as mock_send:
             send_password_reset_email("user@example.com", "tok_reset")
+
+        html = mock_send.call_args[0][0]["html"]
+        assert "ignore" in html.lower()
+
+
+class TestSendSocialLinkEmail:
+    def test_calls_resend_with_expected_envelope(self, email_settings):
+        with patch("apps.users.email.resend.Emails.send") as mock_send:
+            send_social_link_email("user@example.com", "tok_link", "microsoft")
+
+        mock_send.assert_called_once()
+        payload = mock_send.call_args[0][0]
+        assert payload["to"] == ["user@example.com"]
+        assert payload["subject"] == "Confirm linking your Microsoft account"
+
+    def test_html_contains_confirm_link_route_with_token(self, email_settings):
+        with patch("apps.users.email.resend.Emails.send") as mock_send:
+            send_social_link_email("user@example.com", "tok_link", "github")
+
+        html = mock_send.call_args[0][0]["html"]
+        assert 'href="https://app.saasmint.test/auth/confirm-link?token=tok_link"' in html
+        assert "Github" in html
+        assert "15 minutes" in html
+
+    def test_warns_if_unsolicited(self, email_settings):
+        with patch("apps.users.email.resend.Emails.send") as mock_send:
+            send_social_link_email("user@example.com", "tok_link", "microsoft")
 
         html = mock_send.call_args[0][0]["html"]
         assert "ignore" in html.lower()
