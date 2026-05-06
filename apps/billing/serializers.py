@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -66,6 +67,21 @@ def _local_display(
     return None, None
 
 
+@functools.cache
+def _host_matchers(
+    allowed_hosts: tuple[str, ...],
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Split ALLOWED_HOSTS into ``(exact_hosts, suffix_hosts)`` for O(1) lookups.
+
+    Cache key is the immutable tuple form of ``ALLOWED_HOSTS`` — tests that
+    flip the setting on the fly automatically miss the cache and rebuild,
+    so no manual invalidation is needed.
+    """
+    exact = frozenset(h for h in allowed_hosts if h != "*" and not h.startswith("."))
+    suffixes = tuple(h for h in allowed_hosts if h.startswith("."))
+    return exact, suffixes
+
+
 def _validate_redirect_url(url: str) -> str:
     """Ensure a redirect URL belongs to an allowed domain."""
     allowed_origins: list[str] = getattr(settings, "CORS_ALLOWED_ORIGINS", [])
@@ -88,12 +104,12 @@ def _validate_redirect_url(url: str) -> str:
 
     if allowed_origins and origin in allowed_origins:
         return url
-    if allowed_hosts and any(
-        hostname == host or (host.startswith(".") and hostname.endswith(host))
-        for host in allowed_hosts
-        if host != "*"
-    ):
-        return url
+    if allowed_hosts:
+        exact_hosts, suffix_hosts = _host_matchers(tuple(allowed_hosts))
+        if hostname in exact_hosts:
+            return url
+        if any(hostname.endswith(s) for s in suffix_hosts):
+            return url
 
     raise serializers.ValidationError("URL domain is not in the list of allowed origins.")
 
@@ -129,17 +145,34 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
         )
         read_only_fields = ("id", "amount")
 
+    def to_representation(self, instance: PlanPrice | ProductPrice) -> dict[str, Any]:
+        # Compute the localized + local tuples once per instance and stash
+        # them so the four SerializerMethodField getters below read from a
+        # cache instead of recomputing _localized_display / _local_display
+        # twice per row (each call walks ``localized_prices.all()``).
+        instance._display_tuple = _localized_display(  # type: ignore[union-attr]
+            instance, self.context.get("currency", "usd")
+        )
+        instance._local_tuple = _local_display(  # type: ignore[union-attr]
+            instance, self.context.get("preferred_currency")
+        )
+        return super().to_representation(instance)
+
     def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
-        return _localized_display(obj, self.context.get("currency", "usd"))[0]
+        amount: float = obj._display_tuple[0]  # type: ignore[union-attr]  # populated in to_representation
+        return amount
 
     def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
-        return _localized_display(obj, self.context.get("currency", "usd"))[1]
+        currency: str = obj._display_tuple[1]  # type: ignore[union-attr]  # populated in to_representation
+        return currency
 
     def get_local_display_amount(self, obj: PlanPrice | ProductPrice) -> float | None:
-        return _local_display(obj, self.context.get("preferred_currency"))[0]
+        amount: float | None = obj._local_tuple[0]  # type: ignore[union-attr]  # populated in to_representation
+        return amount
 
     def get_local_currency(self, obj: PlanPrice | ProductPrice) -> str | None:
-        return _local_display(obj, self.context.get("preferred_currency"))[1]
+        currency: str | None = obj._local_tuple[1]  # type: ignore[union-attr]  # populated in to_representation
+        return currency
 
 
 class PlanPriceSerializer(_PriceSerializer):

@@ -8,6 +8,7 @@ from uuid import UUID
 
 from asgiref.sync import async_to_sync, sync_to_async
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Count, OuterRef, Prefetch, QuerySet, Subquery
 from drf_spectacular.utils import (
     OpenApiParameter,
@@ -979,9 +980,14 @@ def _get_active_subscriptions_for_user(
     # Personal sub — picked up via either ``Subscription.user_id`` or
     # ``stripe_customer.user_id``. Split into two queries so each can use its
     # own partial index (idx_sub_user_status / idx_sub_customer_status)
-    # instead of degenerating into a scan on an OR'd predicate.
-    customer = getattr(user, "stripe_customer", None)
-    customer_id = customer.id if customer is not None else None
+    # instead of degenerating into a scan on an OR'd predicate. Pull the
+    # customer id directly via the FK so we don't materialise the full
+    # StripeCustomer row just to read its primary key.
+    from apps.billing.models import StripeCustomer
+
+    customer_id = (
+        StripeCustomer.objects.filter(user_id=user.id).values_list("id", flat=True).first()
+    )
     sub_user = base.filter(user_id=user.id).order_by("-created_at").first()
     sub_customer = (
         base.filter(stripe_customer_id=customer_id).order_by("-created_at").first()
@@ -1218,10 +1224,15 @@ class SubscriptionView(BillingScopedView):
         if "cancel_at_period_end" in data:
             recipients = _billing_notice_recipients(user, org_id)
             if recipients:
-                send_subscription_cancel_notice_task.delay(
-                    recipients,
-                    sub.plan.name,
-                    "scheduled" if data["cancel_at_period_end"] else "resumed",
+                # Defer to on_commit so we can never queue a notification that
+                # references a subscription state the DB later rolls back. No-op
+                # outside an atomic block — runs immediately, current behavior.
+                action = "scheduled" if data["cancel_at_period_end"] else "resumed"
+                plan_name = sub.plan.name
+                transaction.on_commit(
+                    lambda: send_subscription_cancel_notice_task.delay(
+                        recipients, plan_name, action
+                    )
                 )
         return Response(SubscriptionSerializer(sub, context=ctx).data)
 
@@ -1277,7 +1288,12 @@ class SubscriptionView(BillingScopedView):
         )
         recipients = _billing_notice_recipients(user, org_id)
         if recipients:
-            send_subscription_cancel_notice_task.delay(recipients, sub.plan.name, "scheduled")
+            plan_name = sub.plan.name
+            transaction.on_commit(
+                lambda: send_subscription_cancel_notice_task.delay(
+                    recipients, plan_name, "scheduled"
+                )
+            )
         return Response(
             SubscriptionSerializer(sub, context=ctx).data,
             status=status.HTTP_202_ACCEPTED,
