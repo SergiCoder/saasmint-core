@@ -56,8 +56,8 @@ class TestExchangeCodeGoogle:
             }
         )
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=userinfo_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=userinfo_resp),
         ):
             info = exchange_code("google", "auth-code", "https://host/cb")
 
@@ -77,8 +77,8 @@ class TestExchangeCodeGoogle:
             }
         )
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=userinfo_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=userinfo_resp),
         ):
             info = exchange_code("google", "c", "https://host/cb")
 
@@ -89,8 +89,8 @@ class TestExchangeCodeGoogle:
         token_resp = _mock_response(json_data={"access_token": "tok"})
         userinfo_resp = _mock_response(json_data={"id": "g-3"})
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=userinfo_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=userinfo_resp),
             pytest.raises(OAuthError),
         ):
             exchange_code("google", "c", "https://host/cb")
@@ -98,7 +98,7 @@ class TestExchangeCodeGoogle:
     def test_raises_when_token_response_missing_access_token(self):
         token_resp = _mock_response(json_data={})
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
             pytest.raises(OAuthError),
         ):
             exchange_code("google", "c", "https://host/cb")
@@ -106,7 +106,7 @@ class TestExchangeCodeGoogle:
     def test_token_endpoint_http_error_propagates(self):
         token_resp = _mock_response(status_code=400)
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
             pytest.raises(httpx.HTTPStatusError),
         ):
             exchange_code("google", "c", "https://host/cb")
@@ -130,8 +130,8 @@ class TestExchangeCodeGitHub:
             ]
         )
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", side_effect=[user_resp, emails_resp]),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", side_effect=[user_resp, emails_resp]),
         ):
             info = exchange_code("github", "c", "https://host/cb")
 
@@ -148,8 +148,8 @@ class TestExchangeCodeGitHub:
             json_data=[{"email": "c@example.com", "primary": True, "verified": True}]
         )
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", side_effect=[user_resp, emails_resp]),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", side_effect=[user_resp, emails_resp]),
         ):
             info = exchange_code("github", "c", "https://host/cb")
 
@@ -169,8 +169,8 @@ class TestExchangeCodeMicrosoft:
             json_data={"id": "ms-1", "mail": "dan@example.com", "displayName": "Dan"}
         )
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
 
@@ -186,8 +186,8 @@ class TestExchangeCodeMicrosoft:
             json_data={"id": "ms-2", "mail": "dan@example.com", "displayName": "Dan"}
         )
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
             patch("apps.users.oauth._verify_microsoft_id_token", return_value=None),
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
@@ -205,8 +205,8 @@ class TestExchangeCodeMicrosoft:
         )
         claims = {"email": "dan@example.com", "oid": "ms-3", "name": "Dan"}
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
             patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
@@ -227,8 +227,8 @@ class TestExchangeCodeMicrosoft:
             "xms_edov": True,
         }
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
             patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
@@ -255,8 +255,8 @@ class TestExchangeCodeMicrosoft:
             "xms_edov": True,
         }
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
             patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
@@ -275,8 +275,8 @@ class TestExchangeCodeMicrosoft:
         )
         claims = {"oid": "ms-oid-6", "xms_edov": True}
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
             patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
@@ -314,8 +314,8 @@ class TestExchangeCodeMicrosoft:
             "xms_edov": edov_value,
         }
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
             patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
@@ -333,8 +333,8 @@ class TestExchangeCodeMicrosoft:
             json_data={"id": "ms-empty", "mail": "dan@example.com", "displayName": "Dan"}
         )
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
             patch("apps.users.oauth._verify_microsoft_id_token") as mock_verify,
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
@@ -356,8 +356,8 @@ class TestExchangeCodeMicrosoft:
             "xms_edov": True,
         }
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
             patch("apps.users.oauth._verify_microsoft_id_token", return_value=claims),
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
@@ -372,8 +372,8 @@ class TestExchangeCodeMicrosoft:
             json_data={"id": "ms-7", "userPrincipalName": "eve@example.com", "displayName": "Eve"}
         )
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
         ):
             info = exchange_code("microsoft", "c", "https://host/cb")
 
@@ -385,8 +385,8 @@ class TestExchangeCodeMicrosoft:
         token_resp = _mock_response(json_data={"access_token": "tok"})
         user_resp = _mock_response(json_data={"id": "ms-8", "displayName": "No Email"})
         with (
-            patch("apps.users.oauth.httpx.post", return_value=token_resp),
-            patch("apps.users.oauth.httpx.get", return_value=user_resp),
+            patch("apps.users.oauth._oauth_client.post", return_value=token_resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=user_resp),
             pytest.raises(OAuthError),
         ):
             exchange_code("microsoft", "c", "https://host/cb")
@@ -411,32 +411,41 @@ class TestFetchGitHubPrimaryEmail:
                 {"email": "main@example.com", "primary": True, "verified": True},
             ]
         )
-        with patch("apps.users.oauth.httpx.get", return_value=resp):
+        with patch("apps.users.oauth._oauth_client.get", return_value=resp):
             assert _fetch_github_primary_email("tok") == "main@example.com"
 
     def test_raises_when_primary_is_unverified(self):
         resp = _mock_response(
             json_data=[{"email": "main@example.com", "primary": True, "verified": False}]
         )
-        with patch("apps.users.oauth.httpx.get", return_value=resp), pytest.raises(OAuthError):
+        with (
+            patch("apps.users.oauth._oauth_client.get", return_value=resp),
+            pytest.raises(OAuthError),
+        ):
             _fetch_github_primary_email("tok")
 
     def test_raises_when_no_primary_entry(self):
         resp = _mock_response(
             json_data=[{"email": "x@example.com", "primary": False, "verified": True}]
         )
-        with patch("apps.users.oauth.httpx.get", return_value=resp), pytest.raises(OAuthError):
+        with (
+            patch("apps.users.oauth._oauth_client.get", return_value=resp),
+            pytest.raises(OAuthError),
+        ):
             _fetch_github_primary_email("tok")
 
     def test_raises_on_empty_list(self):
         resp = _mock_response(json_data=[])
-        with patch("apps.users.oauth.httpx.get", return_value=resp), pytest.raises(OAuthError):
+        with (
+            patch("apps.users.oauth._oauth_client.get", return_value=resp),
+            pytest.raises(OAuthError),
+        ):
             _fetch_github_primary_email("tok")
 
     def test_http_error_propagates(self):
         resp = _mock_response(status_code=401)
         with (
-            patch("apps.users.oauth.httpx.get", return_value=resp),
+            patch("apps.users.oauth._oauth_client.get", return_value=resp),
             pytest.raises(httpx.HTTPStatusError),
         ):
             _fetch_github_primary_email("tok")
