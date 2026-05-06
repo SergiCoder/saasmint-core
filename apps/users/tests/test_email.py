@@ -105,6 +105,18 @@ class TestSendSocialLinkEmail:
         assert "ignore" in html.lower()
 
 
+class TestEmailLoggingSocialLink:
+    def test_social_link_email_logs_recipient_and_provider(
+        self, email_settings, caplog: pytest.LogCaptureFixture
+    ):
+        with patch("apps.users.email.resend.Emails.send"):
+            with caplog.at_level("INFO", logger="apps.users.email"):
+                send_social_link_email("user@example.com", "tok_link", "github")
+
+        assert any("user@example.com" in r.message for r in caplog.records)
+        assert any("github" in r.message for r in caplog.records)
+
+
 class TestSendHelper:
     def test_sets_api_key_when_unset(self, email_settings):
         import resend

@@ -116,7 +116,7 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> OAuthResoluti
 def _link_or_request(
     provider: str, user_info: OAuthUserInfo, existing: User
 ) -> OAuthResolution:
-    """Auto-link if the provider is trusted; otherwise return a collision."""
+    """Auto-link if ``email_verified`` and the provider is trusted; otherwise return a collision."""
     if user_info.email_verified and provider in TRUSTED_FOR_AUTO_LINK:
         SocialAccount.objects.get_or_create(
             provider=provider,

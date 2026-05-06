@@ -518,10 +518,12 @@ class OAuthExchangeView(AuthPublicView):
 class OAuthConfirmLinkView(AuthPublicView):
     """POST /api/v1/auth/oauth/confirm-link/ — link an OAuth provider via email proof.
 
-    The OAuth callback mints a SocialLinkRequest when an unverified provider's
-    email matches an existing account. Clicking the link in that email
-    re-proves mailbox control; this endpoint then attaches the SocialAccount
-    and signs the user in.
+    The OAuth callback mints a SocialLinkRequest when the provider's email
+    matches an existing account but cannot be auto-linked (either
+    ``email_verified`` is false, or the provider is not on
+    ``TRUSTED_FOR_AUTO_LINK``). Clicking the link in that email re-proves
+    mailbox control; this endpoint then attaches the SocialAccount and
+    signs the user in.
     """
 
     @extend_schema(
