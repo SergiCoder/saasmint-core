@@ -225,6 +225,43 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/auth/oauth/confirm-link/:
+    post:
+      operationId: auth_oauth_confirm_link_create
+      description: |-
+        POST /api/v1/auth/oauth/confirm-link/ — link an OAuth provider via email proof.
+
+        The OAuth callback mints a SocialLinkRequest when the provider's email
+        matches an existing account but cannot be auto-linked (either
+        ``email_verified`` is false, or the provider is not on
+        ``TRUSTED_FOR_AUTO_LINK``). Clicking the link in that email re-proves
+        mailbox control; this endpoint then attaches the SocialAccount and
+        signs the user in.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OAuthConfirmLinkRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthConfirmLinkRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OAuthConfirmLinkRequest'
+        required: true
+      security:
+      - JWT: []
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthExchangeResponse'
+          description: ''
   /api/v1/auth/oauth/exchange/:
     post:
       operationId: auth_oauth_exchange_create
@@ -1671,6 +1708,14 @@ components:
       required:
       - code
       - detail
+    OAuthConfirmLinkRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          minLength: 1
+      required:
+      - token
     OAuthExchangeRequestRequest:
       type: object
       properties:

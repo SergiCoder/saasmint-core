@@ -3,16 +3,43 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 
-from apps.users.models import RefreshToken, User
-from apps.users.tasks import cleanup_expired_refresh_tokens
+from apps.users.models import RefreshToken, SocialLinkRequest, User
+from apps.users.tasks import (
+    cleanup_expired_refresh_tokens,
+    cleanup_expired_social_link_requests,
+    send_social_link_email_task,
+)
 
 
 def _run(task) -> None:
     """Apply a Celery task eagerly (bypasses the worker)."""
     task.apply().get()
+
+
+class TestSendSocialLinkEmailTask:
+    """Unit tests for send_social_link_email_task — verifies the task body
+    calls the underlying email helper with the correct arguments."""
+
+    def test_delegates_to_send_social_link_email(self):
+        with patch("apps.users.email.send_social_link_email") as mock_send:
+            send_social_link_email_task.apply(
+                args=["user@example.com", "tok_link", "microsoft"]
+            ).get()
+
+        mock_send.assert_called_once_with("user@example.com", "tok_link", "microsoft")
+
+    def test_passes_provider_verbatim(self):
+        with patch("apps.users.email.send_social_link_email") as mock_send:
+            send_social_link_email_task.apply(
+                args=["other@example.com", "tok_gh", "github"]
+            ).get()
+
+        _, _, provider = mock_send.call_args.args
+        assert provider == "github"
 
 
 @pytest.mark.django_db
@@ -92,3 +119,38 @@ class TestCleanupExpiredRefreshTokens:
 
         assert RefreshToken.objects.filter(pk=live.pk).exists()
         assert not RefreshToken.objects.filter(pk=stale.pk).exists()
+
+
+@pytest.mark.django_db
+class TestCleanupExpiredSocialLinkRequests:
+    def _user(self, email: str = "slr@example.com") -> User:
+        return User.objects.create_user(email=email, full_name="SLR User")
+
+    def test_deletes_expired_row(self):
+        user = self._user()
+        expired = SocialLinkRequest.objects.create(
+            user=user,
+            token_hash="a" * 64,
+            expires_at=datetime.now(UTC) - timedelta(minutes=1),
+            provider="microsoft",
+            provider_user_id="ms-1",
+            full_name="",
+        )
+        _run(cleanup_expired_social_link_requests)
+        assert not SocialLinkRequest.objects.filter(pk=expired.pk).exists()
+
+    def test_keeps_live_row(self):
+        user = self._user()
+        live = SocialLinkRequest.objects.create(
+            user=user,
+            token_hash="b" * 64,
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            provider="microsoft",
+            provider_user_id="ms-2",
+            full_name="",
+        )
+        _run(cleanup_expired_social_link_requests)
+        assert SocialLinkRequest.objects.filter(pk=live.pk).exists()
+
+    def test_noop_when_empty(self):
+        _run(cleanup_expired_social_link_requests)

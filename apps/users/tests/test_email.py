@@ -9,6 +9,7 @@ import pytest
 from apps.users.email import (
     _send,
     send_password_reset_email,
+    send_social_link_email,
     send_verification_email,
 )
 
@@ -75,6 +76,45 @@ class TestSendPasswordResetEmail:
 
         html = mock_send.call_args[0][0]["html"]
         assert "ignore" in html.lower()
+
+
+class TestSendSocialLinkEmail:
+    def test_calls_resend_with_expected_envelope(self, email_settings):
+        with patch("apps.users.email.resend.Emails.send") as mock_send:
+            send_social_link_email("user@example.com", "tok_link", "microsoft")
+
+        mock_send.assert_called_once()
+        payload = mock_send.call_args[0][0]
+        assert payload["to"] == ["user@example.com"]
+        assert payload["subject"] == "Confirm linking your Microsoft account"
+
+    def test_html_contains_confirm_link_route_with_token(self, email_settings):
+        with patch("apps.users.email.resend.Emails.send") as mock_send:
+            send_social_link_email("user@example.com", "tok_link", "github")
+
+        html = mock_send.call_args[0][0]["html"]
+        assert 'href="https://app.saasmint.test/auth/confirm-link?token=tok_link"' in html
+        assert "Github" in html
+        assert "15 minutes" in html
+
+    def test_warns_if_unsolicited(self, email_settings):
+        with patch("apps.users.email.resend.Emails.send") as mock_send:
+            send_social_link_email("user@example.com", "tok_link", "microsoft")
+
+        html = mock_send.call_args[0][0]["html"]
+        assert "ignore" in html.lower()
+
+
+class TestEmailLoggingSocialLink:
+    def test_social_link_email_logs_recipient_and_provider(
+        self, email_settings, caplog: pytest.LogCaptureFixture
+    ):
+        with patch("apps.users.email.resend.Emails.send"):
+            with caplog.at_level("INFO", logger="apps.users.email"):
+                send_social_link_email("user@example.com", "tok_link", "github")
+
+        assert any("user@example.com" in r.message for r in caplog.records)
+        assert any("github" in r.message for r in caplog.records)
 
 
 class TestSendHelper:

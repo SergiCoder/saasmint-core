@@ -257,6 +257,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.users.tasks.cleanup_expired_refresh_tokens",
         "schedule": 86400,  # once per day
     },
+    "cleanup-expired-social-link-requests": {
+        "task": "apps.users.tasks.cleanup_expired_social_link_requests",
+        "schedule": 86400,  # once per day
+    },
 }
 
 # Stripe

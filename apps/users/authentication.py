@@ -22,7 +22,7 @@ from rest_framework.request import Request
 from apps.users.models import AUTH_USER_CACHE_KEY, RefreshToken, User
 
 if TYPE_CHECKING:
-    from apps.users.models import EmailVerificationToken, PasswordResetToken
+    from apps.users.models import EmailVerificationToken, PasswordResetToken, SocialLinkRequest
 
     OneTimeTokenModel = type[EmailVerificationToken] | type[PasswordResetToken]
 
@@ -35,6 +35,7 @@ ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
 REFRESH_TOKEN_LIFETIME = timedelta(days=7)
 EMAIL_VERIFICATION_LIFETIME = timedelta(hours=24)
 PASSWORD_RESET_LIFETIME = timedelta(minutes=10)
+SOCIAL_LINK_LIFETIME = timedelta(minutes=15)
 
 _ALGORITHM = "HS256"
 
@@ -196,6 +197,65 @@ def verify_password_reset_token(raw_token: str) -> User:
     from apps.users.models import PasswordResetToken
 
     return _verify_one_time_token(PasswordResetToken, raw_token, "reset")
+
+
+def create_social_link_token(
+    user: User,
+    *,
+    provider: str,
+    provider_user_id: str,
+    full_name: str,
+    avatar_url: str | None,
+) -> str:
+    """Create a SocialLinkRequest token bound to (user, provider, provider_user_id).
+
+    The triple is stored on the row — the confirm endpoint reads `provider`
+    and `provider_user_id` from there, never from the request body, so a
+    leaked token can't be redirected at a different provider account.
+    """
+    from apps.users.models import SocialLinkRequest
+
+    raw = secrets.token_urlsafe(32)
+    SocialLinkRequest.objects.create(
+        user=user,
+        token_hash=_hash_token(raw),
+        expires_at=datetime.now(UTC) + SOCIAL_LINK_LIFETIME,
+        provider=provider,
+        provider_user_id=provider_user_id,
+        full_name=full_name,
+        avatar_url=avatar_url,
+    )
+    return raw
+
+
+def verify_social_link_token(raw_token: str) -> SocialLinkRequest:
+    """Validate and consume a social-link request token. Returns the row.
+
+    Caller needs `provider`, `provider_user_id`, and `user` to mint the
+    `SocialAccount` row, so the helper returns the request itself rather
+    than just the user (unlike `_verify_one_time_token`).
+    """
+    from apps.users.models import SocialLinkRequest
+
+    token_hash = _hash_token(raw_token)
+    try:
+        obj = SocialLinkRequest.objects.select_related("user").get(token_hash=token_hash)
+    except SocialLinkRequest.DoesNotExist:
+        raise AuthenticationFailed(
+            {"detail": "Invalid link token.", "code": "invalid_token"}
+        ) from None
+
+    if obj.used_at is not None:
+        raise AuthenticationFailed({"detail": "Token has already been used.", "code": "token_used"})
+    if obj.expires_at <= datetime.now(UTC):
+        raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
+
+    if not obj.user.is_active:
+        raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
+
+    obj.used_at = datetime.now(UTC)
+    obj.save(update_fields=["used_at"])
+    return obj
 
 
 class JWTAuthentication(BaseAuthentication):

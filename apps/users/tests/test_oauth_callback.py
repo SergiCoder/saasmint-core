@@ -320,12 +320,13 @@ class TestOAuthCallbackUnverifiedEmail:
         assert "email_not_verified" in resp["Location"]
         assert not User.objects.filter(email="unverified@example.com").exists()
 
-    def test_unverified_email_blocks_linking_to_existing_account(self, client, _oauth_state):
-        """Unverified email + existing local account → ``oauth_email_unverified_collision``
-        (NOT generic ``email_not_verified``). Frontend uses the collision
-        code to guide the user to log in with their password and link
-        the provider explicitly."""
-        User.objects.create_user(
+    def test_unverified_email_collision_sends_link_email(self, client, _oauth_state):
+        """Unverified provider + existing local account → mint a SocialLinkRequest,
+        queue the confirmation email, redirect to /auth/link-email-sent. The
+        SocialAccount is NOT created until the user clicks the email link."""
+        from apps.users.models import SocialLinkRequest
+
+        existing = User.objects.create_user(
             email="victim@example.com",
             password="testpass123",  # noqa: S106
             full_name="Victim",
@@ -335,16 +336,97 @@ class TestOAuthCallbackUnverifiedEmail:
             provider_user_id="ms-attacker",
             email_verified=False,
         )
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with (
+            patch("apps.users.auth_views.exchange_code", return_value=info),
+            patch("apps.users.auth_views.send_social_link_email_task.delay") as mock_send,
+        ):
             resp = client.get(
                 "/api/v1/auth/oauth/microsoft/callback/",
                 {"code": "auth-code", "state": "test-state"},
             )
         assert resp.status_code == 302
-        assert "oauth_email_unverified_collision" in resp["Location"]
+        assert resp["Location"].endswith("/auth/link-email-sent")
         assert not SocialAccount.objects.filter(
             provider="microsoft", provider_user_id="ms-attacker"
         ).exists()
+
+        link_request = SocialLinkRequest.objects.get(
+            user=existing, provider="microsoft", provider_user_id="ms-attacker"
+        )
+        assert link_request.used_at is None
+        mock_send.assert_called_once()
+        called_email, _called_token, called_provider = mock_send.call_args.args
+        assert called_email == "victim@example.com"
+        assert called_provider == "microsoft"
+
+    def test_unverified_email_collision_inactive_user_silently_drops(
+        self, client, _oauth_state
+    ):
+        """Inactive existing user → same redirect as active, but NO email
+        queued and NO SocialLinkRequest minted. Anti-enumeration: an
+        attacker cannot probe whether a deactivated account exists."""
+        from apps.users.models import SocialLinkRequest
+
+        User.objects.create_user(
+            email="dormant@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Dormant",
+            is_active=False,
+        )
+        info = _mock_exchange(
+            email="dormant@example.com",
+            provider_user_id="ms-x",
+            email_verified=False,
+        )
+        with (
+            patch("apps.users.auth_views.exchange_code", return_value=info),
+            patch("apps.users.auth_views.send_social_link_email_task.delay") as mock_send,
+        ):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert resp["Location"].endswith("/auth/link-email-sent")
+        mock_send.assert_not_called()
+        assert not SocialLinkRequest.objects.filter(provider="microsoft").exists()
+
+    def test_collision_invalidates_prior_pending_requests(self, client, _oauth_state):
+        """Re-initiating the OAuth flow invalidates any older pending link
+        requests so only the freshest emailed link works."""
+        from datetime import UTC, datetime, timedelta
+
+        from apps.users.models import SocialLinkRequest
+
+        user = User.objects.create_user(
+            email="mailbox@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Mailbox",
+        )
+        # Stale prior request
+        stale = SocialLinkRequest.objects.create(
+            user=user,
+            token_hash="x" * 64,
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            provider="microsoft",
+            provider_user_id="old-id",
+            full_name="",
+        )
+        info = _mock_exchange(
+            email="mailbox@example.com",
+            provider_user_id="new-id",
+            email_verified=False,
+        )
+        with (
+            patch("apps.users.auth_views.exchange_code", return_value=info),
+            patch("apps.users.auth_views.send_social_link_email_task.delay"),
+        ):
+            client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        stale.refresh_from_db()
+        assert stale.used_at is not None
 
 
 @pytest.mark.django_db

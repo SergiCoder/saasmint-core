@@ -34,6 +34,7 @@ from apps.users.auth_serializers import (
     LoginSerializer,
     LogoutSerializer,
     MessageResponseSerializer,
+    OAuthConfirmLinkSerializer,
     OAuthExchangeResponseSerializer,
     RefreshSerializer,
     RegisterSerializer,
@@ -48,23 +49,28 @@ from apps.users.authentication import (
     create_email_verification_token,
     create_password_reset_token,
     create_refresh_token,
+    create_social_link_token,
     revoke_all_refresh_tokens,
     revoke_refresh_token,
     rotate_refresh_token,
     verify_email_token,
     verify_password_reset_token,
+    verify_social_link_token,
 )
-from apps.users.models import EmailVerificationToken, User
+from apps.users.models import EmailVerificationToken, SocialAccount, SocialLinkRequest, User
 from apps.users.oauth import (
     PROVIDERS,
     OAuthEmailNotVerifiedError,
-    OAuthEmailUnverifiedCollisionError,
     OAuthError,
     exchange_code,
     get_authorization_url,
 )
 from apps.users.services import email_is_registered, resolve_oauth_user
-from apps.users.tasks import send_password_reset_email_task, send_verification_email_task
+from apps.users.tasks import (
+    send_password_reset_email_task,
+    send_social_link_email_task,
+    send_verification_email_task,
+)
 from helpers import get_user
 
 logger = logging.getLogger(__name__)
@@ -401,14 +407,40 @@ class OAuthCallbackView(AuthPublicView):
             return _oauth_error_redirect(frontend_url, "exchange_failed")
 
         try:
-            user = resolve_oauth_user(provider, user_info)
-        except OAuthEmailUnverifiedCollisionError:
-            return _oauth_error_redirect(frontend_url, "oauth_email_unverified_collision")
+            resolution = resolve_oauth_user(provider, user_info)
         except OAuthEmailNotVerifiedError:
             return _oauth_error_redirect(frontend_url, "email_not_verified")
         except ValueError:
             return _oauth_error_redirect(frontend_url, "account_deactivated")
 
+        if resolution.kind == "collision":
+            # Provider didn't verify the email AND isn't on the trust list,
+            # but the email matches an existing local account. Mint an
+            # email-confirm token bound to the OAuth identity and queue an
+            # email asking the inbox owner to confirm the link. Inactive
+            # accounts (existing_user is None) collapse to the same redirect
+            # without queuing an email — anti-enumeration.
+            if resolution.existing_user is not None:
+                # Invalidate any prior pending requests so only the freshest
+                # link works (mirrors ResendVerificationView's pattern).
+                SocialLinkRequest.objects.filter(
+                    user=resolution.existing_user,
+                    used_at__isnull=True,
+                ).update(used_at=datetime.now(UTC))
+                token = create_social_link_token(
+                    resolution.existing_user,
+                    provider=provider,
+                    provider_user_id=user_info.provider_user_id,
+                    full_name=user_info.full_name,
+                    avatar_url=user_info.avatar_url,
+                )
+                send_social_link_email_task.delay(
+                    resolution.existing_user.email, token, provider
+                )
+            return HttpResponseRedirect(f"{frontend_url}/auth/link-email-sent")
+
+        user = resolution.user
+        assert user is not None  # noqa: S101  # resolution.kind=="user" guarantees this
         if not user.is_active:
             return _oauth_error_redirect(frontend_url, "account_deactivated")
 
@@ -477,6 +509,78 @@ class OAuthExchangeView(AuthPublicView):
             {
                 "access_token": data["access_token"],
                 "refresh_token": data["refresh_token"],
+                "token_type": "Bearer",
+                "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
+            }
+        )
+
+
+class OAuthConfirmLinkView(AuthPublicView):
+    """POST /api/v1/auth/oauth/confirm-link/ — link an OAuth provider via email proof.
+
+    The OAuth callback mints a SocialLinkRequest when the provider's email
+    matches an existing account but cannot be auto-linked (either
+    ``email_verified`` is false, or the provider is not on
+    ``TRUSTED_FOR_AUTO_LINK``). Clicking the link in that email re-proves
+    mailbox control; this endpoint then attaches the SocialAccount and
+    signs the user in.
+    """
+
+    @extend_schema(
+        request=OAuthConfirmLinkSerializer,
+        responses={200: OAuthExchangeResponseSerializer},
+        tags=["auth"],
+    )
+    def post(self, request: Request) -> Response:
+        ser = OAuthConfirmLinkSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        link_request = verify_social_link_token(ser.validated_data["token"])
+        user = link_request.user
+
+        # Defensive collision check: if some other user already owns
+        # (provider, provider_user_id), refuse — should never happen since
+        # the SocialLinkRequest was minted for *this* user, but a stale
+        # token plus an intervening manual link in admin could in principle
+        # produce it.
+        existing = SocialAccount.objects.filter(
+            provider=link_request.provider,
+            provider_user_id=link_request.provider_user_id,
+        ).first()
+        if existing is not None and existing.user_id != user.id:
+            return Response(
+                {
+                    "detail": "Provider account already linked to another user.",
+                    "code": "social_account_collision",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        with transaction.atomic():
+            if existing is None:
+                # ``get_or_create`` swallows the rare TOCTOU race where a
+                # parallel request inserted the same row between our SELECT
+                # and INSERT.
+                SocialAccount.objects.get_or_create(
+                    provider=link_request.provider,
+                    provider_user_id=link_request.provider_user_id,
+                    defaults={"user": user},
+                )
+            # Mailbox proof: equivalent to clicking the verify-email link or
+            # consuming a password-reset token. Mark the existing user
+            # verified if they weren't already.
+            if not user.is_verified:
+                user.is_verified = True
+                user.save(update_fields=["is_verified", "updated_at"])
+
+        # Mirror the OAuth-exchange envelope (vs. the password-login
+        # ``_token_response``) — confirm-link is semantically an OAuth
+        # success, and the frontend reuses ``setAuthCookies(access,
+        # refresh, expires_in)`` from its existing OAuth path.
+        return Response(
+            {
+                "access_token": create_access_token(user),
+                "refresh_token": create_refresh_token(user),
                 "token_type": "Bearer",
                 "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
             }

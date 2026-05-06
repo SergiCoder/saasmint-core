@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from config.celery import app
+
+if TYPE_CHECKING:
+    from django.db.models import Model
 
 logger = logging.getLogger(__name__)
 
@@ -25,38 +29,59 @@ def send_password_reset_email_task(email: str, token: str) -> None:
     send_password_reset_email(email, token)
 
 
-_REFRESH_TOKEN_DELETE_BATCH = 10_000
-
-
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
-def cleanup_expired_refresh_tokens() -> None:
-    """Delete refresh token rows whose expires_at has passed.
+def send_social_link_email_task(email: str, token: str, provider: str) -> None:
+    """Send OAuth provider link confirmation via Resend (async-safe)."""
+    from apps.users.email import send_social_link_email
 
-    Expired tokens are already rejected at verification time, but the rows
-    accumulate indefinitely without a cleanup task. Delete in bounded batches
-    so a backlog of millions of expired rows can't take out a long table-wide
-    lock.
+    send_social_link_email(email, token, provider)
+
+
+_EXPIRED_ROW_DELETE_BATCH = 10_000
+
+
+def _delete_expired_rows(model: type[Model], label: str) -> None:
+    """Delete rows whose ``expires_at`` has passed, in bounded batches.
+
+    Expired rows are already rejected at verification time, but accumulate
+    indefinitely without a cleanup task. Batched deletes prevent a backlog of
+    millions of rows from taking out a long table-wide lock. The ORM doesn't
+    accept LIMIT directly on ``.delete()``, so an id-subquery bounds each
+    batch.
     """
     from datetime import UTC, datetime
 
-    from apps.users.models import RefreshToken
-
+    manager = model._default_manager
     now = datetime.now(UTC)
     total_deleted = 0
     while True:
-        # Use an id-subquery so the delete is bounded by the batch size; the
-        # ORM doesn't accept LIMIT directly on .delete().
         ids = list(
-            RefreshToken.objects.filter(expires_at__lt=now).values_list("id", flat=True)[
-                :_REFRESH_TOKEN_DELETE_BATCH
+            manager.filter(expires_at__lt=now).values_list("id", flat=True)[
+                :_EXPIRED_ROW_DELETE_BATCH
             ]
         )
         if not ids:
             break
-        deleted, _ = RefreshToken.objects.filter(id__in=ids).delete()
+        deleted, _ = manager.filter(id__in=ids).delete()
         total_deleted += deleted
-        if deleted < _REFRESH_TOKEN_DELETE_BATCH:
+        if deleted < _EXPIRED_ROW_DELETE_BATCH:
             break
 
     if total_deleted:
-        logger.info("Pruned %d expired refresh tokens", total_deleted)
+        logger.info("Pruned %d expired %s", total_deleted, label)
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def cleanup_expired_refresh_tokens() -> None:
+    """Delete refresh token rows whose expires_at has passed."""
+    from apps.users.models import RefreshToken
+
+    _delete_expired_rows(RefreshToken, "refresh tokens")
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def cleanup_expired_social_link_requests() -> None:
+    """Delete SocialLinkRequest rows whose expires_at has passed."""
+    from apps.users.models import SocialLinkRequest
+
+    _delete_expired_rows(SocialLinkRequest, "social link requests")

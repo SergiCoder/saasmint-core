@@ -61,3 +61,25 @@ def send_password_reset_email(email: str, token: str) -> None:
         ),
     )
     logger.info("Password reset email sent to %s", email)
+
+
+def send_social_link_email(email: str, token: str, provider: str) -> None:
+    """Send a confirmation link for attaching a new OAuth provider to the account."""
+    from apps.users.authentication import SOCIAL_LINK_LIFETIME
+
+    link = f"{_get_frontend_url()}/auth/confirm-link?token={token}"
+    pretty = provider.capitalize()
+    lifetime_minutes = int(SOCIAL_LINK_LIFETIME.total_seconds()) // 60
+    _send(
+        to=email,
+        subject=f"Confirm linking your {pretty} account",
+        html=(
+            f"<p>Someone — most likely you — tried to sign in with {pretty} "
+            f"using this email address. Click the link below to confirm and "
+            f"link your {pretty} account to your SaasMint account:</p>"
+            f'<p><a href="{link}">Confirm linking</a></p>'
+            f"<p>This link expires in {lifetime_minutes} minutes. If you didn't try to link a "
+            f"{pretty} account, ignore this email — your account is unchanged.</p>"
+        ),
+    )
+    logger.info("Social link email sent to %s for %s", email, provider)

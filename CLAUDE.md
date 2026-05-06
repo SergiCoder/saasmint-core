@@ -81,7 +81,7 @@ For bugs touching infra, proxy, OAuth, or deploy:
 - Token-based actions: verify the caller owns the token's subject.
 - All password inputs go through `validate_password()`.
 - OAuth `email_verified=True` only from a provider-signed token. Microsoft: signature-valid OIDC `id_token` with `xms_edov: true` — Graph `/me.mail` is admin-mutable and doesn't prove ownership.
-- Auto-linking OAuth onto an existing local account requires the provider on `apps.users.services.TRUSTED_FOR_AUTO_LINK` (`google`, `github`, `microsoft`). Otherwise raise `OAuthEmailUnverifiedCollisionError`.
+- Auto-linking OAuth onto an existing local account requires `email_verified=True` AND the provider on `apps.users.services.TRUSTED_FOR_AUTO_LINK` (`google`, `github`, `microsoft`). Otherwise the callback mints a `SocialLinkRequest` and emails the existing account a single-use link; clicking the link goes through `POST /auth/oauth/confirm-link/` which attaches the `SocialAccount`, marks `is_verified=True`, and signs the user in. Inactive accounts are silently dropped (no email queued, identical redirect — anti-enumeration).
 
 ## Settings
 
