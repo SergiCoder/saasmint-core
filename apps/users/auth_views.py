@@ -9,6 +9,7 @@ from typing import ClassVar
 from urllib.parse import urlencode
 
 import httpx
+from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.core.cache import cache
@@ -170,10 +171,12 @@ class ResendVerificationView(AuthPublicView):
 
         # Always return 200 to prevent email enumeration. Silently no-op when
         # the address has no account, the account is inactive, or the user is
-        # already verified.
+        # already verified. ``email__iexact`` lands on the functional
+        # ``uniq_users_lower_email`` index — case-sensitive ``email=`` would
+        # miss differently-cased rows the resolver/registration creates.
         try:
             user = User.objects.get(
-                email=ser.validated_data["email"],
+                email__iexact=ser.validated_data["email"],
                 is_active=True,
                 is_verified=False,
             )
@@ -267,10 +270,12 @@ class ForgotPasswordView(AuthPublicView):
         ser = ForgotPasswordSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
-        # Always return 200 to prevent email enumeration
+        # Always return 200 to prevent email enumeration. ``email__iexact``
+        # uses uniq_users_lower_email so a case-mismatched lookup still
+        # finds the row.
         try:
             user = User.objects.get(
-                email=ser.validated_data["email"],
+                email__iexact=ser.validated_data["email"],
                 is_active=True,
             )
             token = create_password_reset_token(user)
@@ -373,7 +378,16 @@ class OAuthAuthorizeView(AuthPublicView):
 
 
 class OAuthCallbackView(AuthPublicView):
-    """GET /api/v1/auth/oauth/{provider}/callback/ — exchange code for tokens."""
+    """GET /api/v1/auth/oauth/{provider}/callback/ — exchange code for tokens.
+
+    The view itself is sync (DRF + the project's sync session/auth/hijack
+    middleware chain require this), but it drives the OAuth provider
+    round-trip via :func:`exchange_code`, an async function backed by a
+    shared :class:`httpx.AsyncClient`. The ``async_to_sync`` bridge keeps
+    the connection pool warm across the back-to-back token/userinfo/emails
+    calls in a single callback while leaving the request thread blocked
+    only on the actual provider latency.
+    """
 
     @extend_schema(exclude=True)
     def get(self, request: Request, provider: str) -> Response | HttpResponseRedirect:
@@ -401,7 +415,7 @@ class OAuthCallbackView(AuthPublicView):
 
         try:
             redirect_uri = request.build_absolute_uri(f"/api/v1/auth/oauth/{provider}/callback/")
-            user_info = exchange_code(provider, code, redirect_uri)
+            user_info = async_to_sync(exchange_code)(provider, code, redirect_uri)
         except (httpx.HTTPError, OAuthError, ValueError, KeyError):
             logger.exception("OAuth code exchange failed for %s", provider)
             return _oauth_error_redirect(frontend_url, "exchange_failed")

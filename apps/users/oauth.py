@@ -18,11 +18,13 @@ logger = logging.getLogger(__name__)
 
 # OAuth providers (Google/GitHub/Microsoft) reliably respond within 1-2s; 5s
 # leaves headroom without blocking the worker thread for an unbounded retry
-# from a degraded provider. The shared httpx.Client reuses TCP connections
-# across requests in the worker — relevant when a callback fires
-# token-exchange + userinfo + (GitHub) /user/emails back-to-back.
+# from a degraded provider. The shared httpx.AsyncClient reuses TCP
+# connections across the token-exchange, userinfo, and (GitHub)
+# /user/emails requests fired back-to-back inside one callback, and lets
+# the awaiting view yield the worker thread for the duration of each
+# provider round-trip.
 _OAUTH_TIMEOUT = httpx.Timeout(5.0)
-_oauth_client = httpx.Client(timeout=_OAUTH_TIMEOUT)
+_oauth_client = httpx.AsyncClient(timeout=_OAUTH_TIMEOUT)
 
 # Microsoft OIDC: keys served at the v2.0 multi-tenant endpoint cover both
 # work/school and consumer (MSA) tokens. Issuer format is per-tenant
@@ -187,12 +189,12 @@ def get_authorization_url(provider: str, redirect_uri: str, state: str) -> str:
     return f"{cfg['authorize_url']}?{urlencode(params)}"
 
 
-def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
+async def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
     """Exchange an authorization code for user info."""
     prov = Provider(provider)
     cfg = _get_config(prov)
 
-    token_resp = _oauth_client.post(
+    token_resp = await _oauth_client.post(
         cfg["token_url"],
         data={
             "client_id": cfg["client_id"],
@@ -209,7 +211,7 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
     if not access_token:
         raise OAuthError("OAuth token response missing access_token")
 
-    userinfo_resp = _oauth_client.get(
+    userinfo_resp = await _oauth_client.get(
         cfg["userinfo_url"],
         headers={"Authorization": f"Bearer {access_token}"},
     )
@@ -233,7 +235,7 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
             github: _GitHubUserInfo = info
             # Always use /user/emails as the authoritative source — the public
             # email on /user is not guaranteed verified.
-            email = _fetch_github_primary_email(access_token)
+            email = await _fetch_github_primary_email(access_token)
             return OAuthUserInfo(
                 email=email,
                 full_name=github.get("name") or github.get("login") or email.split("@")[0],
@@ -281,9 +283,9 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
             assert_never(unreachable)
 
 
-def _fetch_github_primary_email(access_token: str) -> str:
+async def _fetch_github_primary_email(access_token: str) -> str:
     """GitHub may not include email in user profile — fetch from /user/emails."""
-    resp = _oauth_client.get(
+    resp = await _oauth_client.get(
         "https://api.github.com/user/emails",
         headers={"Authorization": f"Bearer {access_token}"},
     )
