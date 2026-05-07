@@ -19,6 +19,11 @@ from apps.users.managers import UserManager
 
 AUTH_USER_CACHE_KEY = "auth_user:{}"
 
+# Single source of truth for the ``full_name`` minimum length. The
+# ``MinLengthValidator`` enforces it at the model layer; serializers import
+# this constant so the DRF-level ``min_length`` matches without drift.
+FULL_NAME_MIN_LENGTH = 3
+
 
 class RegistrationMethod(models.TextChoices):
     EMAIL = "email", "Email"
@@ -29,16 +34,20 @@ class RegistrationMethod(models.TextChoices):
 
 class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # The column-level ``unique=True`` is required for USERNAME_FIELD
-    # (Django's auth.E003 system check). It enforces *exact*-string
-    # uniqueness — but every email lookup in the codebase uses
-    # ``email__iexact`` (OAuth resolver, login, email_is_registered), and
-    # plain btree on a CITEXT-less EmailField cannot serve those without
-    # a sequential scan. The functional unique index on Lower("email") in
-    # Meta below carries both the case-insensitive uniqueness invariant
-    # AND the per-lookup index seek.
+    # email column-level unique=True is kept for `auth.E003` (USERNAME_FIELD
+    # must be unique) and as defense-in-depth alongside the functional
+    # Lower("email") unique constraint. It enforces *exact*-string uniqueness
+    # — but every email lookup in the codebase uses ``email__iexact`` (OAuth
+    # resolver, login, email_is_registered), and plain btree on a
+    # CITEXT-less EmailField cannot serve those without a sequential scan.
+    # The functional unique index on Lower("email") in Meta below carries
+    # both the case-insensitive uniqueness invariant AND the per-lookup
+    # index seek.
     email = models.EmailField(unique=True)
-    full_name = models.CharField(max_length=255, validators=[MinLengthValidator(3)])
+    full_name = models.CharField(
+        max_length=255,
+        validators=[MinLengthValidator(FULL_NAME_MIN_LENGTH)],
+    )
     avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no avatar set (distinguishable from empty string)
     preferred_locale = models.CharField(max_length=10, default="en")
     preferred_currency = models.CharField(max_length=3, default="usd")
@@ -56,6 +65,21 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+    # Stamped on every password reset/change. ``JWTAuthentication`` rejects
+    # access tokens whose ``pwd_iat`` claim is older than this timestamp, so a
+    # password change immediately invalidates outstanding access tokens (the
+    # refresh-token revocation already handled long-lived sessions). NULL =
+    # password never changed since the column was introduced; tokens with
+    # ``pwd_iat=0`` pass against NULL so the rollout doesn't log everyone out.
+    password_changed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=(
+            "Last password reset/change. Access tokens minted before this "
+            "moment are rejected by JWTAuthentication."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

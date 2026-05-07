@@ -58,12 +58,17 @@ def _hash_token(raw: str) -> str:
 def create_access_token(user: User) -> str:
     """Issue a short-lived access token for the given user."""
     now = datetime.now(UTC)
+    pwd_changed = getattr(user, "password_changed_at", None)
+    pwd_iat = int(pwd_changed.timestamp()) if pwd_changed else 0
     payload = {
         "sub": str(user.id),
         "email": user.email,
         "type": "access",
         "iat": now,
         "exp": now + ACCESS_TOKEN_LIFETIME,
+        # Stamp at issue time so a later password reset/change can revoke this
+        # token by comparing against User.password_changed_at on each request.
+        "pwd_iat": pwd_iat,
     }
     return jwt.encode(payload, settings.JWT_SIGNING_KEY, algorithm=_ALGORITHM)
 
@@ -157,25 +162,40 @@ def _consume_one_time_token(
     ``verify_social_link_token`` (returns the row to read provider fields off
     it). Raises AuthenticationFailed on invalid/expired/used tokens or when
     the bound user is inactive.
+
+    The consume step is a single conditional UPDATE
+    (``used_at IS NULL AND expires_at > now``) so two parallel redeems can
+    never both succeed — at most one row matches the predicate, and the
+    losing UPDATE returns 0 rows.
     """
     token_hash = _hash_token(raw_token)
-    try:
-        obj = model_class.objects.select_related("user").get(token_hash=token_hash)
-    except model_class.DoesNotExist:
-        raise AuthenticationFailed(
-            {"detail": f"Invalid {label} token.", "code": "invalid_token"}
-        ) from None
+    now = datetime.now(UTC)
+    updated = model_class.objects.filter(
+        token_hash=token_hash,
+        used_at__isnull=True,
+        expires_at__gt=now,
+    ).update(used_at=now)
+    if updated == 0:
+        # The atomic UPDATE matched zero rows. Inspect the row to disambiguate
+        # so callers see ``token_used`` / ``token_expired`` / ``invalid_token``
+        # — the existing API contract clients depend on.
+        existing = model_class.objects.filter(token_hash=token_hash).first()
+        if existing is None:
+            code = "invalid_token"
+            detail = f"Invalid {label} token."
+        elif existing.used_at is not None:
+            code = "token_used"
+            detail = f"{label.capitalize()} token has already been used."
+        else:
+            code = "token_expired"
+            detail = f"{label.capitalize()} token has expired."
+        raise AuthenticationFailed({"detail": detail, "code": code})
 
-    if obj.used_at is not None:
-        raise AuthenticationFailed({"detail": "Token has already been used.", "code": "token_used"})
-    if obj.expires_at <= datetime.now(UTC):
-        raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
+    obj = model_class.objects.select_related("user").get(token_hash=token_hash)
 
     if not obj.user.is_active:
         raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
 
-    obj.used_at = datetime.now(UTC)
-    obj.save(update_fields=["used_at"])
     return obj
 
 
@@ -312,6 +332,19 @@ class JWTAuthentication(BaseAuthentication):
                     {"detail": "User not found.", "code": "user_not_found"}
                 ) from None
             cache.set(cache_key, user, timeout=_AUTH_CACHE_TTL)
+
+        # Reject access tokens minted before the user's last password change.
+        # Tokens predating the ``password_changed_at`` column carry pwd_iat=0
+        # (or no claim at all) and pass when ``password_changed_at`` is NULL,
+        # so existing sessions survive the rollout.
+        pwd_iat_raw = payload.get("pwd_iat", 0)
+        pwd_iat = pwd_iat_raw if isinstance(pwd_iat_raw, int) else 0
+        pwd_changed = getattr(user, "password_changed_at", None)
+        user_pwd_iat = int(pwd_changed.timestamp()) if pwd_changed else 0
+        if pwd_iat < user_pwd_iat:
+            raise AuthenticationFailed(
+                {"detail": "Token invalidated.", "code": "token_revoked"}
+            )
 
         return (user, token)
 
