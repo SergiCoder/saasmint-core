@@ -107,12 +107,6 @@ class InMemoryStripeEventRepository:
         self._store[event.stripe_id] = event
         return event
 
-    async def save_if_new(self, event: StripeEvent) -> bool:
-        if event.stripe_id in self._store:
-            return False
-        self._store[event.stripe_id] = event
-        return True
-
     async def mark_processed(self, stripe_id: str) -> None:
         if stripe_id in self._store:
             event = self._store[stripe_id]
@@ -123,26 +117,14 @@ class InMemoryStripeEventRepository:
             event = self._store[stripe_id]
             self._store[stripe_id] = event.model_copy(update={"error": error})
 
-    async def list_recent(self, limit: int = 50) -> list[StripeEvent]:
-        return list(self._store.values())[:limit]
-
 
 class InMemoryPlanRepository:
     def __init__(self) -> None:
         self._plans: dict[UUID, Plan] = {}
         self._prices: dict[UUID, PlanPrice] = {}
 
-    async def get_by_id(self, plan_id: UUID) -> Plan | None:
-        return self._plans.get(plan_id)
-
     async def list_active(self) -> list[Plan]:
         return [p for p in self._plans.values() if p.is_active]
-
-    async def get_price(self, plan_id: UUID) -> PlanPrice | None:
-        return next(
-            (p for p in self._prices.values() if p.plan_id == plan_id),
-            None,
-        )
 
     async def get_price_by_stripe_id(self, stripe_price_id: str) -> PlanPrice | None:
         return next(

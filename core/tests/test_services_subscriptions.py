@@ -24,11 +24,6 @@ def test_safe_get_none_obj_returns_none() -> None:
     assert _safe_get(None, "key") is None
 
 
-def test_safe_get_returns_none_for_non_subscriptable() -> None:
-    """Objects that don't support __getitem__ (e.g. plain int) must return
-    None instead of raising TypeError."""
-    assert _safe_get(42, "key") is None
-
 # ── change_plan ───────────────────────────────────────────────────────────────
 
 

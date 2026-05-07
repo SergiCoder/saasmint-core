@@ -25,9 +25,5 @@ class InsufficientPermissionError(DomainError):
     """User does not have the required org role to perform this action."""
 
 
-class WebhookVerificationError(DomainError):
-    """Stripe webhook signature verification failed."""
-
-
 class WebhookDataError(DomainError):
     """Webhook event references unknown entities (customer, price, etc.)."""
