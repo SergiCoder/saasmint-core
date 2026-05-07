@@ -27,7 +27,12 @@ _TEST_DRF = {
         "rest_framework.permissions.AllowAny",
     ],
     "DEFAULT_THROTTLE_CLASSES": [],
-    "DEFAULT_THROTTLE_RATES": {"auth": "1000/hour"},
+    "DEFAULT_THROTTLE_RATES": {
+        "auth": "1000/hour",
+        "auth_login": "1000/hour",
+        "auth_register": "1000/hour",
+        "auth_refresh": "1000/hour",
+    },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
@@ -211,7 +216,15 @@ class TestLoginView:
         # Django's authenticate returns None for inactive users
         assert resp.status_code == 401
 
-    def test_login_unverified_user(self, api):
+    def test_login_unverified_user_returns_invalid_credentials(self, api):
+        """Unverified accounts collapse into the generic 401 invalid_credentials.
+
+        A distinct ``email_not_verified`` 403 leaks the fact that an
+        attacker's password guess was correct, even when verification is
+        pending — useful signal for credential-stuffing campaigns. The
+        flow recovers via ``POST /auth/resend-verification`` (which is
+        itself enumeration-safe).
+        """
         User.objects.create_user(
             email="unverified@example.com",
             password="testpass123",  # noqa: S106
@@ -223,8 +236,8 @@ class TestLoginView:
             {"email": "unverified@example.com", "password": "testpass123"},
             format="json",
         )
-        assert resp.status_code == 403
-        assert resp.data["code"] == "email_not_verified"
+        assert resp.status_code == 401
+        assert resp.data["code"] == "invalid_credentials"
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +250,13 @@ class TestVerifyEmailView:
     URL = "/api/v1/auth/verify-email/"
 
     def test_verify_email_success(self, api):
+        # Normal-registration user starts with a usable password — verify
+        # alone is enough to flip is_verified and issue tokens.
         user = User.objects.create_user(
-            email="toverify@example.com", full_name="To Verify", is_verified=False
+            email="toverify@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="To Verify",
+            is_verified=False,
         )
         token = create_email_verification_token(user)
 
@@ -260,6 +278,73 @@ class TestVerifyEmailView:
     def test_verify_email_invalid_token(self, api):
         resp = api.post(self.URL, {"token": "invalid-token"}, format="json")
         assert resp.status_code == 401  # AuthenticationFailed
+
+    def test_verify_requires_password_for_invitee_account(self, api):
+        """Invitee accounts (unusable password) MUST supply ``password`` here.
+
+        Decouples credential-binding from the invitation token: the
+        invitation accept endpoint only takes ``full_name`` and the
+        password is set on this verify call, so an attacker who
+        intercepted the invitation link cannot bind a password they
+        chose.
+        """
+        user = User.objects.create_user(
+            email="invitee@example.com",
+            password=None,  # set_unusable_password
+            full_name="Invitee",
+            is_verified=False,
+        )
+        assert not user.has_usable_password()
+        token = create_email_verification_token(user)
+
+        resp = api.post(self.URL, {"token": token}, format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "password_required"
+        user.refresh_from_db()
+        assert user.is_verified is False
+        assert not user.has_usable_password()
+
+    def test_verify_sets_password_for_invitee_account(self, api):
+        user = User.objects.create_user(
+            email="invitee2@example.com",
+            password=None,
+            full_name="Invitee2",
+            is_verified=False,
+        )
+        token = create_email_verification_token(user)
+
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "testpass123"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert "access_token" in resp.data
+        user.refresh_from_db()
+        assert user.is_verified is True
+        assert user.check_password("testpass123")
+
+    def test_verify_ignores_password_for_existing_password_account(self, api):
+        """A normal-registration user already has a password; ``password`` is ignored."""
+        user = User.objects.create_user(
+            email="existing@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Existing",
+            is_verified=False,
+        )
+        token = create_email_verification_token(user)
+
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "testpass456"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        user.refresh_from_db()
+        assert user.is_verified is True
+        # Original password is preserved; the supplied one is silently dropped.
+        assert user.check_password("testpass123")
+        assert not user.check_password("testpass456")
 
 
 # ---------------------------------------------------------------------------
@@ -627,8 +712,14 @@ class TestVerifyEmailTokenSecurity:
     URL = "/api/v1/auth/verify-email/"
 
     def test_token_cannot_be_replayed(self, api):
+        # Use a normal-registration user (usable password) so verify alone
+        # is enough — no need to also exercise the password-required branch
+        # in this replay-targeted test.
         user = User.objects.create_user(
-            email="replay-verify@example.com", full_name="Replay", is_verified=False
+            email="replay-verify@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Replay",
+            is_verified=False,
         )
         token = create_email_verification_token(user)
 
@@ -676,8 +767,11 @@ class TestVerifyEmailTokenSecurity:
         Can't simulate true concurrency without threads, but this documents
         that the token is atomically single-use within the request lifecycle.
         """
+        # Normal-registration user — already has a usable password, so verify
+        # alone is enough to flip is_verified and issue tokens.
         user = User.objects.create_user(
             email="concurrent-verify@example.com",
+            password="testpass123",  # noqa: S106
             full_name="Concurrent",
             is_verified=False,
         )
@@ -888,6 +982,37 @@ class TestOAuthExchangeCacheHelpers:
 
         data = _consume_oauth_exchange(code)
         assert data == {"access_token": "access-4", "refresh_token": "refresh-4"}
+
+    def test_consume_oauth_exchange_atomic_under_concurrent_redemption(self, clear_cache):
+        """Pre-seeding the consumed-sentinel must block redemption.
+
+        ``_consume_oauth_exchange`` uses ``cache.add`` on a sentinel key
+        as the atomic gate so two concurrent redeem attempts cannot both
+        succeed. We simulate the race deterministically: write the
+        sentinel ourselves (modelling the "other thread won the race"
+        state) and assert the subsequent consume returns None even
+        though the underlying token pair is still cached.
+        """
+        from django.core.cache import cache
+
+        from apps.users.auth_views import (
+            _OAUTH_EXCHANGE_PREFIX,
+            _OAUTH_EXCHANGE_TTL,
+            _consume_oauth_exchange,
+            _store_oauth_exchange,
+        )
+
+        code = _store_oauth_exchange("access-race", "refresh-race")
+        # Simulate the winning concurrent caller: their cache.add() landed
+        # the sentinel first, so any subsequent caller must get None even
+        # if the original token pair is still in the cache.
+        cache.set(
+            f"{_OAUTH_EXCHANGE_PREFIX}{code}:consumed",
+            1,
+            timeout=_OAUTH_EXCHANGE_TTL,
+        )
+
+        assert _consume_oauth_exchange(code) is None
 
 
 @pytest.mark.django_db

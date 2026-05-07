@@ -367,7 +367,7 @@ class TestAccountViewDELETE:
             full_name="Team Owner",
         )
         org = Org.objects.create(name="Delete Test Org", slug="delete-test-org", created_by=owner)
-        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.MEMBER)
 
         team_cust = StripeCustomer.objects.create(stripe_id="cus_seatdec", org=org, livemode=False)

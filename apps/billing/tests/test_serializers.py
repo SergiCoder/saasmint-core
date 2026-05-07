@@ -87,7 +87,7 @@ class TestSubscriptionSerializer:
         member1 = User.objects.create_user(email="ser-m1@example.com", full_name="M1")
         member2 = User.objects.create_user(email="ser-m2@example.com", full_name="M2")
         org = Org.objects.create(name="SerOrg", slug="ser-org", created_by=owner)
-        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
         OrgMember.objects.create(org=org, user=member1, role=OrgRole.MEMBER)
         OrgMember.objects.create(org=org, user=member2, role=OrgRole.MEMBER)
         customer = StripeCustomer.objects.create(

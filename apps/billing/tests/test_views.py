@@ -1919,6 +1919,60 @@ class TestBillingAuthorityOnMutations:
         )
         assert resp.status_code == 403
 
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_user_in_two_orgs_mutation_targets_authorized_org(
+        self, mock_cancel, team_org_setup
+    ):
+        """Multi-org caller's DELETE must hit the org they're is_billing in.
+
+        Reproduces the cross-org mutation bug: a user with memberships in
+        org A (is_billing=True) and org B (is_billing=False) authenticates
+        and calls DELETE on ``/me/?context=team``. The authority check
+        correctly pins ``org_id=A``, but without forwarding ``org_id``
+        through ``_resolve_billing_customer`` the customer lookup could
+        land on org B's customer (whichever ``OrgMember.objects.first()``
+        returns). The fix passes the authorised ``org_id`` end-to-end.
+        """
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        org_a, customer_a, sub_a = team_org_setup
+        # Build a second org B that the same user is a non-billing member of.
+        owner_b = User.objects.create_user(email="ownerb@example.com", full_name="Owner B")
+        org_b = Org.objects.create(name="Org B", slug="org-b", created_by=owner_b)
+        OrgMember.objects.create(org=org_b, user=owner_b, role=OrgRole.OWNER, is_billing=True)
+        customer_b = StripeCustomer.objects.create(
+            stripe_id="cus_team_authz_b", org=org_b, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_team_authz_b",
+            stripe_customer=customer_b,
+            status="active",
+            plan=sub_a.plan,
+            seat_limit=3,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+
+        # Caller — is_billing only on org_a, member-only on org_b.
+        caller = User.objects.create_user(
+            email="multiorg@example.com", full_name="Multi"
+        )
+        OrgMember.objects.create(org=org_a, user=caller, role=OrgRole.ADMIN, is_billing=True)
+        OrgMember.objects.create(org=org_b, user=caller, role=OrgRole.MEMBER, is_billing=False)
+
+        client = APIClient()
+        client.force_authenticate(user=caller)
+
+        resp = client.delete("/api/v1/billing/subscriptions/me/?context=team")
+        assert resp.status_code == 202
+
+        # The Stripe call MUST target org_a's customer, never org_b's.
+        called_customer = mock_cancel.call_args.kwargs["stripe_customer_id"]
+        assert called_customer == customer_a.id
+        assert called_customer != customer_b.id
+
 
 @pytest.mark.django_db
 class TestCancelNoticeEmail:

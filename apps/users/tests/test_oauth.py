@@ -115,6 +115,45 @@ class TestExchangeCodeGoogle:
         with _patch_post(token_resp), pytest.raises(httpx.HTTPStatusError):
             await exchange_code("google", "c", "https://host/cb")
 
+    async def test_string_false_verified_email_does_not_auto_link(self):
+        """``bool("false")`` is ``True``; only the JSON-typed boolean ``true`` counts.
+
+        Regression: if Google ever returns the verified flag as the JSON
+        string ``"false"`` (proxy normalisation, mock layers, future API
+        drift), the previous ``bool(...)`` check would have flipped the
+        flag to ``True`` and enabled auto-linking onto an existing
+        unrelated local account. Strict ``is True`` is the only safe gate.
+        """
+        token_resp = _mock_response(json_data={"access_token": "tok"})
+        userinfo_resp = _mock_response(
+            json_data={
+                "id": "g-strfalse",
+                "email": "x@example.com",
+                "name": "X",
+                "verified_email": "false",
+                "email_verified": "true",
+            }
+        )
+        with _patch_post(token_resp), _patch_get(userinfo_resp):
+            info = await exchange_code("google", "auth-code", "https://host/cb")
+
+        assert info.email_verified is False
+
+    async def test_truthy_non_bool_verified_email_does_not_auto_link(self):
+        token_resp = _mock_response(json_data={"access_token": "tok"})
+        userinfo_resp = _mock_response(
+            json_data={
+                "id": "g-int",
+                "email": "y@example.com",
+                "verified_email": 1,
+                "email_verified": "yes",
+            }
+        )
+        with _patch_post(token_resp), _patch_get(userinfo_resp):
+            info = await exchange_code("google", "auth-code", "https://host/cb")
+
+        assert info.email_verified is False
+
 
 # ---------------------------------------------------------------------------
 # exchange_code — GitHub
