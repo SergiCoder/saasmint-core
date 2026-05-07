@@ -10,6 +10,8 @@ API endpoints in this doc are written without the `/api/v1/` prefix for brevity 
 - `apps/` — Django apps (`users`, `billing`, `orgs`, `dashboard`, `admin_panel`, `marketing`). Each has models, views, serializers, urls, tests/.
 - `config/` — Django settings (base/dev/test/prod), root urls, celery, `wsgi.py` and `asgi.py` entrypoints.
 - `middleware/` — `security.py` (CSP / security headers), `exceptions.py` (DRF error-envelope normalisation).
+- `infra/` — entrypoint scripts, Caddy config, deploy assets.
+- `helpers.py` — shared Django helpers (`get_user`, `aget_or_none`, `aget_latest_or_none`).
 - Django apps implement core's repository interfaces and wire them to DRF views/serializers.
 
 ## Billing model
@@ -19,7 +21,7 @@ API endpoints in this doc are written without the `/api/v1/` prefix for brevity 
 - **Subscription = pure Stripe mirror**. Every row has a `stripe_id`, synced via webhooks. Free tier = absence of a row. `GET /billing/subscriptions/me/` returns paginated `{count,next,previous,results}` with 0–2 rows (one personal, one team for concurrent billers).
 - **Products**: one-time purchases (credit packs / Boost). `POST /billing/product-checkout-sessions/` (Stripe Checkout `mode=payment`). Webhook `on_product_checkout_completed` grants credits via `CreditTransaction` + `CreditBalance`.
 - **Credits**: `CreditBalance` (denormalized, XOR `user`/`org`) + `CreditTransaction` (immutable, unique on `stripe_session_id` for idempotency). `GET /billing/credits/me/` → `{balances:[...]}`.
-- **Context selector**: subscription mutations and product checkout accept `?context=personal|team`. Default: `team` for org members, `personal` otherwise. `?context=team` requires `OrgMember.role=OWNER`. The `is_billing=True` gate only applies to team-context.
+- **Context selector**: subscription mutations and product checkout accept `?context=personal|team`. Default: `team` for org members, `personal` otherwise. Subscription mutations on `?context=team` require `is_billing=True` on an active org membership; product checkout on `?context=team` requires `role=OWNER`. Owners are always `is_billing=True` (DB check constraint `ck_org_owner_must_be_billing`), but admins/members can also be granted `is_billing=True`.
 - **Org membership**: derived from `OrgMember.objects.filter(user_id=...).exists()`. The legacy `User.account_type` and the org-owner registration endpoint were removed — there is now exactly one register path: `POST /auth/register/`.
 - **Team checkout**: mints a fresh org-scoped Stripe customer at init; webhook persists the `StripeCustomer` row inside `_create_org_with_owner`. Personal and team subs always live on distinct customers — the split is **for invoicing isolation** (separate tax IDs, addresses, receipts, payment methods per scope), not currency.
 - **Owner uniqueness**: DB-enforced via partial unique index on `OrgMember(user) WHERE role='owner'` (`uniq_org_owner_per_user`). The view-layer `.exists()` check is a UX fast-path; the constraint is the authoritative TOCTOU guard.
@@ -59,7 +61,7 @@ Fix errors before pushing. Do not skip.
 make dev         # docker compose up (Django + Celery + Postgres + Redis)
 make test        # pytest -v
 make migrate     # run migrations (stack running)
-make schema      # regenerate schema.yml (drf-spectacular --file schema.yml)
+make schema      # regenerate schema.yml (drf-spectacular --file schema.yml; stack must be running)
 ```
 
 After modifying any endpoint, run `make schema` to regenerate `schema.yml`.
