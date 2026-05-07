@@ -344,6 +344,54 @@ class TestSyncLocalizedPrices:
         after = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur").amount_minor
         assert before == after
 
+    def test_unchanged_friendly_value_refreshes_synced_at_only(self):
+        """Stability gate: when the freshly friendly-rounded value equals the
+        already-stored ``amount_minor``, the task refreshes ``synced_at`` as a
+        heartbeat (so monitoring can spot a stale sync) but leaves
+        ``amount_minor`` and ``stripe_price_id`` untouched. The "changed"
+        return value must NOT include heartbeat-only rows."""
+        from datetime import UTC, datetime, timedelta
+
+        from apps.billing.models import LocalizedPrice
+
+        plan_price = seed_plan_price(999)  # $9.99
+        # Seed a row whose amount_minor matches what 0.9 EUR rate produces:
+        # $9.99 * 0.9 = €8.991 → round_friendly → 8.99 → 899 minor units.
+        old_synced_at = datetime(2024, 1, 1, tzinfo=UTC)
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
+            currency="eur",
+            amount_minor=899,
+            synced_at=old_synced_at,
+            stripe_price_id="price_pre_existing_eur",
+        )
+
+        # Run with the same EUR rate — the friendly value matches, so this
+        # is a heartbeat-only update for the EUR row.
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
+            changed = sync_localized_prices.apply().get()
+
+        eur = LocalizedPrice.objects.get(plan_price=plan_price, currency="eur")
+        assert eur.amount_minor == 899
+        assert eur.synced_at > old_synced_at
+        # ``stripe_price_id`` preserved across heartbeat.
+        assert eur.stripe_price_id == "price_pre_existing_eur"
+        # The heartbeat row must not be counted as "changed".
+        # ``changed`` may still be > 0 if other currencies' rows are created;
+        # what matters is that EUR (heartbeat) is excluded. If only EUR is
+        # in the FX response, the count is 0.
+        assert changed >= 0
+        # When EUR is the only currency in the response, changed should be 0.
+        # Re-run to assert that explicitly.
+        before = datetime.now(UTC)
+        with patch("apps.billing.tasks.httpx.get", return_value=fx_response({"eur": 0.9})):
+            changed_again = sync_localized_prices.apply().get()
+        assert changed_again == 0
+        eur.refresh_from_db()
+        # synced_at advanced again on the second heartbeat run.
+        assert eur.synced_at >= before - timedelta(seconds=1)
+        assert eur.amount_minor == 899
+
     def test_return_value_counts_both_plan_and_product_rows(self):
         """Return value equals the total number of LocalizedPrice rows written
         (plan rows + product rows across all currencies)."""

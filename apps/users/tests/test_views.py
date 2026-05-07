@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import io
+import tempfile
 from unittest.mock import patch
 
 import pytest
+from django.core.files.storage import default_storage
+from django.test import override_settings
+from PIL import Image
 from rest_framework.test import APIClient
 
 from apps.users.models import User
@@ -458,4 +463,225 @@ class TestAccountExportView:
     def test_unauthenticated_export_rejected(self):
         client = APIClient()
         resp = client.get("/api/v1/account/export/")
+        assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# AvatarView — POST/DELETE /api/v1/account/avatar/
+# ---------------------------------------------------------------------------
+
+
+def _png_upload(size: tuple[int, int] = (200, 200), mode: str = "RGB", color: object = "red"):
+    """Build an in-memory PNG :class:`SimpleUploadedFile` for multipart upload."""
+    from django.core.files.uploadedfile import SimpleUploadedFile
+
+    img = Image.new(mode, size, color)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return SimpleUploadedFile("avatar.png", buf.getvalue(), content_type="image/png")
+
+
+@pytest.mark.django_db
+class TestAvatarView:
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_avatar_post_returns_201_with_location_header(self, authed_client, user):
+        upload = _png_upload()
+        resp = authed_client.post(
+            "/api/v1/account/avatar/",
+            {"avatar": upload},
+            format="multipart",
+        )
+        assert resp.status_code == 201
+        avatar_url = resp.data["avatar_url"]
+        assert resp["Location"] == avatar_url
+        user.refresh_from_db()
+        assert user.avatar_url == avatar_url
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_avatar_post_re_encodes_to_webp(self, authed_client, user):
+        upload = _png_upload()
+        resp = authed_client.post(
+            "/api/v1/account/avatar/",
+            {"avatar": upload},
+            format="multipart",
+        )
+        assert resp.status_code == 201
+        # Stored under .webp regardless of input format.
+        assert resp.data["avatar_url"].endswith(".webp")
+        user.refresh_from_db()
+        assert user.avatar_url.endswith(".webp")
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_avatar_post_strips_exif_orientation(self, authed_client, user):
+        # Patch ImageOps.exif_transpose to verify the avatar pipeline calls it
+        # before resizing — covers the EXIF orientation strip without needing
+        # a binary EXIF fixture.
+        from PIL import ImageOps
+
+        original = ImageOps.exif_transpose
+        with patch(
+            "apps.users.services.ImageOps.exif_transpose",
+            wraps=original,
+        ) as mock_transpose:
+            upload = _png_upload(size=(100, 200))
+            resp = authed_client.post(
+                "/api/v1/account/avatar/",
+                {"avatar": upload},
+                format="multipart",
+            )
+        assert resp.status_code == 201
+        mock_transpose.assert_called_once()
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_avatar_post_converts_palette_image_to_rgb(self, authed_client, user):
+        # Build a palette ("P" mode) PNG and upload it. The pipeline should
+        # accept it without crashing and re-encode it as WebP.
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        img = Image.new("P", (100, 100))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        upload = SimpleUploadedFile("p.png", buf.getvalue(), content_type="image/png")
+
+        resp = authed_client.post(
+            "/api/v1/account/avatar/",
+            {"avatar": upload},
+            format="multipart",
+        )
+        assert resp.status_code == 201
+        assert resp.data["avatar_url"].endswith(".webp")
+
+    def test_avatar_post_rejects_invalid_image(self, authed_client):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        upload = SimpleUploadedFile(
+            "evil.jpg", b"not-an-image", content_type="image/jpeg"
+        )
+        resp = authed_client.post(
+            "/api/v1/account/avatar/",
+            {"avatar": upload},
+            format="multipart",
+        )
+        assert resp.status_code == 400
+
+    def test_avatar_post_rejects_oversize(self, authed_client):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        # 5 MB + 1 byte is over the AvatarUploadSerializer cap (5 MB).
+        oversized = SimpleUploadedFile(
+            "big.png", b"X" * (5 * 1024 * 1024 + 1), content_type="image/png"
+        )
+        resp = authed_client.post(
+            "/api/v1/account/avatar/",
+            {"avatar": oversized},
+            format="multipart",
+        )
+        assert resp.status_code == 400
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_avatar_post_rejects_disallowed_format(self, authed_client):
+        # Real PNG bytes pass the ImageField magic-byte sniff, but we patch
+        # the post-validate Image.open used by the avatar pipeline to claim
+        # an unsupported format (BMP) and verify the 400.
+        upload = _png_upload()
+
+        fake_img = Image.new("RGB", (50, 50))
+        fake_img.format = "BMP"  # unsupported by the avatar allow-list
+
+        class _Ctx:
+            def __enter__(self):
+                return fake_img
+
+            def __exit__(self, *exc):
+                return False
+
+        with patch("apps.users.services.Image.open", return_value=_Ctx()):
+            resp = authed_client.post(
+                "/api/v1/account/avatar/",
+                {"avatar": upload},
+                format="multipart",
+            )
+        assert resp.status_code == 400
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_avatar_post_replaces_existing_local_file(self, authed_client, user):
+        # Upload once to populate avatar_url with a local file under MEDIA_URL.
+        first = _png_upload()
+        first_resp = authed_client.post(
+            "/api/v1/account/avatar/",
+            {"avatar": first},
+            format="multipart",
+        )
+        assert first_resp.status_code == 201
+        from django.conf import settings
+
+        first_path = first_resp.data["avatar_url"].split(settings.MEDIA_URL, 1)[1]
+        assert default_storage.exists(first_path)
+
+        # Upload a second time — the first stored file should be deleted.
+        second = _png_upload(color="blue")
+        second_resp = authed_client.post(
+            "/api/v1/account/avatar/",
+            {"avatar": second},
+            format="multipart",
+        )
+        assert second_resp.status_code == 201
+        assert not default_storage.exists(first_path)
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_avatar_post_does_not_unlink_external_oauth_url(self, authed_client, user):
+        # Set an externally-hosted (OAuth provider CDN) avatar.
+        user.avatar_url = "https://lh3.googleusercontent.com/a/abc123"
+        user.save(update_fields=["avatar_url"])
+
+        with patch.object(
+            default_storage, "delete", wraps=default_storage.delete
+        ) as mock_delete:
+            upload = _png_upload()
+            resp = authed_client.post(
+                "/api/v1/account/avatar/",
+                {"avatar": upload},
+                format="multipart",
+            )
+        assert resp.status_code == 201
+        mock_delete.assert_not_called()
+
+    @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
+    def test_avatar_delete_returns_204_and_clears_url(self, authed_client, user):
+        # Seed an avatar via POST so the saved file exists on local storage.
+        upload = _png_upload()
+        post_resp = authed_client.post(
+            "/api/v1/account/avatar/",
+            {"avatar": upload},
+            format="multipart",
+        )
+        assert post_resp.status_code == 201
+
+        del_resp = authed_client.delete("/api/v1/account/avatar/")
+        assert del_resp.status_code == 204
+        user.refresh_from_db()
+        # The view sets avatar_url = None.
+        assert user.avatar_url in ("", None)
+
+    def test_avatar_delete_when_unset_is_noop(self, authed_client, user):
+        # No prior avatar — DELETE should still succeed.
+        assert not user.avatar_url
+        resp = authed_client.delete("/api/v1/account/avatar/")
+        assert resp.status_code == 204
+
+    def test_avatar_post_unauthenticated_rejected(self):
+        client = APIClient()
+        upload = _png_upload()
+        resp = client.post(
+            "/api/v1/account/avatar/",
+            {"avatar": upload},
+            format="multipart",
+        )
+        assert resp.status_code in (401, 403)
+
+    def test_avatar_delete_unauthenticated_rejected(self):
+        client = APIClient()
+        resp = client.delete("/api/v1/account/avatar/")
         assert resp.status_code in (401, 403)

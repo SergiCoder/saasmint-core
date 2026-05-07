@@ -67,7 +67,7 @@ class TestSendPasswordResetEmail:
         html = mock_send.call_args[0][0]["html"]
         assert 'href="https://app.saasmint.test/reset-password?token=tok_reset"' in html
         assert "Reset Password" in html
-        assert "1 hour" in html
+        assert "10 minutes" in html
 
     def test_warns_if_unsolicited(self, email_settings):
         with patch("apps.email_transport.resend.Emails.send") as mock_send:
