@@ -117,18 +117,13 @@ def _validate_redirect_url(url: str) -> str:
 class _PriceSerializer(serializers.ModelSerializer[Any]):
     """Shared base for PlanPrice / ProductPrice serializers.
 
-    Adds the four display-currency keys (``display_amount`` / ``currency`` +
-    ``local_display_amount`` / ``local_currency``) via a single
-    :meth:`to_representation` override that computes both tuples in one
-    pass. The prior implementation declared four ``SerializerMethodField``
-    fan-out (each getter used to walk ``localized_prices.all()`` once,
-    doubling the iteration work) and stashed cache keys on the instance —
-    this collapses both into one call.
-
-    The keys are not declared as serializer fields, so they don't appear in
-    ``Meta.fields``. drf-spectacular still picks them up because the keys
-    show up in the response payload at runtime; the OpenAPI schema can be
-    regenerated with ``make schema`` after this change.
+    Declares the four display-currency keys (``display_amount`` / ``currency``
+    + ``local_display_amount`` / ``local_currency``) so drf-spectacular sees
+    them in the OpenAPI schema, but populates all four in a single
+    :meth:`to_representation` pass that computes the display + local tuples
+    once each. Replaces the prior four-``SerializerMethodField`` fan-out
+    (each getter walked ``localized_prices`` once, doubling the iteration
+    work) and the per-instance attribute cache it required.
 
     Not instantiated directly: Meta.model is left unset so subclass Metas can
     inject the concrete model.
@@ -137,9 +132,21 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
     if TYPE_CHECKING:
         context: dict[str, Any]
 
+    display_amount = serializers.FloatField(read_only=True)
+    currency = serializers.CharField(read_only=True)
+    local_display_amount = serializers.FloatField(read_only=True, allow_null=True)
+    local_currency = serializers.CharField(read_only=True, allow_null=True)
+
     class Meta:
-        fields = ("id", "amount")
-        read_only_fields = ("id", "amount")
+        fields = (
+            "id",
+            "amount",
+            "display_amount",
+            "currency",
+            "local_display_amount",
+            "local_currency",
+        )
+        read_only_fields = fields
 
     def to_representation(self, instance: PlanPrice | ProductPrice) -> dict[str, Any]:
         result = super().to_representation(instance)

@@ -34,7 +34,14 @@ class TestPlanPriceSerializer:
         assert data["currency"] == "usd"
 
     def test_model_fields_read_only(self):
-        assert set(PlanPriceSerializer.Meta.read_only_fields) == {"id", "amount"}
+        assert set(PlanPriceSerializer.Meta.read_only_fields) == {
+            "id",
+            "amount",
+            "display_amount",
+            "currency",
+            "local_display_amount",
+            "local_currency",
+        }
 
 
 @pytest.mark.django_db
@@ -393,7 +400,14 @@ class TestProductPriceSerializer:
         assert data["amount"] == 999
 
     def test_model_fields_read_only(self):
-        assert set(ProductPriceSerializer.Meta.read_only_fields) == {"id", "amount"}
+        assert set(ProductPriceSerializer.Meta.read_only_fields) == {
+            "id",
+            "amount",
+            "display_amount",
+            "currency",
+            "local_display_amount",
+            "local_currency",
+        }
 
     def test_reads_localized_amount_for_currency(self):
         product = Product.objects.create(
