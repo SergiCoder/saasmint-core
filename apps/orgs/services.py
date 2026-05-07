@@ -272,6 +272,33 @@ class SeatCapReachedAtAcceptError(Exception):
     """
 
 
+def _lock_active_team_sub(org: Org) -> SubscriptionModel | None:
+    """Return the org's active team Subscription with a row lock, or ``None``.
+
+    Must be called inside an ``atomic()`` block — the ``SELECT FOR UPDATE``
+    is held until the surrounding transaction commits, serialising any
+    concurrent invite-create / invite-accept / member-add against the same
+    org so the seat cap can't be overrun in a TOCTOU race.
+
+    Shared by ``_validate_seat_limit`` (invite create, in views) and
+    ``accept_invitation`` (invite accept, here). Each call site keeps its
+    own post-lock counting logic — invite-create counts members + pending
+    invites, invite-accept counts members + 1 — so this helper only owns
+    the lock query, not the cap math.
+    """
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+    from apps.billing.models import Subscription as SubscriptionModel
+
+    return (
+        SubscriptionModel.objects.select_for_update()
+        .filter(
+            stripe_customer__org=org,
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+        )
+        .first()
+    )
+
+
 def accept_invitation(
     invitation: Invitation,
     *,
@@ -296,8 +323,8 @@ def accept_invitation(
     on the team Subscription so a leaked-token race against a parallel
     membership change cannot push the org past its seat cap at commit time.
     """
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
-    from apps.billing.models import Subscription as SubscriptionModel
+    from django.db.models import Count
+
     from apps.users.authentication import create_email_verification_token
     from apps.users.tasks import send_verification_email_task
 
@@ -307,17 +334,8 @@ def accept_invitation(
         # accept / invite create / member add against the same org serialises
         # behind us. Mirrors the lock taken at invite-creation time in
         # ``_validate_seat_limit``.
-        sub = (
-            SubscriptionModel.objects.select_for_update()
-            .filter(
-                stripe_customer__org=org,
-                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-            )
-            .first()
-        )
+        sub = _lock_active_team_sub(org)
         if sub is not None:
-            from django.db.models import Count
-
             counts = Org.objects.filter(pk=org.pk).aggregate(
                 member_count=Count("members", distinct=True),
             )
@@ -432,7 +450,15 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
     one Celery message per org. The cancel task already accepts a list, so
     the behavior is unchanged — we just avoid K broker round-trips for a user
     who created K orgs.
+
+    DB cascade for the K orgs runs as a single transaction with one DML per
+    table (Invitation UPDATE, User DELETE for users whose only memberships
+    were inside this batch and who have no active personal sub, OrgMember
+    DELETE, Org DELETE) — saves 4(K-1) round-trips compared to calling
+    :func:`_delete_org_db_only` once per org.
     """
+    from django.db.models import Exists, OuterRef, Subquery
+
     from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
     from apps.billing.models import Subscription as SubscriptionModel
     from apps.orgs.tasks import cancel_stripe_subs_task
@@ -466,7 +492,36 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
         org_sub = sub_by_org.get(org.id)
         if org_sub is not None and org_sub.stripe_id is not None:
             pending_stripe_sub_ids.append(org_sub.stripe_id)
-        _delete_org_db_only(org)
+
+    # Batched DB cascade: one transaction, one DML per table. Survival rule
+    # mirrors :func:`_delete_org_db_only` — a user is deleted only when they
+    # have no membership outside this batch AND no active personal sub.
+    with transaction.atomic():
+        Invitation.objects.filter(
+            org_id__in=org_ids, status=InvitationStatus.PENDING
+        ).update(status=InvitationStatus.CANCELLED)
+
+        other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
+            org_id__in=org_ids
+        )
+        personal_subs = SubscriptionModel.objects.filter(
+            user_id=OuterRef("user_id"),
+            stripe_customer__user_id=OuterRef("user_id"),
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+        )
+        deletable_user_ids = (
+            OrgMember.objects.filter(org_id__in=org_ids)
+            .annotate(
+                has_other=Exists(other_memberships),
+                has_personal_sub=Exists(personal_subs),
+            )
+            .filter(has_other=False, has_personal_sub=False)
+            .values("user_id")
+            .distinct()
+        )
+        User.objects.filter(id__in=Subquery(deletable_user_ids)).delete()
+        OrgMember.objects.filter(org_id__in=org_ids).delete()
+        Org.objects.filter(id__in=org_ids).delete()
 
     if pending_stripe_sub_ids:
         # No single org_id owns the batch — pass the caller's user_id instead

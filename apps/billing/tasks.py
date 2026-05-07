@@ -79,7 +79,15 @@ def sync_localized_prices() -> int:
         logger.error("FX API returned non-success payload: %s", data)
         return 0
 
-    api_rates: dict[str, float] = {k.lower(): v for k, v in data["rates"].items()}
+    rates_raw = data.get("rates")
+    if not isinstance(rates_raw, dict):
+        logger.error("FX API returned non-dict rates payload")
+        return 0
+    try:
+        api_rates: dict[str, float] = {k.lower(): float(v) for k, v in rates_raw.items()}
+    except (TypeError, ValueError):
+        logger.exception("FX API returned malformed rate values")
+        return 0
     now = datetime.now(UTC)
 
     def _compute_new_amounts(amount: int) -> dict[str, int]:
@@ -101,14 +109,16 @@ def sync_localized_prices() -> int:
         *,
         plan_price_id: UUID | None = None,
         product_price_id: UUID | None = None,
-    ) -> int:
-        """Upsert ``LocalizedPrice`` rows for one (price, every-non-USD-currency) pair.
+        existing_by_currency: dict[str, LocalizedPrice] | None = None,
+    ) -> tuple[
+        list[LocalizedPrice], list[LocalizedPrice], list[LocalizedPrice], int
+    ]:
+        """Compute create/update/heartbeat lists for one (price, currencies) pair.
 
-        Fetches all existing rows for this price in a single SELECT, computes
-        the new amounts in Python, then applies updates/creates in bulk.
-        Returns the number of rows that were *changed* (created or whose
-        ``amount_minor`` moved). Rows whose friendly-rounded value didn't move
-        get their ``synced_at`` refreshed as a heartbeat but are not counted.
+        Reads pre-bucketed existing rows from ``existing_by_currency`` instead of
+        firing a SELECT here. Returns ``(to_create, to_update_changed,
+        to_update_heartbeat, changed_count)`` so the caller can aggregate across
+        all prices and apply bulk_create / bulk_update once at the end.
         """
         owner_kwargs: dict[str, UUID | None] = (
             {"plan_price_id": plan_price_id}
@@ -116,14 +126,7 @@ def sync_localized_prices() -> int:
             else {"product_price_id": product_price_id}
         )
         new_amounts = _compute_new_amounts(amount)
-
-        # Single SELECT for all existing rows belonging to this price.
-        existing_by_currency: dict[str, LocalizedPrice] = {
-            lp.currency: lp
-            for lp in LocalizedPrice.objects.filter(**owner_kwargs).only(
-                "id", "currency", "amount_minor", "synced_at"
-            )
-        }
+        existing_by_currency = existing_by_currency or {}
 
         to_create: list[LocalizedPrice] = []
         to_update_changed: list[LocalizedPrice] = []
@@ -151,21 +154,65 @@ def sync_localized_prices() -> int:
                 existing.synced_at = now
                 to_update_heartbeat.append(existing)
 
-        if to_create:
-            LocalizedPrice.objects.bulk_create(to_create)
-        if to_update_changed:
-            LocalizedPrice.objects.bulk_update(to_update_changed, ["amount_minor", "synced_at"])
-        if to_update_heartbeat:
-            LocalizedPrice.objects.bulk_update(to_update_heartbeat, ["synced_at"])
-
-        return len(to_create) + len(to_update_changed)
+        return to_create, to_update_changed, to_update_heartbeat, (
+            len(to_create) + len(to_update_changed)
+        )
 
     with transaction.atomic():
+        # Two SELECTs total: one for plan-price-owned rows, one for
+        # product-price-owned. Bucket by owner id so per-price upserts can do
+        # a dict lookup instead of a query.
+        plan_buckets: dict[UUID, dict[str, LocalizedPrice]] = {}
+        for lp in LocalizedPrice.objects.filter(plan_price_id__isnull=False).only(
+            "id", "currency", "amount_minor", "synced_at", "plan_price_id"
+        ):
+            owner_id = lp.plan_price_id
+            assert owner_id is not None  # noqa: S101  # filtered above
+            plan_buckets.setdefault(owner_id, {})[lp.currency] = lp
+
+        product_buckets: dict[UUID, dict[str, LocalizedPrice]] = {}
+        for lp in LocalizedPrice.objects.filter(product_price_id__isnull=False).only(
+            "id", "currency", "amount_minor", "synced_at", "product_price_id"
+        ):
+            owner_id = lp.product_price_id
+            assert owner_id is not None  # noqa: S101  # filtered above
+            product_buckets.setdefault(owner_id, {})[lp.currency] = lp
+
+        all_create: list[LocalizedPrice] = []
+        all_update_changed: list[LocalizedPrice] = []
+        all_update_heartbeat: list[LocalizedPrice] = []
         changed = 0
+
         for plan_price in PlanPrice.objects.all().only("id", "amount"):
-            changed += _upsert_for_price(plan_price.amount, plan_price_id=plan_price.id)
+            create, upd_changed, upd_heartbeat, n = _upsert_for_price(
+                plan_price.amount,
+                plan_price_id=plan_price.id,
+                existing_by_currency=plan_buckets.get(plan_price.id, {}),
+            )
+            all_create.extend(create)
+            all_update_changed.extend(upd_changed)
+            all_update_heartbeat.extend(upd_heartbeat)
+            changed += n
+
         for product_price in ProductPrice.objects.all().only("id", "amount"):
-            changed += _upsert_for_price(product_price.amount, product_price_id=product_price.id)
+            create, upd_changed, upd_heartbeat, n = _upsert_for_price(
+                product_price.amount,
+                product_price_id=product_price.id,
+                existing_by_currency=product_buckets.get(product_price.id, {}),
+            )
+            all_create.extend(create)
+            all_update_changed.extend(upd_changed)
+            all_update_heartbeat.extend(upd_heartbeat)
+            changed += n
+
+        if all_create:
+            LocalizedPrice.objects.bulk_create(all_create)
+        if all_update_changed:
+            LocalizedPrice.objects.bulk_update(
+                all_update_changed, ["amount_minor", "synced_at"]
+            )
+        if all_update_heartbeat:
+            LocalizedPrice.objects.bulk_update(all_update_heartbeat, ["synced_at"])
 
     logger.info("Localized prices synced: %d rows changed", changed)
     return changed

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypedDict, cast
 from uuid import UUID
 
 from asgiref.sync import async_to_sync, sync_to_async
@@ -46,6 +46,7 @@ from saasmint_core.services.subscriptions import (
 from apps.base_views import BillingScopedView
 from apps.billing.models import (
     ACTIVE_SUBSCRIPTION_STATUSES,
+    CreditBalance,
     LocalizedPrice,
     PlanContext,
     PlanPrice,
@@ -74,6 +75,21 @@ from helpers import get_user
 logger = logging.getLogger(__name__)
 
 MIN_TEAM_SEATS = 1
+
+
+class _CurrencyContext(TypedDict):
+    """Serializer-context shape produced by :func:`_currency_context`.
+
+    ``currency``: the *billing* currency the customer is (or would be)
+    charged in. ``preferred_currency``: the user's preferred currency,
+    *only* when it differs from the billing currency (drives the
+    dual-display ``local_*`` fields). DRF's serializer-context contract is
+    ``dict[str, Any]``; TypedDict is structural so callers can pass this
+    through without an explicit cast.
+    """
+
+    currency: str
+    preferred_currency: str | None
 
 
 class _OrgAlreadyOwned(APIException):
@@ -157,7 +173,7 @@ def _resolve_billing_currency(
     return billing, dual_pref
 
 
-def _currency_context(request: Request) -> dict[str, Any]:
+def _currency_context(request: Request) -> _CurrencyContext:
     """Build serializer context dict with the resolved billing + preferred currencies.
 
     ``currency``: the *billing* currency the customer is (or would be) charged
@@ -168,14 +184,10 @@ def _currency_context(request: Request) -> dict[str, Any]:
     ``preferred_currency``: the user's preferred currency (``str | None``)
     *only* when it differs from the billing currency (fallback case). Drives
     the dual-display ``local_*`` fields on the price serializer.
-
-    Returns ``dict[str, Any]`` to match DRF's serializer-context contract;
-    callers should treat ``ctx["currency"]`` as ``str`` and
-    ``ctx.get("preferred_currency")`` as ``str | None``.
     """
     user: User | None = request.user if request.user.is_authenticated else None
     billing, dual_pref = _resolve_billing_currency(request.query_params.get("currency"), user)
-    return {"currency": billing, "preferred_currency": dual_pref}
+    return _CurrencyContext(currency=billing, preferred_currency=dual_pref)
 
 
 def _localized_prices_queryset(
@@ -202,6 +214,24 @@ def _localized_prices_prefetch(
     return Prefetch(
         "price__localized_prices",
         queryset=_localized_prices_queryset(currency, preferred_currency),
+    )
+
+
+def _resolved_localized_prefetch(currency: str) -> Prefetch[str]:
+    """Prefetch the single LocalizedPrice row for *currency* under ``_resolved_localized``.
+
+    Used by ``_get_active_plan_price`` / ``_get_active_product_price`` so
+    ``_resolve_stripe_price_id`` can read the matching row from the cache
+    instead of firing a second round-trip per checkout / patch. Filtered to
+    ``stripe_price_id__isnull=False`` so callers can rely on the row being
+    Stripe-ready when present.
+    """
+    return Prefetch(
+        "localized_prices",
+        queryset=LocalizedPrice.objects.filter(
+            currency=currency, stripe_price_id__isnull=False
+        ).only("stripe_price_id", "amount_minor", "currency"),
+        to_attr="_resolved_localized",
     )
 
 
@@ -317,7 +347,11 @@ async def _reject_seat_limit_below_member_count(org_id: UUID, seat_limit: int) -
 
 
 def _validate_subscription_context(value: str | None) -> str | None:
-    """Coerce the ``?context=`` query param to ``personal``/``team``/``None``."""
+    """Coerce the ``?context=`` query param to ``personal``/``team``/``None``.
+
+    Empty string is treated as ``None`` to support HTML forms that submit an
+    unset value as ``?context=`` rather than omitting the param entirely.
+    """
     if value is None or value == "":
         return None
     if value not in (PlanContext.TEAM.value, PlanContext.PERSONAL.value):
@@ -446,15 +480,7 @@ def _get_active_plan_price(
         id=plan_price_id, plan__is_active=True
     )
     if currency and currency != "usd":
-        qs = qs.prefetch_related(
-            Prefetch(
-                "localized_prices",
-                queryset=LocalizedPrice.objects.filter(
-                    currency=currency, stripe_price_id__isnull=False
-                ).only("stripe_price_id", "amount_minor", "currency"),
-                to_attr="_resolved_localized",
-            )
-        )
+        qs = qs.prefetch_related(_resolved_localized_prefetch(currency))
     plan_price = qs.first()
     if plan_price is None:
         raise NotFound("Invalid plan price.")
@@ -476,15 +502,7 @@ def _get_active_product_price(
     """
     qs = ProductPrice.objects.filter(id=product_price_id, product__is_active=True)
     if currency and currency != "usd":
-        qs = qs.prefetch_related(
-            Prefetch(
-                "localized_prices",
-                queryset=LocalizedPrice.objects.filter(
-                    currency=currency, stripe_price_id__isnull=False
-                ).only("stripe_price_id", "amount_minor", "currency"),
-                to_attr="_resolved_localized",
-            )
-        )
+        qs = qs.prefetch_related(_resolved_localized_prefetch(currency))
     product_price = qs.first()
     if product_price is None:
         raise NotFound("Invalid product price.")
@@ -538,7 +556,7 @@ class PlanListView(APIView):
                 _localized_prices_prefetch(ctx["currency"], ctx.get("preferred_currency"))
             )
         )
-        data = PlanSerializer(qs, many=True, context=ctx).data
+        data = PlanSerializer(qs, many=True, context=cast("dict[str, Any]", ctx)).data
         return Response(_catalog_envelope(list(data)))
 
 
@@ -572,7 +590,7 @@ class ProductListView(APIView):
                 _localized_prices_prefetch(ctx["currency"], ctx.get("preferred_currency"))
             )
         )
-        data = ProductSerializer(products, many=True, context=ctx).data
+        data = ProductSerializer(products, many=True, context=cast("dict[str, Any]", ctx)).data
         return Response(_catalog_envelope(list(data)))
 
 
@@ -1010,16 +1028,37 @@ class CreditBalanceView(BillingScopedView):
             balances.append({"balance": get_credit_balance(org_id=org_id), "scope": "org"})
         else:
             # Default routing: org member → both rows when applicable, non-member → user.
+            # Single SELECT pulls both balances in one round-trip, then we
+            # discriminate the org/user rows in Python. The predicate
+            # explicitly pins ``user_id=user.id`` and ``org_id`` to the
+            # caller's org (when present) so we never over-fetch other
+            # users' or other orgs' rows.
+            predicate = Q(user_id=user.id)
             if org_id is not None:
-                balances.append({"balance": get_credit_balance(org_id=org_id), "scope": "org"})
+                predicate |= Q(org_id=org_id)
+            rows = list(
+                CreditBalance.objects.filter(predicate).only(
+                    "balance", "user_id", "org_id"
+                )
+            )
+            if org_id is not None:
+                org_balance = next(
+                    (r.balance for r in rows if r.org_id == org_id), 0
+                )
+                balances.append({"balance": org_balance, "scope": "org"})
                 # Surface leftover personal credits from a pre-upgrade purchase
                 # (rule 16). Only emit when > 0 so we don't spam zero-rows for
                 # org members who never had a personal balance.
-                personal_balance = get_credit_balance(user=user)
+                personal_balance = next(
+                    (r.balance for r in rows if r.user_id == user.id), 0
+                )
                 if personal_balance > 0:
                     balances.append({"balance": personal_balance, "scope": "user"})
             else:
-                balances.append({"balance": get_credit_balance(user=user), "scope": "user"})
+                user_balance = next(
+                    (r.balance for r in rows if r.user_id == user.id), 0
+                )
+                balances.append({"balance": user_balance, "scope": "user"})
 
         return Response(CreditBalanceSerializer({"balances": balances}).data)
 
@@ -1275,7 +1314,7 @@ class SubscriptionView(BillingScopedView):
             currency=ctx["currency"],
             preferred_currency=ctx.get("preferred_currency"),
         )
-        data = SubscriptionSerializer(subs, many=True, context=ctx).data
+        data = SubscriptionSerializer(subs, many=True, context=cast("dict[str, Any]", ctx)).data
         return Response(_catalog_envelope(list(data)))
 
     @extend_schema(
@@ -1366,13 +1405,13 @@ class SubscriptionView(BillingScopedView):
                         recipients, plan_name, action
                     )
                 )
-        return Response(SubscriptionSerializer(sub, context=ctx).data)
+        return Response(SubscriptionSerializer(sub, context=cast("dict[str, Any]", ctx)).data)
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
         request=None,
         responses={
-            202: SubscriptionSerializer,
+            200: SubscriptionSerializer,
             400: OpenApiResponse(
                 description=(
                     "The ``?context=`` query param is set to a value other than"
@@ -1392,9 +1431,12 @@ class SubscriptionView(BillingScopedView):
         },
         description=(
             "Schedule subscription cancellation at the end of the current billing period."
-            " Returns 202 Accepted — the subscription remains active until the period end"
-            " timestamp returned in the body. Use ``?context=personal`` to cancel the"
-            " personal sub when the caller also holds a concurrent team sub."
+            " Returns 200 OK with the updated subscription representation in the body —"
+            " the subscription remains active until the period end timestamp returned in"
+            " the body. Mirrors the 200-with-body convention used by"
+            " ``DELETE /subscriptions/me/scheduled-change/`` so both DELETEs are"
+            " consistent. Use ``?context=personal`` to cancel the personal sub when"
+            " the caller also holds a concurrent team sub."
         ),
         tags=["billing"],
     )
@@ -1429,8 +1471,8 @@ class SubscriptionView(BillingScopedView):
                 )
             )
         return Response(
-            SubscriptionSerializer(sub, context=ctx).data,
-            status=status.HTTP_202_ACCEPTED,
+            SubscriptionSerializer(sub, context=cast("dict[str, Any]", ctx)).data,
+            status=status.HTTP_200_OK,
         )
 
 
@@ -1496,7 +1538,7 @@ class ScheduledChangeView(BillingScopedView):
             currency=ctx["currency"],
             preferred_currency=ctx.get("preferred_currency"),
         )
-        return Response(SubscriptionSerializer(sub, context=ctx).data)
+        return Response(SubscriptionSerializer(sub, context=cast("dict[str, Any]", ctx)).data)
 
 
 def _refetch_subscription_after_mutation(
