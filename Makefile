@@ -45,6 +45,12 @@ stripe-logs: ## Tail the Stripe webhook forwarder logs
 sync-stripe: ## Push local Plans/Products to Stripe (creates real prices)
 	docker compose exec django uv run python manage.py sync_stripe_catalog
 
+# ─── OpenAPI ──────────────────────────────────────────────────────────────────
+
+.PHONY: schema
+schema: ## Regenerate schema.yml from drf-spectacular (stack must be running)
+	docker compose exec django uv run python manage.py spectacular --file schema.yml
+
 # ─── Testing ──────────────────────────────────────────────────────────────────
 
 .PHONY: test

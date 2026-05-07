@@ -81,6 +81,28 @@ class TestDomainExceptionHandler:
         result = domain_exception_handler(ValueError("unexpected"), context)
         assert result is None
 
+    def test_field_validation_dict_not_overwritten_with_code(self, context):
+        """``domain_exception_handler`` only attaches a ``code`` key to
+        single-key ``{"detail": ...}`` envelopes. Multi-key payloads (DRF
+        field-validation errors, custom dict-as-detail raises) are left
+        untouched — the comment in middleware/exceptions.py spells this
+        out explicitly. Pins the contract so a future regression that
+        unconditionally stamps ``code`` doesn't quietly clobber a
+        ``code`` key emitted by the view's own dict payload."""
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        # DRF field-validation error → multi-key dict (one key per field).
+        exc = DRFValidationError({"email": ["Required."], "password": ["Too short."]})
+        resp = domain_exception_handler(exc, context)
+        assert resp is not None
+        assert resp.status_code == 400
+        assert "email" in resp.data
+        assert "password" in resp.data
+        # The handler must NOT inject a ``code`` key — that would change the
+        # response shape from ``{field: [errors]}`` to a hybrid envelope and
+        # could even shadow a field literally named ``code``.
+        assert "code" not in resp.data
+
 
 class TestSecurityHeadersMiddleware:
     @pytest.fixture

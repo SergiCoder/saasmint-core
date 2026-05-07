@@ -133,3 +133,27 @@ class TestCSPOptIn:
         mw = SecurityHeadersMiddleware(_json_response)
         resp = mw(factory.get("/api/docs/"))
         assert "Content-Security-Policy" not in resp
+
+    def test_csp_set_on_404_html_response(self) -> None:
+        """The CSP middleware applies headers based on Content-Type, not
+        status code — so 404 HTML pages (Django's debug 404, error templates,
+        etc.) are still served with a CSP. Without this, an attacker who
+        forces a 404 against a server-rendered surface could inject HTML
+        without CSP protection. Pins the content-type-driven contract."""
+
+        def _html_404(_req: HttpRequest) -> HttpResponse:
+            return HttpResponse(
+                "<html><body>Not Found</body></html>",
+                status=404,
+                content_type="text/html; charset=utf-8",
+            )
+
+        factory = RequestFactory()
+        mw = SecurityHeadersMiddleware(_html_404)
+        resp = mw(factory.get("/some/missing/path/"))
+        assert resp.status_code == 404
+        # CSP attached on the 404 just like on 200 HTML.
+        assert "Content-Security-Policy" in resp
+        csp = resp["Content-Security-Policy"]
+        assert "default-src 'self'" in csp
+        assert "frame-ancestors 'self'" in csp

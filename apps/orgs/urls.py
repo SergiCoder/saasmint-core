@@ -22,9 +22,9 @@ urlpatterns = [
         name="org-member-detail",
     ),
     path(
-        "<uuid:org_id>/owner/",
+        "<uuid:org_id>/owner-transfers/",
         OrgOwnerView.as_view(),
-        name="org-owner",
+        name="org-owner-transfers",
     ),
     path(
         "<uuid:org_id>/invitations/",

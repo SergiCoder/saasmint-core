@@ -327,14 +327,21 @@ class OrgMemberDetailView(OrgsScopedView):
 
 
 class OrgOwnerView(OrgsScopedView):
-    """PUT /api/v1/orgs/{org_id}/owner/ — transfer ownership to another admin."""
+    """POST /api/v1/orgs/{org_id}/owner-transfers/ — transfer ownership to another admin.
+
+    Modeled as creating an ownership-transfer event rather than ``PUT
+    /owner`` so the operation is naturally idempotent: replaying the same
+    request after a network blip is a no-op once the target is already the
+    owner. ``201 Created`` returns the new owner-member resource with a
+    ``Location`` header pointing at it.
+    """
 
     @extend_schema(
         request=TransferOwnershipSerializer,
-        responses={200: OrgMemberSerializer},
+        responses={201: OrgMemberSerializer},
         tags=["orgs"],
     )
-    def put(self, request: Request, org_id: UUID) -> Response:
+    def post(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
 
@@ -365,7 +372,11 @@ class OrgOwnerView(OrgsScopedView):
                 kwargs={"org_id": org_id, "member_user_id": target.user_id},
             )
         )
-        return Response(OrgMemberSerializer(target).data, headers={"Location": location})
+        return Response(
+            OrgMemberSerializer(target).data,
+            status=status.HTTP_201_CREATED,
+            headers={"Location": location},
+        )
 
 
 # ---------------------------------------------------------------------------

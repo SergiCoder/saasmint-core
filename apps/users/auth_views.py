@@ -18,6 +18,7 @@ from django.http import HttpResponseRedirect
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers as drf_serializers
 from rest_framework import status
+from rest_framework.exceptions import APIException
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -36,7 +37,6 @@ from apps.users.auth_serializers import (
     LogoutSerializer,
     MessageResponseSerializer,
     OAuthConfirmLinkSerializer,
-    OAuthExchangeResponseSerializer,
     RefreshSerializer,
     RegisterSerializer,
     ResendVerificationSerializer,
@@ -77,14 +77,52 @@ from helpers import get_user
 logger = logging.getLogger(__name__)
 
 
-def _token_response(user: User, refresh_token: str, http_status: int = 200) -> Response:
+class EmailAlreadyExists(APIException):
+    status_code = status.HTTP_409_CONFLICT
+    default_detail = "Email already registered."
+    default_code = "email_exists"
+
+
+class InvalidCredentials(APIException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    default_detail = "Invalid credentials."
+    default_code = "invalid_credentials"
+
+
+class AccountDeactivated(APIException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    default_detail = "Account is deactivated."
+    default_code = "account_deactivated"
+
+
+class InvalidPassword(APIException):
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_detail = "Current password is incorrect."
+    default_code = "invalid_password"
+
+
+class InvalidOAuthCode(APIException):
+    status_code = status.HTTP_400_BAD_REQUEST
+    default_detail = "Invalid or expired code."
+    default_code = "invalid_code"
+
+
+def _token_response(
+    user: User,
+    refresh_token: str,
+    http_status: int = 200,
+    *,
+    headers: dict[str, str] | None = None,
+) -> Response:
     return Response(
         {
             "access_token": create_access_token(user),
             "refresh_token": refresh_token,
             "token_type": "Bearer",
+            "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
         },
         status=http_status,
+        headers=headers,
     )
 
 
@@ -96,10 +134,7 @@ def _register_user(
 ) -> Response:
     """Create a new user and return a 201 token response."""
     if email_is_registered(email):
-        return Response(
-            {"detail": "Email already registered.", "code": "email_exists"},
-            status=status.HTTP_409_CONFLICT,
-        )
+        raise EmailAlreadyExists
 
     try:
         with transaction.atomic():
@@ -109,17 +144,19 @@ def _register_user(
                 full_name=full_name,
                 is_verified=False,
             )
-    except IntegrityError:
-        return Response(
-            {"detail": "Email already registered.", "code": "email_exists"},
-            status=status.HTTP_409_CONFLICT,
-        )
+    except IntegrityError as exc:
+        raise EmailAlreadyExists from exc
 
     token = create_email_verification_token(user)
     send_verification_email_task.delay(user.email, token)
 
     refresh = create_refresh_token(user)
-    return _token_response(user, refresh, http_status=status.HTTP_201_CREATED)
+    return _token_response(
+        user,
+        refresh,
+        http_status=status.HTTP_201_CREATED,
+        headers={"Location": "/api/v1/account/"},
+    )
 
 
 class RegisterView(AuthRegisterView):
@@ -244,16 +281,10 @@ class LoginView(AuthLoginView):
             password=ser.validated_data["password"],
         )
         if user is None or not isinstance(user, User):
-            return Response(
-                {"detail": "Invalid credentials.", "code": "invalid_credentials"},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
+            raise InvalidCredentials
 
         if not user.is_active:
-            return Response(
-                {"detail": "Account is deactivated.", "code": "account_deactivated"},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
+            raise AccountDeactivated
 
         if not user.is_verified:
             # Collapse the unverified path into the invalid-credentials
@@ -263,10 +294,7 @@ class LoginView(AuthLoginView):
             # credential-stuffing campaigns. The frontend can still recover
             # by calling ``POST /auth/resend-verification`` (which is
             # itself enumeration-safe).
-            return Response(
-                {"detail": "Invalid credentials.", "code": "invalid_credentials"},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
+            raise InvalidCredentials
 
         refresh = create_refresh_token(user)
         return _token_response(user, refresh)
@@ -369,10 +397,7 @@ class ChangePasswordView(AuthScopedView):
 
         user = get_user(request)
         if not user.check_password(ser.validated_data["current_password"]):
-            return Response(
-                {"detail": "Current password is incorrect.", "code": "invalid_password"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            raise InvalidPassword
 
         user.set_password(ser.validated_data["new_password"])
         user.save(update_fields=["password", "updated_at"])
@@ -398,12 +423,15 @@ class OAuthAuthorizeView(AuthPublicView):
     """GET /api/v1/auth/oauth/{provider}/ — redirect to OAuth provider."""
 
     @extend_schema(exclude=True)
-    def get(self, request: Request, provider: str) -> Response | HttpResponseRedirect:
+    def get(self, request: Request, provider: str) -> HttpResponseRedirect:
+        # The whole endpoint is a top-of-funnel redirect; surfacing a JSON
+        # ``{detail,code}`` body for an unknown provider would dump raw API
+        # output into the user's browser. Funnel the error through the same
+        # frontend redirect path used by the callback so the FE can render a
+        # consistent ``/auth/error`` page.
+        frontend_url: str = settings.FRONTEND_URL
         if provider not in PROVIDERS:
-            return Response(
-                {"detail": f"Unsupported provider: {provider}", "code": "invalid_provider"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return _oauth_error_redirect(frontend_url, "invalid_provider")
 
         state = secrets.token_urlsafe(32)
         request.session["oauth_state"] = state
@@ -427,18 +455,18 @@ class OAuthCallbackView(AuthPublicView):
     """
 
     @extend_schema(exclude=True)
-    def get(self, request: Request, provider: str) -> Response | HttpResponseRedirect:
+    def get(self, request: Request, provider: str) -> HttpResponseRedirect:
+        frontend_url: str = settings.FRONTEND_URL
+
+        # Same reasoning as OAuthAuthorizeView: the callback is a redirect
+        # endpoint, so the unknown-provider path goes through the same
+        # frontend error page rather than rendering JSON.
         if provider not in PROVIDERS:
-            return Response(
-                {"detail": f"Unsupported provider: {provider}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return _oauth_error_redirect(frontend_url, "invalid_provider")
 
         code = request.query_params.get("code")
         state = request.query_params.get("state")
         error = request.query_params.get("error")
-
-        frontend_url: str = settings.FRONTEND_URL
 
         if error:
             return _oauth_error_redirect(frontend_url, error)
@@ -554,7 +582,7 @@ class OAuthExchangeView(AuthPublicView):
 
     @extend_schema(
         request=OAuthExchangeRequestSerializer,
-        responses={200: OAuthExchangeResponseSerializer},
+        responses={200: TokenResponseSerializer},
         tags=["auth"],
     )
     def post(self, request: Request) -> Response:
@@ -562,10 +590,7 @@ class OAuthExchangeView(AuthPublicView):
         ser.is_valid(raise_exception=True)
         data = _consume_oauth_exchange(ser.validated_data["code"])
         if data is None:
-            return Response(
-                {"detail": "Invalid or expired code.", "code": "invalid_code"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            raise InvalidOAuthCode
         return Response(
             {
                 "access_token": data["access_token"],
@@ -589,7 +614,7 @@ class OAuthConfirmLinkView(AuthPublicView):
 
     @extend_schema(
         request=OAuthConfirmLinkSerializer,
-        responses={200: OAuthExchangeResponseSerializer},
+        responses={200: TokenResponseSerializer},
         tags=["auth"],
     )
     def post(self, request: Request) -> Response:

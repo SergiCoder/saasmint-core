@@ -511,12 +511,20 @@ class TestOAuthCallbackStateValidation:
 
 @pytest.mark.django_db
 class TestOAuthCallbackParamValidation:
-    def test_unsupported_provider_returns_400(self, client, _oauth_state):
+    def test_unsupported_provider_redirects_to_frontend_error(
+        self, client, _oauth_state, settings
+    ):
+        # Funneled through the same frontend error page as other callback
+        # failures — no JSON body in a browser flow.
+        settings.FRONTEND_URL = "https://localhost:3000"
         resp = client.get(
             "/api/v1/auth/oauth/facebook/callback/",
             {"code": "auth-code", "state": "test-state"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 302
+        assert resp["Location"] == (
+            "https://localhost:3000/auth/error?error=invalid_provider"
+        )
 
     def test_missing_code_redirects_missing_code(self, client, _oauth_state):
         with _patch_exchange() as mock_exchange:

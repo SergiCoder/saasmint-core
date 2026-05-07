@@ -235,7 +235,7 @@ class TestCheckoutCurrencyRouting:
                 format="json",
             )
 
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         kwargs = mock_session.call_args.kwargs
         assert kwargs["price_id"] == eur_row.stripe_price_id
         assert kwargs["billing_currency"] == "eur"
@@ -535,7 +535,7 @@ class TestProductStripePriceIdResolution:
                 format="json",
             )
 
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         kwargs = mock_session.call_args.kwargs
         assert kwargs["price_id"] == eur_row.stripe_price_id
         assert kwargs["billing_currency"] == "eur"

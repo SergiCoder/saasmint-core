@@ -348,7 +348,7 @@ class TestOrgMemberDetailViewDELETE:
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Transfer Ownership (PUT /api/v1/orgs/{orgId}/owner/)
+# Transfer Ownership (POST /api/v1/orgs/{orgId}/owner-transfers/)
 # ---------------------------------------------------------------------------
 
 
@@ -357,12 +357,16 @@ class TestOrgTransferOwnershipView:
     def test_owner_transfers_to_admin(
         self, authed_client, org, owner_membership, admin_user, admin_membership, user
     ):
-        resp = authed_client.put(
-            f"/api/v1/orgs/{org.id}/owner/",
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/owner-transfers/",
             {"user_id": str(admin_user.id)},
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
+        # Location header points at the new owner-member resource.
+        assert resp["Location"].endswith(
+            f"/api/v1/orgs/{org.id}/members/{admin_user.id}/"
+        )
         admin_membership.refresh_from_db()
         owner_membership.refresh_from_db()
         assert admin_membership.role == OrgRole.OWNER
@@ -373,8 +377,8 @@ class TestOrgTransferOwnershipView:
     def test_cannot_transfer_to_member(
         self, authed_client, org, owner_membership, member_user, member_membership
     ):
-        resp = authed_client.put(
-            f"/api/v1/orgs/{org.id}/owner/",
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/owner-transfers/",
             {"user_id": str(member_user.id)},
             format="json",
         )
@@ -383,16 +387,16 @@ class TestOrgTransferOwnershipView:
     def test_admin_cannot_transfer(
         self, admin_client, org, owner_membership, admin_membership, member_user, member_membership
     ):
-        resp = admin_client.put(
-            f"/api/v1/orgs/{org.id}/owner/",
+        resp = admin_client.post(
+            f"/api/v1/orgs/{org.id}/owner-transfers/",
             {"user_id": str(member_user.id)},
             format="json",
         )
         assert resp.status_code == 403
 
     def test_missing_user_id(self, authed_client, org, owner_membership):
-        resp = authed_client.put(
-            f"/api/v1/orgs/{org.id}/owner/",
+        resp = authed_client.post(
+            f"/api/v1/orgs/{org.id}/owner-transfers/",
             {},
             format="json",
         )
@@ -769,6 +773,24 @@ class TestInvitationDeclineView:
         assert resp.status_code == 204
         invitation.refresh_from_db()
         assert invitation.status == InvitationStatus.DECLINED
+
+    def test_decline_already_accepted_invitation_returns_404(
+        self, org, owner_membership, user, authed_client
+    ):
+        """Decline filters by ``status=PENDING`` — an already-accepted invitation
+        is invisible to the lookup so the endpoint 404s instead of silently
+        flipping a terminal-state row to DECLINED."""
+        Invitation.objects.create(
+            org=org,
+            email=user.email,
+            role=OrgRole.MEMBER,
+            token="accepted-decline-token",  # noqa: S106
+            invited_by=user,
+            status=InvitationStatus.ACCEPTED,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        resp = authed_client.post("/api/v1/invitations/accepted-decline-token/decline/")
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

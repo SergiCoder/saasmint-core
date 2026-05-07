@@ -434,6 +434,88 @@ async def test_sync_subscription_with_explicit_quantity() -> None:
 
 
 @pytest.mark.anyio
+async def test_sync_subscription_multi_item_logs_warning_and_uses_first(caplog) -> None:
+    """A multi-item Stripe subscription (rare — we only ever create
+    single-item subs) is upserted using the first line item, with a
+    warning log. The webhook does NOT raise — Stripe-side multi-item
+    subs would otherwise stop being mirrored entirely. Pins both the
+    first-item-wins behavior and the warning so a future regression
+    that silently swaps to the second item is caught."""
+    import logging
+
+    event_repo = InMemoryStripeEventRepository()
+    customer_repo = InMemoryStripeCustomerRepository()
+    plan_repo = InMemoryPlanRepository()
+    subscription_repo = InMemorySubscriptionRepository()
+
+    customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_multi")
+    await customer_repo.save(customer)
+    plan = make_plan()
+    plan_repo._plans[plan.id] = plan
+    # Two prices — first is the one we expect the sync to land on. The second
+    # exists only to confirm the resolver does not pick it.
+    first_price = make_plan_price(plan_id=plan.id, stripe_price_id="price_first")
+    second_plan = make_plan()
+    plan_repo._plans[second_plan.id] = second_plan
+    second_price = make_plan_price(
+        plan_id=second_plan.id, stripe_price_id="price_second"
+    )
+    plan_repo._prices[first_price.id] = first_price
+    plan_repo._prices[second_price.id] = second_price
+
+    repos = _make_repos(
+        event_repo=event_repo,
+        customer_repo=customer_repo,
+        plan_repo=plan_repo,
+        subscription_repo=subscription_repo,
+    )
+    event: dict[str, Any] = {
+        "id": "evt_multi_item",
+        "type": "customer.subscription.created",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "sub_multi_item",
+                "customer": "cus_multi",
+                "status": "active",
+                "items": {
+                    "data": [
+                        {
+                            "id": "si_first",
+                            "price": {"id": "price_first"},
+                            "quantity": 7,
+                        },
+                        {
+                            "id": "si_second",
+                            "price": {"id": "price_second"},
+                            "quantity": 99,
+                        },
+                    ]
+                },
+                "current_period_start": NOW_TS,
+                "current_period_end": NOW_TS + 86400,
+            }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    with caplog.at_level(logging.WARNING, logger="saasmint_core.services.webhooks"):
+        await process_stored_event(event, stripe_id, repos)
+
+    # Warning logged with the right shape.
+    assert any(
+        "has 2 line items" in record.getMessage()
+        and record.levelname == "WARNING"
+        for record in caplog.records
+    )
+    # And the persisted sub used the first item's price + quantity, not the
+    # second's. The plan_id maps to ``plan`` (the first plan), not ``second_plan``.
+    sub = next(iter(subscription_repo._store.values()))
+    assert sub.plan_id == plan.id
+    assert sub.seat_limit == 7
+
+
+@pytest.mark.anyio
 async def test_sync_subscription_with_canceled_at() -> None:
     event_repo = InMemoryStripeEventRepository()
     customer_repo = InMemoryStripeCustomerRepository()
@@ -1100,6 +1182,65 @@ async def test_payment_mode_missing_product_id_is_noop() -> None:
 
     assert calls == []
     assert event_repo._store[stripe_id].processed_at is not None
+
+
+@pytest.mark.anyio
+async def test_team_checkout_completed_with_malformed_client_reference_id_marks_failed() -> None:
+    """A team-mode ``checkout.session.completed`` whose ``client_reference_id``
+    cannot be parsed as a UUID raises ``ValueError`` from ``UUID(client_ref)``
+    — the team branch lacks the explicit try/except that the product-checkout
+    branch has (which logs and silently swallows). Today the event is left
+    unprocessed (no ``processed_at``, no ``error``) — the ValueError isn't
+    caught by ``process_stored_event``. Pins the current contract: a malformed
+    payload escapes as a non-domain exception so retry semantics aren't
+    triggered, but the on-team callback is never called.
+
+    A future fix that wraps this in ``WebhookDataError`` (matching the product
+    branch) would flip the assertions; this test pins the gap until then.
+    """
+    event_repo = InMemoryStripeEventRepository()
+    team_calls: list[tuple[object, ...]] = []
+
+    async def _on_team(*args: object) -> None:
+        team_calls.append(args)
+
+    repos = WebhookRepos(
+        events=event_repo,
+        subscriptions=InMemorySubscriptionRepository(),
+        customers=InMemoryStripeCustomerRepository(),
+        plans=InMemoryPlanRepository(),
+        on_team_checkout_completed=_on_team,
+    )
+    event: dict[str, Any] = {
+        "id": "evt_team_bad_uuid",
+        "type": "checkout.session.completed",
+        "livemode": False,
+        "data": {
+            "object": {
+                "id": "cs_team_bad_uuid",
+                "mode": "subscription",
+                "client_reference_id": "not-a-uuid",
+                "customer": "cus_team_bad",
+                "subscription": "sub_team_bad",
+                "metadata": {"org_name": "BadOrg"},
+            }
+        },
+    }
+    stripe_id = await _persist(event_repo, event)
+
+    # Current behavior: ValueError propagates because the team branch doesn't
+    # wrap UUID() in a try/except. ``process_stored_event`` only catches
+    # WebhookDataError, StripeError, and ConnectionError, so ValueError leaks.
+    with pytest.raises(ValueError, match="UUID"):
+        await process_stored_event(event, stripe_id, repos)
+
+    # Callback was never invoked — bad UUID stops the dispatch before reaching it.
+    assert team_calls == []
+    # The event was NOT marked processed (no ``processed_at``) and was NOT
+    # marked failed either — ValueError is unhandled, so the event stays in
+    # the limbo state until retry or manual intervention.
+    saved = event_repo._store[stripe_id]
+    assert saved.processed_at is None
 
 
 @pytest.mark.anyio

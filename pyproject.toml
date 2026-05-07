@@ -36,7 +36,6 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-django>=4.8",
-    "testcontainers[postgres]>=4.0",
     "mypy>=1.14",
     "django-stubs>=6.0",
     "djangorestframework-stubs>=3.15",

@@ -260,7 +260,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthExchangeResponse'
+                $ref: '#/components/schemas/TokenResponse'
           description: ''
   /api/v1/auth/oauth/exchange/:
     post:
@@ -290,7 +290,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OAuthExchangeResponse'
+                $ref: '#/components/schemas/TokenResponse'
           description: ''
   /api/v1/auth/refresh/:
     post:
@@ -449,8 +449,9 @@ paths:
   /api/v1/billing/checkout-sessions/:
     post:
       operationId: billing_checkout_sessions_create
-      description: POST /api/v1/billing/checkout-sessions — create a Stripe Checkout
-        Session.
+      description: Create a Stripe Checkout Session. Returns ``201 Created`` with
+        the Stripe-hosted checkout URL in both the body (``url``) and the ``Location``
+        response header — clients should redirect the user there to complete payment.
       parameters:
       - in: query
         name: currency
@@ -475,7 +476,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
+        '201':
           content:
             application/json:
               schema:
@@ -493,13 +494,10 @@ paths:
   /api/v1/billing/credits/me/:
     get:
       operationId: billing_credits_me_retrieve
-      description: 'Return the caller''s current credit balances as a list. The default
-        (no ``?context=``) mirrors the subscription routing: non-org-member users
-        see a single entry with their own balance; org members see their org''s balance
-        plus a ``user``-scoped entry iff a personal balance survives from before a
-        personal→team upgrade (rule 16). ``?context=personal`` returns only the user-scoped
-        balance, ``?context=team`` returns only the org-scoped balance (404 when the
-        caller is not in any org).'
+      description: |-
+        Return the caller's current credit balances as a list. The default (no ``?context=``) mirrors the subscription routing: non-org-member users see a single entry with their own balance; org members see their org's balance plus a ``user``-scoped entry iff a personal balance survives from before a personal→team upgrade (rule 16). ``?context=personal`` returns only the user-scoped balance, ``?context=team`` returns only the org-scoped balance (404 when the caller is not in any org).
+
+        Response shape ``{balances: [...]}`` intentionally deviates from the paginated ``{count,next,previous,results}`` envelope used for unbounded list endpoints: ``balances`` is hard-bounded to 0-2 rows (one per scope) so pagination would add cost without benefit.
       parameters:
       - in: query
         name: context
@@ -599,7 +597,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
+        '201':
           content:
             application/json:
               schema:
@@ -658,7 +656,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
+        '201':
           content:
             application/json:
               schema:
@@ -1334,11 +1332,17 @@ paths:
       responses:
         '204':
           description: No response body
-  /api/v1/orgs/{org_id}/owner/:
-    put:
-      operationId: orgs_owner_update
-      description: PUT /api/v1/orgs/{org_id}/owner/ — transfer ownership to another
-        admin.
+  /api/v1/orgs/{org_id}/owner-transfers/:
+    post:
+      operationId: orgs_owner_transfers_create
+      description: |-
+        POST /api/v1/orgs/{org_id}/owner-transfers/ — transfer ownership to another admin.
+
+        Modeled as creating an ownership-transfer event rather than ``PUT
+        /owner`` so the operation is naturally idempotent: replaying the same
+        request after a network blip is a no-op once the target is already the
+        owner. ``201 Created`` returns the new owner-member resource with a
+        ``Location`` header pointing at it.
       parameters:
       - in: path
         name: org_id
@@ -1364,7 +1368,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
+        '201':
           content:
             application/json:
               schema:
@@ -1746,23 +1750,6 @@ components:
           maxLength: 128
       required:
       - code
-    OAuthExchangeResponse:
-      type: object
-      properties:
-        access_token:
-          type: string
-        refresh_token:
-          type: string
-        token_type:
-          type: string
-          default: Bearer
-        expires_in:
-          type: integer
-          description: Access token lifetime in seconds.
-      required:
-      - access_token
-      - expires_in
-      - refresh_token
     Org:
       type: object
       properties:
@@ -2427,8 +2414,12 @@ components:
         token_type:
           type: string
           default: Bearer
+        expires_in:
+          type: integer
+          description: Access token lifetime in seconds.
       required:
       - access_token
+      - expires_in
       - refresh_token
     TransferOwnershipRequest:
       type: object

@@ -84,3 +84,19 @@ def cleanup_expired_social_link_requests() -> None:
     from apps.users.models import SocialLinkRequest
 
     _delete_expired_rows(SocialLinkRequest, "social link requests")
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def cleanup_expired_email_verification_tokens() -> None:
+    """Delete EmailVerificationToken rows whose expires_at has passed."""
+    from apps.users.models import EmailVerificationToken
+
+    _delete_expired_rows(EmailVerificationToken, "email verification tokens")
+
+
+@app.task  # type: ignore[untyped-decorator]  # celery has no stubs
+def cleanup_expired_password_reset_tokens() -> None:
+    """Delete PasswordResetToken rows whose expires_at has passed."""
+    from apps.users.models import PasswordResetToken
+
+    _delete_expired_rows(PasswordResetToken, "password reset tokens")
