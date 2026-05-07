@@ -34,6 +34,10 @@ _TEST_DRF = {
         "auth_refresh": "1000/hour",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Domain exception handler attaches ``code`` to ``{"detail": ...}``
+    # envelopes from APIException subclasses. Mirrors the production
+    # config in ``config/settings/base.py``.
+    "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
 }
 
 
@@ -82,9 +86,12 @@ class TestRegisterView:
             format="json",
         )
         assert resp.status_code == 201
+        # 201 Created points the client at the freshly-minted account resource.
+        assert resp["Location"] == "/api/v1/account/"
         assert "access_token" in resp.data
         assert "refresh_token" in resp.data
         assert resp.data["token_type"] == "Bearer"
+        assert resp.data["expires_in"] == 15 * 60
 
         user = User.objects.get(email="new@example.com")
         assert user.full_name == "New User"
@@ -490,6 +497,46 @@ class TestResendVerificationView:
         )
 
     @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_double_invocation_only_freshest_works(self, mock_delay, api, db):
+        """Two consecutive resend calls invalidate any prior unused token —
+        only the freshest verification link still verifies. Pins the
+        anti-stockpile guarantee against future regressions in the
+        ``EmailVerificationToken.objects.filter(...).update(used_at=...)``
+        invalidation step."""
+        from apps.users.models import EmailVerificationToken
+
+        user = User.objects.create_user(
+            email="double-resend@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Double Resend",
+            is_verified=False,
+        )
+
+        # First resend issues a token (and exposes its raw value via the
+        # mocked send-email call).
+        resp1 = api.post(self.URL, {"email": user.email}, format="json")
+        assert resp1.status_code == 200
+        first_raw_token = mock_delay.call_args.args[1]
+        first_hash = _hash_token(first_raw_token)
+
+        # Second resend invalidates the first token and issues a fresh one.
+        resp2 = api.post(self.URL, {"email": user.email}, format="json")
+        assert resp2.status_code == 200
+        second_raw_token = mock_delay.call_args.args[1]
+        second_hash = _hash_token(second_raw_token)
+        assert first_raw_token != second_raw_token
+
+        # The first token's row is marked used; the second is still unused.
+        first_row = EmailVerificationToken.objects.get(token_hash=first_hash)
+        second_row = EmailVerificationToken.objects.get(token_hash=second_hash)
+        assert first_row.used_at is not None
+        assert second_row.used_at is None
+        # Exactly one unused token (the freshest) survives.
+        assert (
+            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
+        )
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
     def test_resend_for_already_verified_user_is_noop(
         self, mock_delay, api, verified_user
     ):
@@ -555,6 +602,33 @@ class TestResetPasswordView:
             RefreshToken.objects.filter(user=verified_user, revoked_at__isnull=True).count()
             == 1  # only the new one issued after reset
         )
+
+    def test_reset_password_works_for_oauth_only_account(self, api, db):
+        """An OAuth-only account (no usable password) can still consume a
+        reset token to bind a password. This is the recovery path when an
+        OAuth user wants to add password login or has lost OAuth provider
+        access — ``set_password`` does not require a prior usable password."""
+        oauth_user = User.objects.create_user(
+            email="oauth-only@example.com",
+            password=None,  # set_unusable_password
+            full_name="OAuth Only",
+            is_verified=True,
+        )
+        assert not oauth_user.has_usable_password()
+
+        token = create_password_reset_token(oauth_user)
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "newpassword1"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert "access_token" in resp.data
+
+        oauth_user.refresh_from_db()
+        # Now has a usable password matching what we set.
+        assert oauth_user.has_usable_password()
+        assert oauth_user.check_password("newpassword1")
 
     def test_reset_password_invalid_token(self, api):
         resp = api.post(
@@ -682,10 +756,15 @@ class TestOAuthAuthorizeView:
         assert "accounts.google.com" in resp["Location"]
         assert "test-client-id" in resp["Location"]
 
-    def test_authorize_invalid_provider_returns_400(self, api):
+    def test_authorize_invalid_provider_redirects_to_frontend_error(self, api, settings):
+        settings.FRONTEND_URL = "https://localhost:3000"
         resp = api.get("/api/v1/auth/oauth/invalid_provider/")
-        assert resp.status_code == 400
-        assert resp.data["code"] == "invalid_provider"
+        assert resp.status_code == 302
+        # Funneled through the same frontend error page as callback failures
+        # — no JSON body in a browser flow.
+        assert resp["Location"] == (
+            "https://localhost:3000/auth/error?error=invalid_provider"
+        )
 
     def test_authorize_github_redirects(self, api, settings):
         settings.OAUTH_GITHUB_CLIENT_ID = "gh-client-id"
