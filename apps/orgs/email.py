@@ -4,33 +4,12 @@ from __future__ import annotations
 
 import logging
 
-import resend
 from django.conf import settings
 from django.utils.html import escape
 
+from apps.email_transport import send_email
+
 logger = logging.getLogger(__name__)
-
-
-def _get_from_address() -> str:
-    return settings.EMAIL_FROM_ADDRESS
-
-
-def _get_frontend_url() -> str:
-    return settings.FRONTEND_URL
-
-
-def _send(to: str, subject: str, html: str) -> None:
-    """Send a single email via Resend."""
-    if not resend.api_key:
-        resend.api_key = settings.RESEND_API_KEY
-    resend.Emails.send(
-        {
-            "from": _get_from_address(),
-            "to": [to],
-            "subject": subject,
-            "html": html,
-        }
-    )
 
 
 def send_invitation_email(email: str, token: str, org_name: str, inviter_name: str) -> None:
@@ -43,10 +22,10 @@ def send_invitation_email(email: str, token: str, org_name: str, inviter_name: s
     named ``<script>...`` or an inviter named ``"><img onerror=...`` could
     smuggle markup into the recipient's mail client.
     """
-    link = f"{_get_frontend_url()}/invitations/{token}"
+    link = f"{settings.FRONTEND_URL}/invitations/{token}"
     safe_org = escape(org_name)
     safe_inviter = escape(inviter_name)
-    _send(
+    send_email(
         to=email,
         subject=f"You've been invited to join {org_name}",
         html=(

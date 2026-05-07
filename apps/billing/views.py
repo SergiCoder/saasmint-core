@@ -26,6 +26,7 @@ from rest_framework.views import APIView
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.subscription import Subscription
 from saasmint_core.exceptions import SeatsBelowMemberCountError
+from saasmint_core.repositories.subscription import SubscriptionRepository
 from saasmint_core.services.billing import (
     cancel_subscription,
     create_billing_portal_session,
@@ -66,6 +67,7 @@ from apps.billing.serializers import (
 )
 from apps.billing.services import get_credit_balance
 from apps.billing.tasks import send_subscription_cancel_notice_task
+from apps.orgs.models import OrgMember, OrgRole
 from apps.users.models import User
 from helpers import get_user
 
@@ -241,30 +243,21 @@ def _localized_for_currency(
     ).first()
 
 
-def _resolve_plan_stripe_price_id(plan_price: PlanPrice, currency: str) -> str:
-    """Return the Stripe Price ID for *plan_price* in *currency*.
+def _resolve_stripe_price_id(price: PlanPrice | ProductPrice, currency: str) -> str:
+    """Return the Stripe Price ID for *price* in *currency* (plan or product).
 
-    USD reads ``plan_price.stripe_price_id`` (the historical column). Other
+    USD reads ``price.stripe_price_id`` (the historical column). Other
     currencies read ``LocalizedPrice.stripe_price_id`` for the matching pair;
     if absent (currency not billable, or sync_stripe_catalog hasn't minted it
     yet), falls back to the USD ID so the customer can still complete checkout.
     Reuses the prefetched ``_resolved_localized`` rows attached by
-    ``_get_active_plan_price`` when present, avoiding a second round-trip.
+    ``_get_active_plan_price`` / ``_get_active_product_price`` when present,
+    avoiding a second round-trip.
     """
     if currency == "usd":
-        return plan_price.stripe_price_id
-    row = _localized_for_currency(plan_price, currency)
-    return row.stripe_price_id if row and row.stripe_price_id else plan_price.stripe_price_id
-
-
-def _resolve_product_stripe_price_id(product_price: ProductPrice, currency: str) -> str:
-    """Return the Stripe Price ID for *product_price* in *currency*. See plan variant."""
-    if currency == "usd":
-        return product_price.stripe_price_id
-    row = _localized_for_currency(product_price, currency)
-    return (
-        row.stripe_price_id if row and row.stripe_price_id else product_price.stripe_price_id
-    )
+        return price.stripe_price_id
+    row = _localized_for_currency(price, currency)
+    return row.stripe_price_id if row and row.stripe_price_id else price.stripe_price_id
 
 
 def _resolve_plan_change_price(plan_price: PlanPrice, currency: str) -> tuple[str, int]:
@@ -314,7 +307,6 @@ async def _reject_seat_limit_below_member_count(org_id: UUID, seat_limit: int) -
     current head-count — otherwise we'd commit to a state where the sub bills
     for fewer seats than are actually filled.
     """
-    from apps.orgs.models import OrgMember
 
     member_count = await OrgMember.objects.filter(org_id=org_id).acount()
     if seat_limit < member_count:
@@ -324,15 +316,11 @@ async def _reject_seat_limit_below_member_count(org_id: UUID, seat_limit: int) -
         )
 
 
-_SUBSCRIPTION_CONTEXT_TEAM = "team"
-_SUBSCRIPTION_CONTEXT_PERSONAL = "personal"
-
-
 def _validate_subscription_context(value: str | None) -> str | None:
     """Coerce the ``?context=`` query param to ``personal``/``team``/``None``."""
     if value is None or value == "":
         return None
-    if value not in (_SUBSCRIPTION_CONTEXT_TEAM, _SUBSCRIPTION_CONTEXT_PERSONAL):
+    if value not in (PlanContext.TEAM.value, PlanContext.PERSONAL.value):
         raise ValidationError(
             {"context": ["Must be 'personal' or 'team'."]},
         )
@@ -346,14 +334,12 @@ def _user_is_org_member(user: User) -> bool:
     old ``user.account_type == ORG_MEMBER`` denormalized flag. A user is
     an org member iff an ``OrgMember`` row exists for them.
     """
-    from apps.orgs.models import OrgMember
 
     return OrgMember.objects.filter(user_id=user.id).exists()
 
 
 async def _user_is_org_member_async(user: User) -> bool:
     """Async variant of :func:`_user_is_org_member`."""
-    from apps.orgs.models import OrgMember
 
     return await OrgMember.objects.filter(user_id=user.id).aexists()
 
@@ -366,16 +352,16 @@ def _default_subscription_context(user: User) -> str:
     pass an explicit ``?context=personal`` to manage their personal sub.
     """
     return (
-        _SUBSCRIPTION_CONTEXT_TEAM if _user_is_org_member(user) else _SUBSCRIPTION_CONTEXT_PERSONAL
+        PlanContext.TEAM.value if _user_is_org_member(user) else PlanContext.PERSONAL.value
     )
 
 
 async def _default_subscription_context_async(user: User) -> str:
     """Async variant of :func:`_default_subscription_context`."""
     return (
-        _SUBSCRIPTION_CONTEXT_TEAM
+        PlanContext.TEAM.value
         if await _user_is_org_member_async(user)
-        else _SUBSCRIPTION_CONTEXT_PERSONAL
+        else PlanContext.PERSONAL.value
     )
 
 
@@ -402,8 +388,7 @@ async def _resolve_billing_customer(
     """
     repos = get_billing_repos()
     effective = context or await _default_subscription_context_async(user)
-    if effective == _SUBSCRIPTION_CONTEXT_TEAM:
-        from apps.orgs.models import OrgMember
+    if effective == PlanContext.TEAM.value:
 
         if org_id is None:
             membership = (
@@ -487,7 +472,7 @@ def _get_active_product_price(
     a JOIN in the WHERE clause, just without pulling the row into Python.
 
     When *currency* is non-USD, prefetch the matching LocalizedPrice row so
-    ``_resolve_product_stripe_price_id`` can skip the second query.
+    ``_resolve_stripe_price_id`` can skip the second query.
     """
     qs = ProductPrice.objects.filter(id=product_price_id, product__is_active=True)
     if currency and currency != "usd":
@@ -618,6 +603,45 @@ class BillingCurrenciesView(APIView):
         return Response({"billable": billable, "display_only": display_only})
 
 
+def _validate_team_checkout(user: User, data: dict[str, Any]) -> None:
+    """Enforce team-checkout preconditions: not already an owner, has org_name.
+
+    Raises ``_OrgAlreadyOwned`` (409) when the caller already owns an org
+    (rule 8) and ``ValidationError`` when the request body is missing
+    ``org_name``. The DB partial unique index on ``OrgMember(user)
+    WHERE role='owner'`` is the authoritative enforcer; this check is a
+    fast-path UX guard.
+    """
+
+    already_owns_org = OrgMember.objects.filter(
+        user_id=user.id, role=OrgRole.OWNER
+    ).exists()
+    if already_owns_org:
+        raise _OrgAlreadyOwned
+
+    if "org_name" not in data:
+        raise ValidationError({"org_name": ["Required for team plans."]})
+
+
+def _build_checkout_metadata(
+    *, is_team: bool, data: dict[str, Any]
+) -> dict[str, str] | None:
+    """Build the Stripe Checkout Session metadata for plan checkouts.
+
+    Returns ``None`` for personal-plan checkouts (no metadata needed).
+    Stripe metadata values are strings — booleans go through as
+    ``"true"``/``"false"`` and are parsed back on the webhook side.
+    """
+    if not is_team:
+        return None
+    return {
+        "org_name": data["org_name"],
+        "keep_personal_subscription": "true"
+        if data["keep_personal_subscription"]
+        else "false",
+    }
+
+
 class CheckoutSessionView(BillingScopedView):
     """POST /api/v1/billing/checkout-sessions — create a Stripe Checkout Session."""
 
@@ -650,50 +674,30 @@ class CheckoutSessionView(BillingScopedView):
         data = ser.validated_data
 
         # Resolve currency first so _get_active_plan_price can prefetch the
-        # matching LocalizedPrice in the same query — _resolve_plan_stripe_price_id
+        # matching LocalizedPrice in the same query — _resolve_stripe_price_id
         # then reads from the prefetched cache.
         billing_currency, _ = _resolve_billing_currency(
             request.query_params.get("currency"), user
         )
         plan_price = _get_active_plan_price(data["plan_price_id"], currency=billing_currency)
         quantity = _validate_quantity_for_plan(plan_price, data["seat_limit"])
-        stripe_price_id = _resolve_plan_stripe_price_id(plan_price, billing_currency)
+        stripe_price_id = _resolve_stripe_price_id(plan_price, billing_currency)
 
         is_team = plan_price.plan.context == PlanContext.TEAM
 
-        # Team plans: any user without an owned org may upgrade (rule 8: one
-        # owned org per user). The DB partial unique index on OrgMember.user
-        # WHERE role='owner' is the authoritative enforcer; this check is a
-        # fast-path UX guard. Personal-plan checkouts have no eligibility
-        # gate — rule 5b allows org members to also hold a personal sub.
+        # Team plans: rule 8 (one owned org per user) is enforced by the DB
+        # partial unique index; this fast-path keeps the common error surface
+        # at 409. Personal-plan checkouts have no eligibility gate (rule 5b
+        # allows concurrent personal + team subs).
         if is_team:
-            from apps.orgs.models import OrgMember, OrgRole
-
-            already_owns_org = OrgMember.objects.filter(
-                user_id=user.id, role=OrgRole.OWNER
-            ).exists()
-            if already_owns_org:
-                raise _OrgAlreadyOwned
-
-            if "org_name" not in data:
-                raise ValidationError({"org_name": ["Required for team plans."]})
+            _validate_team_checkout(user, data)
 
         # Orgs are not eligible for trial periods
         trial_period_days = data["trial_period_days"]
         if trial_period_days is not None and is_team:
             trial_period_days = None
 
-        # Build metadata for the checkout session. Stripe metadata values are
-        # strings — booleans go through as "true"/"false" and are parsed back
-        # on the webhook side.
-        metadata: dict[str, str] | None = None
-        if is_team:
-            metadata = {
-                "org_name": data["org_name"],
-                "keep_personal_subscription": "true"
-                if data["keep_personal_subscription"]
-                else "false",
-            }
+        metadata = _build_checkout_metadata(is_team=is_team, data=data)
 
         async def _do() -> str:
             if is_team:
@@ -780,17 +784,17 @@ class PortalSessionView(BillingScopedView):
         async def _do() -> str:
             effective = context or await _default_subscription_context_async(user)
 
-            if effective == _SUBSCRIPTION_CONTEXT_TEAM:
+            if effective == PlanContext.TEAM.value:
                 # Same gate as cancel/resume: only is_billing members may open
                 # the team portal (it exposes payment methods, invoices, and
                 # cancel-from-Stripe — not read-only). Pass the authorised
                 # ``org_id`` through so a multi-org caller can't open a portal
                 # session against an org they're not is_billing in.
                 authorized_org_id = await sync_to_async(_require_billing_authority)(
-                    user, context=_SUBSCRIPTION_CONTEXT_TEAM
+                    user, context=PlanContext.TEAM.value
                 )
                 customer = await _resolve_billing_customer(
-                    user, context=_SUBSCRIPTION_CONTEXT_TEAM, org_id=authorized_org_id
+                    user, context=PlanContext.TEAM.value, org_id=authorized_org_id
                 )
                 if customer is None:
                     raise NotFound("No team Stripe customer found.")
@@ -833,11 +837,10 @@ def _resolve_product_purchase_context(user: User, context: str | None) -> UUID |
     owners may spend org funds. Non-org-member callers cannot pick ``team``
     (no org to buy for) and get 400.
     """
-    from apps.orgs.models import OrgMember, OrgRole
 
     effective = context or _default_subscription_context(user)
 
-    if effective == _SUBSCRIPTION_CONTEXT_PERSONAL:
+    if effective == PlanContext.PERSONAL.value:
         return None
 
     # effective == "team" — fetch any membership (regardless of role) in a
@@ -920,7 +923,7 @@ class ProductCheckoutSessionView(BillingScopedView):
         product_price = _get_active_product_price(
             data["product_price_id"], currency=billing_currency
         )
-        stripe_price_id = _resolve_product_stripe_price_id(product_price, billing_currency)
+        stripe_price_id = _resolve_stripe_price_id(product_price, billing_currency)
 
         metadata: dict[str, str] = {"product_id": str(product_price.product_id)}
         if org_id is not None:
@@ -972,7 +975,6 @@ class CreditBalanceView(BillingScopedView):
         tags=["billing"],
     )
     def get(self, request: Request) -> Response:
-        from apps.orgs.models import OrgMember
 
         user = get_user(request)
         context = _validate_subscription_context(request.query_params.get("context"))
@@ -989,9 +991,9 @@ class CreditBalanceView(BillingScopedView):
             .first()
         )
 
-        if context == _SUBSCRIPTION_CONTEXT_PERSONAL:
+        if context == PlanContext.PERSONAL.value:
             balances.append({"balance": get_credit_balance(user=user), "scope": "user"})
-        elif context == _SUBSCRIPTION_CONTEXT_TEAM:
+        elif context == PlanContext.TEAM.value:
             if org_id is None:
                 raise NotFound("Caller is not a member of any organization.")
             balances.append({"balance": get_credit_balance(org_id=org_id), "scope": "org"})
@@ -1028,7 +1030,6 @@ def _get_active_subscriptions_for_user(
     empty list is the new free-tier shape (replaces the old NotFound 404 on
     ``GET /me/``).
     """
-    from apps.orgs.models import OrgMember
 
     # Annotate the org member count onto each sub so ``SubscriptionSerializer
     # .get_seats_used`` can read it as a plain attribute instead of firing a
@@ -1096,10 +1097,9 @@ def _require_billing_authority(user: User, *, context: str) -> UUID | None:
     For ``context="personal"``: anyone may mutate their own personal sub.
     Returns ``None``.
     """
-    if context == _SUBSCRIPTION_CONTEXT_PERSONAL:
+    if context == PlanContext.PERSONAL.value:
         return None
 
-    from apps.orgs.models import OrgMember
 
     billing_member = (
         OrgMember.objects.filter(
@@ -1131,16 +1131,15 @@ def _resolve_mutation_context(request: Request, user: User) -> tuple[str, UUID |
     if explicit is not None:
         return explicit, _require_billing_authority(user, context=explicit)
 
-    from apps.orgs.models import OrgMember
 
     membership = OrgMember.objects.filter(user_id=user.id).only("org_id", "is_billing").first()
     if membership is None:
         # No org → default is personal, no authority gate.
-        return _SUBSCRIPTION_CONTEXT_PERSONAL, None
+        return PlanContext.PERSONAL.value, None
     # Org member → default is team; reuse the same row for the is_billing gate.
     if not membership.is_billing:
         raise PermissionDenied("Only billing members can modify the team subscription.")
-    return _SUBSCRIPTION_CONTEXT_TEAM, membership.org_id
+    return PlanContext.TEAM.value, membership.org_id
 
 
 def _billing_notice_recipients(user: User, org_id: UUID | None) -> list[str]:
@@ -1153,13 +1152,75 @@ def _billing_notice_recipients(user: User, org_id: UUID | None) -> list[str]:
     if org_id is None:
         return [str(user.email)]
 
-    from apps.orgs.models import OrgMember
 
     return list(
         OrgMember.objects.filter(
             org_id=org_id,
             is_billing=True,
         ).values_list("user__email", flat=True)
+    )
+
+
+async def _apply_cancel_toggle(
+    *,
+    customer: StripeCustomer,
+    cancel_at_period_end: bool,
+    subscription_repo: SubscriptionRepository,
+) -> None:
+    """Cancel-at-period-end toggle on PATCH /me/ — schedule or revoke the cancel."""
+    if cancel_at_period_end:
+        await cancel_subscription(
+            stripe_customer_id=customer.id,
+            at_period_end=True,
+            subscription_repo=subscription_repo,
+        )
+    else:
+        await resume_subscription(
+            stripe_customer_id=customer.id,
+            subscription_repo=subscription_repo,
+        )
+
+
+async def _apply_plan_change(
+    *,
+    sub: Subscription,
+    stripe_sub_id: str,
+    plan_price: PlanPrice,
+    seat_limit: int | None,
+    prorate: bool,
+    org_id: UUID | None,
+) -> None:
+    """Plan change branch on PATCH /me/ — applies seat update in the same modify."""
+    new_price_id, new_price_amount = await sync_to_async(
+        _resolve_plan_change_price, thread_sensitive=True
+    )(plan_price, sub.currency)
+    if seat_limit is not None and org_id is not None:
+        await _reject_seat_limit_below_member_count(org_id, seat_limit)
+    await change_plan(
+        stripe_subscription_id=stripe_sub_id,
+        new_stripe_price_id=new_price_id,
+        new_price_amount=new_price_amount,
+        prorate=prorate,
+        quantity=seat_limit,
+    )
+
+
+async def _apply_seat_only(
+    *,
+    sub: Subscription,
+    seat_limit: int,
+    org_id: UUID | None,
+    subscription_repo: SubscriptionRepository,
+) -> None:
+    """Seat-only update on PATCH /me/. Validates against the current sub's plan context."""
+    current_plan = await PlanModel.objects.only("context").aget(id=sub.plan_id)
+    _validate_quantity_for_context(PlanContext(current_plan.context), seat_limit)
+    if org_id is not None:
+        await _reject_seat_limit_below_member_count(org_id, seat_limit)
+    await update_seat_count(
+        active=sub,
+        quantity=seat_limit,
+        subscription_repo=subscription_repo,
     )
 
 
@@ -1251,48 +1312,25 @@ class SubscriptionView(BillingScopedView):
                 user, context=context, org_id=org_id
             )
             if "cancel_at_period_end" in data:
-                if data["cancel_at_period_end"]:
-                    await cancel_subscription(
-                        stripe_customer_id=customer.id,
-                        at_period_end=True,
-                        subscription_repo=repos.subscriptions,
-                    )
-                else:
-                    await resume_subscription(
-                        stripe_customer_id=customer.id,
-                        subscription_repo=repos.subscriptions,
-                    )
+                await _apply_cancel_toggle(
+                    customer=customer,
+                    cancel_at_period_end=data["cancel_at_period_end"],
+                    subscription_repo=repos.subscriptions,
+                )
             elif plan_price:
-                # Stripe pins the subscription's currency for life — plan
-                # changes must resolve a Stripe Price in the same currency.
-                # We also feed ``new_price_amount`` in that currency so the
-                # deferred-downgrade comparison stays apples-to-apples.
-                sub_currency = sub.currency
-                new_price_id, new_price_amount = await sync_to_async(
-                    _resolve_plan_change_price, thread_sensitive=True
-                )(plan_price, sub_currency)
-                if "seat_limit" in data and org_id is not None:
-                    await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
-                await change_plan(
-                    stripe_subscription_id=stripe_sub_id,
-                    new_stripe_price_id=new_price_id,
-                    new_price_amount=new_price_amount,
+                await _apply_plan_change(
+                    sub=sub,
+                    stripe_sub_id=stripe_sub_id,
+                    plan_price=plan_price,
+                    seat_limit=data.get("seat_limit"),
                     prorate=data["prorate"],
-                    quantity=data.get("seat_limit"),
+                    org_id=org_id,
                 )
             elif "seat_limit" in data:
-                # Seat-only update: enforce per-context seat rules against the
-                # current subscription's plan, otherwise a personal sub could
-                # be bumped to N seats and a team sub down to 1.
-                current_plan = await PlanModel.objects.only("context").aget(id=sub.plan_id)
-                _validate_quantity_for_context(
-                    PlanContext(current_plan.context), data["seat_limit"]
-                )
-                if org_id is not None:
-                    await _reject_seat_limit_below_member_count(org_id, data["seat_limit"])
-                await update_seat_count(
-                    active=sub,
-                    quantity=data["seat_limit"],
+                await _apply_seat_only(
+                    sub=sub,
+                    seat_limit=data["seat_limit"],
+                    org_id=org_id,
                     subscription_repo=repos.subscriptions,
                 )
 
@@ -1471,7 +1509,7 @@ def _refetch_subscription_after_mutation(
     subs = _get_active_subscriptions_for_user(
         user, currency=currency, preferred_currency=preferred_currency
     )
-    if context == _SUBSCRIPTION_CONTEXT_TEAM:
+    if context == PlanContext.TEAM.value:
         for sub in subs:
             if sub.stripe_customer is not None and sub.stripe_customer.org_id is not None:
                 return sub

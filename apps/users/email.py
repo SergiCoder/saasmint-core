@@ -4,38 +4,17 @@ from __future__ import annotations
 
 import logging
 
-import resend
 from django.conf import settings
+
+from apps.email_transport import send_email
 
 logger = logging.getLogger(__name__)
 
 
-def _get_from_address() -> str:
-    return settings.EMAIL_FROM_ADDRESS
-
-
-def _get_frontend_url() -> str:
-    return settings.FRONTEND_URL
-
-
-def _send(to: str, subject: str, html: str) -> None:
-    """Send a single email via Resend."""
-    if not resend.api_key:
-        resend.api_key = settings.RESEND_API_KEY
-    resend.Emails.send(
-        {
-            "from": _get_from_address(),
-            "to": [to],
-            "subject": subject,
-            "html": html,
-        }
-    )
-
-
 def send_verification_email(email: str, token: str) -> None:
     """Send an email verification link."""
-    link = f"{_get_frontend_url()}/verify-email?token={token}"
-    _send(
+    link = f"{settings.FRONTEND_URL}/verify-email?token={token}"
+    send_email(
         to=email,
         subject="Verify your email address",
         html=(
@@ -49,8 +28,8 @@ def send_verification_email(email: str, token: str) -> None:
 
 def send_password_reset_email(email: str, token: str) -> None:
     """Send a password reset link."""
-    link = f"{_get_frontend_url()}/reset-password?token={token}"
-    _send(
+    link = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+    send_email(
         to=email,
         subject="Reset your password",
         html=(
@@ -67,10 +46,10 @@ def send_social_link_email(email: str, token: str, provider: str) -> None:
     """Send a confirmation link for attaching a new OAuth provider to the account."""
     from apps.users.authentication import SOCIAL_LINK_LIFETIME
 
-    link = f"{_get_frontend_url()}/auth/confirm-link?token={token}"
+    link = f"{settings.FRONTEND_URL}/auth/confirm-link?token={token}"
     pretty = provider.capitalize()
     lifetime_minutes = int(SOCIAL_LINK_LIFETIME.total_seconds()) // 60
-    _send(
+    send_email(
         to=email,
         subject=f"Confirm linking your {pretty} account",
         html=(

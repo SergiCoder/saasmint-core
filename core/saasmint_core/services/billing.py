@@ -14,6 +14,7 @@ from saasmint_core.domain.subscription import Subscription, SubscriptionStatus
 from saasmint_core.exceptions import SubscriptionNotFoundError
 from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
+from saasmint_core.services._stripe_time import ts_to_dt
 
 
 async def get_or_create_customer(
@@ -253,22 +254,20 @@ async def cancel_subscription(
         await _mirror_cancel_state_from_stripe(active, stripe_sub, subscription_repo)
 
 
-async def _release_pending_schedule(stripe_subscription_id: str) -> str | None:
+async def _release_pending_schedule(stripe_subscription_id: str) -> None:
     """Release any active SubscriptionSchedule attached to *stripe_subscription_id*.
 
     Reads the ``schedule`` field on the Stripe subscription (set when a
     schedule is pinning the sub) and releases it if it's in a releasable
-    state. Returns the released schedule id, or ``None`` when no schedule
-    is attached. Idempotent — re-running after a release is a no-op. The
+    state. No-op when no schedule is attached or when the schedule is in a
+    terminal state. Idempotent — re-running after a release is a no-op. The
     corresponding ``subscription_schedule.released`` webhook clears the
     local ``scheduled_plan_id``/``scheduled_change_at`` mirror.
     """
     sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
-    # ``schedule`` is None when the sub isn't pinned by a schedule, otherwise
-    # the schedule id. Stripe's stub types this as ``str | None``.
     schedule_id = sub.schedule
     if not schedule_id:
-        return None
+        return
 
     schedule = await asyncio.to_thread(
         stripe.SubscriptionSchedule.retrieve, str(schedule_id)
@@ -277,11 +276,9 @@ async def _release_pending_schedule(stripe_subscription_id: str) -> str | None:
     # / canceled / completed schedules are terminal and Stripe rejects further
     # release calls on them.
     if schedule.status not in ("not_started", "active"):
-        return None
+        return
 
-    released_id = str(schedule.id)
-    await asyncio.to_thread(stripe.SubscriptionSchedule.release, released_id)
-    return released_id
+    await asyncio.to_thread(stripe.SubscriptionSchedule.release, str(schedule.id))
 
 
 async def release_pending_schedule_for_customer(
@@ -361,8 +358,8 @@ async def _mirror_cancel_state_from_stripe(
     status_str = stripe_sub.status
 
     update: dict[str, Any] = {
-        "cancel_at": _ts_to_dt(cancel_at_ts),
-        "canceled_at": _ts_to_dt(canceled_at_ts),
+        "cancel_at": ts_to_dt(cancel_at_ts),
+        "canceled_at": ts_to_dt(canceled_at_ts),
     }
     if isinstance(status_str, str):
         try:
@@ -373,10 +370,3 @@ async def _mirror_cancel_state_from_stripe(
             pass
 
     await subscription_repo.save(active.model_copy(update=update))
-
-
-def _ts_to_dt(value: int | float | None) -> datetime | None:
-    """Stripe-style Unix timestamp → aware UTC datetime, ``None`` passthrough."""
-    if value is None:
-        return None
-    return datetime.fromtimestamp(value, tz=UTC)
