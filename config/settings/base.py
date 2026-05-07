@@ -80,6 +80,7 @@ def _parse_db_url(url: str) -> dict[str, object]:
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = env.django_secret_key
+DEBUG = False
 JWT_SIGNING_KEY = env.jwt_signing_key or env.django_secret_key
 ENVIRONMENT = env.environment
 SCHEMA_PUBLIC = env.schema_public
@@ -106,8 +107,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
