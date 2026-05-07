@@ -75,9 +75,6 @@ async def process_stored_event(
     except (stripe.StripeError, ConnectionError) as exc:
         await repos.events.mark_failed(stripe_id, str(exc))
         raise
-    except Exception as exc:
-        await repos.events.mark_failed(stripe_id, str(exc))
-        raise
 
 
 async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:

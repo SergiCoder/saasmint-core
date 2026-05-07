@@ -192,10 +192,17 @@ def send_subscription_cancel_notice_task(
         if action == "scheduled"
         else send_subscription_cancel_resumed
     )
+    import resend.exceptions
+
     for email in emails:
         try:
             sender(email, subscription_label)
-        except Exception:
+        except (resend.exceptions.ResendError, httpx.HTTPError):
+            # A flaky upstream / one bad address must not block notices to the
+            # rest of the recipient list. Resend retries are idempotent on our
+            # side and the billing state change is authoritative — the email
+            # is best-effort. Programming errors are intentionally not caught
+            # here so they surface in Sentry.
             logger.exception("Failed to send billing notice to %s (action=%s)", email, action)
 
 
