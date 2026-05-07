@@ -1,5 +1,6 @@
 """Production settings — debug off, strict security headers."""
 
+import os
 import re
 
 from django.core.exceptions import ImproperlyConfigured
@@ -7,6 +8,19 @@ from django.core.exceptions import ImproperlyConfigured
 from config.settings.base import *  # noqa: F403  # star import intentional for settings inheritance pattern
 
 DEBUG = False
+
+# JWT_SIGNING_KEY MUST be configured independently from SECRET_KEY in
+# production: rotating one shouldn't force the other to rotate too. The
+# base settings fall back to ``DJANGO_SECRET_KEY`` when unset, but that
+# coupling is unsafe in prod — it means any audit/rotation of the Django
+# secret silently invalidates every issued JWT. Require the explicit env
+# var here so a missing JWT_SIGNING_KEY in prod fails loudly at boot
+# instead of silently taking the SECRET_KEY shortcut.
+if not os.environ.get("JWT_SIGNING_KEY"):
+    raise ImproperlyConfigured(
+        "JWT_SIGNING_KEY must be set in production (independent rotation"
+        " lifecycle from SECRET_KEY)."
+    )
 
 _HOST_RE = re.compile(r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$")
 
