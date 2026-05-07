@@ -141,11 +141,6 @@ class TestDjangoSubscriptionRepository:
     def repo(self):
         return DjangoSubscriptionRepository()
 
-    def test_get_by_id(self, repo, subscription):
-        result = async_to_sync(repo.get_by_id)(subscription.id)
-        assert result is not None
-        assert result.stripe_id == "sub_test_123"
-
     def test_get_by_stripe_id(self, repo, subscription):
         result = async_to_sync(repo.get_by_stripe_id)("sub_test_123")
         assert result is not None
@@ -298,10 +293,6 @@ class TestDjangoSubscriptionRepository:
         result = async_to_sync(repo.get_active_for_user)(stripe_customer.user_id)
         assert result is not None
         assert result.stripe_id == "sub_trialing"
-
-    def test_delete(self, repo, subscription):
-        async_to_sync(repo.delete)(subscription.id)
-        assert not Subscription.objects.filter(id=subscription.id).exists()
 
 
 class TestDjangoPlanRepository:

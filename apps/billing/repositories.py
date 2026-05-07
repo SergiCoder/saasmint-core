@@ -112,9 +112,6 @@ class DjangoSubscriptionRepository:
             created_at=obj.created_at,
         )
 
-    async def get_by_id(self, subscription_id: UUID) -> Subscription | None:
-        return await aget_or_none(SubscriptionModel, self._to_domain, id=subscription_id)
-
     async def get_by_stripe_id(self, stripe_id: str) -> Subscription | None:
         return await aget_or_none(SubscriptionModel, self._to_domain, stripe_id=stripe_id)
 
@@ -179,9 +176,6 @@ class DjangoSubscriptionRepository:
         )
         return subscription
 
-    async def delete(self, subscription_id: UUID) -> None:
-        await SubscriptionModel.objects.filter(id=subscription_id).adelete()
-
 
 class DjangoPlanRepository:
     @staticmethod
@@ -210,12 +204,6 @@ class DjangoPlanRepository:
 
     async def list_active(self) -> list[Plan]:
         return [self._plan_to_domain(obj) async for obj in PlanModel.objects.filter(is_active=True)]
-
-    async def list_active_by_context(self, context: PlanContext) -> list[Plan]:
-        return [
-            self._plan_to_domain(obj)
-            async for obj in PlanModel.objects.filter(is_active=True, context=context)
-        ]
 
     async def get_price(self, plan_id: UUID) -> PlanPrice | None:
         return await aget_or_none(PlanPriceModel, self._price_to_domain, plan_id=plan_id)

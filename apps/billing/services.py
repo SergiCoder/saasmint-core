@@ -9,32 +9,14 @@ from asgiref.sync import sync_to_async
 from django.db import IntegrityError, transaction
 
 from apps.billing.models import (
-    ACTIVE_SUBSCRIPTION_STATUSES,
     CreditBalance,
     CreditTransaction,
     Product,
-    Subscription,
 )
 from apps.orgs.models import Org
 from apps.users.models import User
 
 logger = logging.getLogger(__name__)
-
-
-def get_active_team_subscription(org_id: UUID) -> Subscription | None:
-    """Return the active team-billed Subscription for *org_id*, or None.
-
-    Centralises the ``StripeCustomer→Subscription`` lookup used by seat-limit
-    validation and decrement paths so the traversal stays in one place.
-    """
-    return (
-        Subscription.objects.select_related("stripe_customer")
-        .filter(
-            stripe_customer__org_id=org_id,
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        )
-        .first()
-    )
 
 
 def get_credit_balance(

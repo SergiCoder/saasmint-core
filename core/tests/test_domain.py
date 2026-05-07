@@ -9,7 +9,6 @@ import pytest
 from pydantic import ValidationError
 
 from saasmint_core.domain.org import Org, OrgMember, OrgRole
-from saasmint_core.domain.payment import Invoice, InvoiceStatus, Payment, PaymentStatus
 from saasmint_core.domain.stripe_customer import StripeCustomer
 from saasmint_core.domain.stripe_event import StripeEvent
 from saasmint_core.domain.subscription import (
@@ -303,90 +302,6 @@ def test_subscription_model_copy() -> None:
     assert canceled.status == SubscriptionStatus.CANCELED
     assert canceled.canceled_at == NOW
     assert sub.status == SubscriptionStatus.ACTIVE  # original unchanged
-
-
-# ── Payment / Invoice ─────────────────────────────────────────────────────────
-
-
-def test_payment_status_values() -> None:
-    assert PaymentStatus.SUCCEEDED == "succeeded"
-    assert PaymentStatus.PENDING == "pending"
-    assert PaymentStatus.FAILED == "failed"
-    assert PaymentStatus.CANCELED == "canceled"
-
-
-def test_payment_creation() -> None:
-    payment = Payment(
-        id=uuid4(),
-        stripe_id="pi_abc",
-        stripe_customer_id=uuid4(),
-        amount=5000,
-        currency="usd",
-        status=PaymentStatus.SUCCEEDED,
-        created_at=NOW,
-    )
-    assert payment.description is None
-    assert payment.metadata == {}
-
-
-def test_payment_with_metadata() -> None:
-    payment = Payment(
-        id=uuid4(),
-        stripe_id="pi_xyz",
-        stripe_customer_id=uuid4(),
-        amount=1000,
-        currency="eur",
-        status=PaymentStatus.PENDING,
-        description="Test charge",
-        metadata={"order_id": "ord_123"},
-        created_at=NOW,
-    )
-    assert payment.metadata == {"order_id": "ord_123"}
-    assert payment.description == "Test charge"
-
-
-def test_invoice_status_values() -> None:
-    assert InvoiceStatus.DRAFT == "draft"
-    assert InvoiceStatus.OPEN == "open"
-    assert InvoiceStatus.PAID == "paid"
-    assert InvoiceStatus.VOID == "void"
-    assert InvoiceStatus.UNCOLLECTIBLE == "uncollectible"
-
-
-def test_invoice_creation() -> None:
-    inv = Invoice(
-        id=uuid4(),
-        stripe_id="in_abc",
-        stripe_customer_id=uuid4(),
-        amount_due=2000,
-        amount_paid=0,
-        currency="usd",
-        status=InvoiceStatus.OPEN,
-        created_at=NOW,
-    )
-    assert inv.subscription_id is None
-    assert inv.hosted_url is None
-    assert inv.pdf_url is None
-    assert inv.due_date is None
-
-
-def test_invoice_with_all_fields() -> None:
-    inv = Invoice(
-        id=uuid4(),
-        stripe_id="in_xyz",
-        stripe_customer_id=uuid4(),
-        subscription_id=uuid4(),
-        amount_due=2000,
-        amount_paid=2000,
-        currency="eur",
-        status=InvoiceStatus.PAID,
-        hosted_url="https://invoice.stripe.com/i/xyz",
-        pdf_url="https://invoice.stripe.com/i/xyz/pdf",
-        due_date=NOW,
-        created_at=NOW,
-    )
-    assert inv.status == InvoiceStatus.PAID
-    assert inv.amount_paid == 2000
 
 
 # ── StripeEvent ───────────────────────────────────────────────────────────────
