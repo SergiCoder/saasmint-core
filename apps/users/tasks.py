@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from config.celery import app
@@ -49,8 +50,6 @@ def _delete_expired_rows(model: type[Model], label: str) -> None:
     accept LIMIT directly on ``.delete()``, so an id-subquery bounds each
     batch.
     """
-    from datetime import UTC, datetime
-
     manager = model._default_manager
     now = datetime.now(UTC)
     total_deleted = 0

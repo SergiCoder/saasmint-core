@@ -22,9 +22,19 @@ from rest_framework.request import Request
 from apps.users.models import AUTH_USER_CACHE_KEY, RefreshToken, User
 
 if TYPE_CHECKING:
-    from apps.users.models import EmailVerificationToken, PasswordResetToken, SocialLinkRequest
+    from apps.users.models import (
+        EmailVerificationToken,
+        PasswordResetToken,
+        SocialLinkRequest,
+    )
 
-    OneTimeTokenModel = type[EmailVerificationToken] | type[PasswordResetToken]
+    # Wider alias: any model class that exposes ``token_hash``/``expires_at``/
+    # ``used_at``/``user`` and is consumed by ``_create_one_time_token`` /
+    # ``_verify_one_time_token``. Keeping the alias as a single ``type[...]``
+    # union node lets mypy infer correct types without enumerating every
+    # variant in callers.
+    _OneTimeToken = EmailVerificationToken | PasswordResetToken
+    OneTimeTokenModel = type[_OneTimeToken]
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +48,6 @@ PASSWORD_RESET_LIFETIME = timedelta(minutes=10)
 SOCIAL_LINK_LIFETIME = timedelta(minutes=15)
 
 _ALGORITHM = "HS256"
-
-
-def _get_signing_key() -> str:
-    return settings.JWT_SIGNING_KEY
 
 
 def _hash_token(raw: str) -> str:
@@ -59,7 +65,7 @@ def create_access_token(user: User) -> str:
         "iat": now,
         "exp": now + ACCESS_TOKEN_LIFETIME,
     }
-    return jwt.encode(payload, _get_signing_key(), algorithm=_ALGORITHM)
+    return jwt.encode(payload, settings.JWT_SIGNING_KEY, algorithm=_ALGORITHM)
 
 
 def create_refresh_token(user: User) -> str:
@@ -271,7 +277,7 @@ class JWTAuthentication(BaseAuthentication):
         try:
             payload: dict[str, object] = jwt.decode(
                 token,
-                _get_signing_key(),
+                settings.JWT_SIGNING_KEY,
                 algorithms=[_ALGORITHM],
             )
         except jwt.ExpiredSignatureError as exc:

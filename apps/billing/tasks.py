@@ -24,15 +24,19 @@ def _to_minor_units(display_amount: float, currency: str) -> int:
     """Inverse of ``format_amount``: display units → integer minor units.
 
     Zero-decimal currencies (JPY, KRW, …) are already in whole units; others
-    multiply by 100. ``round`` guards against float drift introduced by
-    ``round_friendly`` returning values like ``9.99`` that aren't exactly
-    representable in IEEE-754.
+    multiply by 100. Goes through :class:`Decimal` with explicit
+    ``ROUND_HALF_UP`` so ``round_friendly`` outputs like ``9.99`` (not
+    exactly representable in IEEE-754) land on ``999`` minor units instead
+    of ``998`` under banker's rounding.
     """
+    from decimal import ROUND_HALF_UP, Decimal
+
     from saasmint_core.services.currency import ZERO_DECIMAL_CURRENCIES
 
-    if currency.lower() in ZERO_DECIMAL_CURRENCIES:
-        return round(display_amount)
-    return round(display_amount * 100)
+    amount = Decimal(str(display_amount))
+    if currency.lower() not in ZERO_DECIMAL_CURRENCIES:
+        amount = amount * 100
+    return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
