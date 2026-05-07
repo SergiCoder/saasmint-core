@@ -278,14 +278,23 @@ class OrgMemberDetailView(OrgsScopedView):
         responses={204: None},
         description=(
             "Remove a member from the org. **Destructive:** this hard-deletes the"
-            " member's user account in addition to their membership row, and"
-            " decrements the org's Stripe seat count. The target cannot be the"
-            " org owner — transfer ownership first."
+            " member's user account in addition to their membership row. The"
+            " target cannot be the org owner — transfer ownership first."
+            " The org's Stripe seat count is **not** auto-decremented; the"
+            " freed seat opens up for a new invite. To stop paying for it,"
+            " call ``PATCH /api/v1/billing/subscriptions/me/`` with a lower"
+            " ``seat_limit`` separately."
         ),
         tags=["orgs"],
     )
     def delete(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
-        """Remove a member — decrements Stripe seats and hard-deletes their account."""
+        """Remove a member and hard-delete their account.
+
+        Does not change the org's Stripe seat count — billing stays on the
+        previously paid quota and the freed seat is available for a new
+        invite. To downsize, call ``PATCH /billing/subscriptions/me/`` with
+        a lower ``seat_limit`` after removal.
+        """
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
         target = get_object_or_404(
@@ -537,14 +546,16 @@ class InvitationDetailView(OrgsScopedView):
 class InvitationAcceptView(OrgsScopedView):
     """POST /api/v1/invitations/{token}/accept/ — register and join an org.
 
-    Unauthenticated endpoint. The invitee provides registration data
-    (full_name, password) and is created as an org_member user.
+    Unauthenticated endpoint. The invitee provides only ``full_name``;
+    the password is set later through the verification-email flow
+    (``POST /api/v1/auth/verify-email/`` with both the email-verification
+    token and a fresh password).
 
-    No session tokens are issued here — the invite token alone does not prove
-    mailbox control, so a leaked/forwarded link would otherwise onboard an
-    attacker with live credentials. Instead the account is created unverified
-    and a verification email is sent; the invitee must click the link to
-    activate and sign in (``POST /api/v1/auth/verify-email/`` returns tokens).
+    Decoupling credential-setting from this endpoint blocks an
+    invitation-token interception → account-takeover path: a leaked accept
+    link can no longer bind an attacker-chosen password, because the only
+    way to set the password is to click a verification link delivered
+    server-side to the invitee's mailbox.
     """
 
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
@@ -582,18 +593,20 @@ class InvitationAcceptView(OrgsScopedView):
         ser = InvitationAcceptSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
-        from apps.orgs.services import accept_invitation
+        from apps.orgs.services import SeatCapReachedAtAcceptError, accept_invitation
 
-        _user, org = accept_invitation(
-            invitation,
-            password=ser.validated_data["password"],
-            full_name=ser.validated_data["full_name"],
-        )
+        try:
+            _user, org = accept_invitation(
+                invitation,
+                full_name=ser.validated_data["full_name"],
+            )
+        except SeatCapReachedAtAcceptError as exc:
+            raise _SeatLimitReached from exc
 
         return Response(
             {
                 "org": OrgSerializer(org).data,
-                "detail": "Account created. Check your email to verify and sign in.",
+                "detail": "Account created. Check your email to verify and set your password.",
                 "code": "verification_email_sent",
             },
             status=status.HTTP_201_CREATED,

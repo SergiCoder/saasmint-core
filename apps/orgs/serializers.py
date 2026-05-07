@@ -5,7 +5,6 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from apps.orgs.models import Invitation, Org, OrgMember, OrgRole
-from apps.users.auth_serializers import _run_password_validators
 from apps.users.models import User
 
 # Roles that can be assigned via invitation (owner is never invited)
@@ -82,10 +81,6 @@ class CreateInvitationSerializer(serializers.Serializer[Invitation]):
 
 class InvitationAcceptSerializer(serializers.Serializer[Invitation]):
     full_name = serializers.CharField(min_length=3, max_length=255)
-    password = serializers.CharField(min_length=10, max_length=128, write_only=True)
-
-    def validate_password(self, value: str) -> str:
-        return _run_password_validators(value)
 
 
 class TransferOwnershipSerializer(serializers.Serializer[OrgMember]):

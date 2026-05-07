@@ -105,7 +105,9 @@ class TestListByOrg:
     def members(self, org, orm_user):
         from apps.orgs.models import OrgMember, OrgRole
 
-        OrgMember.objects.create(org=org, user=orm_user, role=OrgRole.OWNER)
+        OrgMember.objects.create(
+            org=org, user=orm_user, role=OrgRole.OWNER, is_billing=True
+        )
         extras = []
         for i in range(3):
             u = User.objects.create_user(

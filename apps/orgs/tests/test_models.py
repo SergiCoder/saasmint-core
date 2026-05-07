@@ -65,6 +65,37 @@ class TestOrgMember:
         other_user.delete()
         assert not OrgMember.objects.filter(id=member_id).exists()
 
+    def test_owner_must_be_billing_constraint(self, org, other_user):
+        """Owner rows MUST also carry ``is_billing=True`` at the DB level.
+
+        The ``is_billing`` flag gates billing mutations
+        (``_require_billing_authority``); flipping it off on an owner row
+        — through any code path — would silently lock the org out of
+        billing changes. The CheckConstraint makes that state unreachable.
+        """
+        from django.db import transaction
+
+        with pytest.raises(IntegrityError), transaction.atomic():
+            OrgMember.objects.create(
+                org=org,
+                user=other_user,
+                role=OrgRole.OWNER,
+                is_billing=False,
+            )
+
+    def test_non_owner_member_can_have_is_billing_false(self, org, other_user):
+        """Non-owner roles are not constrained — admins/members default to False."""
+        m = OrgMember.objects.create(
+            org=org, user=other_user, role=OrgRole.MEMBER, is_billing=False
+        )
+        assert m.is_billing is False
+
+    def test_owner_with_is_billing_true_passes_constraint(self, org, other_user):
+        m = OrgMember.objects.create(
+            org=org, user=other_user, role=OrgRole.OWNER, is_billing=True
+        )
+        assert m.role == OrgRole.OWNER and m.is_billing is True
+
 
 class TestOrgRole:
     def test_choices(self):

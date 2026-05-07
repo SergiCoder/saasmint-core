@@ -141,7 +141,15 @@ class RegisterView(AuthRegisterView):
 
 
 class VerifyEmailView(AuthPublicView):
-    """POST /api/v1/auth/verify-email — activate a user account."""
+    """POST /api/v1/auth/verify-email — activate a user account.
+
+    Accepts an optional ``password`` field. Required for invitee accounts
+    (created without a usable password by ``accept_invitation``); ignored
+    for users who already have a usable password (normal registration flow).
+    Setting the password here closes the invitation-token interception path:
+    only someone who can read the verification email — sent server-side to
+    the invitee's mailbox — can bind credentials to the account.
+    """
 
     @extend_schema(request=VerifyEmailSerializer, responses=TokenResponseSerializer, tags=["auth"])
     def post(self, request: Request) -> Response:
@@ -149,9 +157,31 @@ class VerifyEmailView(AuthPublicView):
         ser.is_valid(raise_exception=True)
 
         user = verify_email_token(ser.validated_data["token"])
+        password = ser.validated_data.get("password")
+        update_fields: list[str] = []
+
+        if not user.has_usable_password():
+            if not password:
+                return Response(
+                    {
+                        "detail": (
+                            "This account requires a password to be set."
+                            " Provide ``password`` to complete verification."
+                        ),
+                        "code": "password_required",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.set_password(password)
+            update_fields.append("password")
+
         if not user.is_verified:
             user.is_verified = True
-            user.save(update_fields=["is_verified", "updated_at"])
+            update_fields.append("is_verified")
+
+        if update_fields:
+            update_fields.append("updated_at")
+            user.save(update_fields=update_fields)
 
         refresh = create_refresh_token(user)
         return _token_response(user, refresh)
@@ -226,9 +256,16 @@ class LoginView(AuthLoginView):
             )
 
         if not user.is_verified:
+            # Collapse the unverified path into the invalid-credentials
+            # envelope: a distinct ``email_not_verified`` 403 lets an
+            # attacker confirm that an email + password combination is
+            # valid without yet being verified, leaking signal that helps
+            # credential-stuffing campaigns. The frontend can still recover
+            # by calling ``POST /auth/resend-verification`` (which is
+            # itself enumeration-safe).
             return Response(
-                {"detail": "Email not verified.", "code": "email_not_verified"},
-                status=status.HTTP_403_FORBIDDEN,
+                {"detail": "Invalid credentials.", "code": "invalid_credentials"},
+                status=status.HTTP_401_UNAUTHORIZED,
             )
 
         refresh = create_refresh_token(user)
@@ -489,11 +526,21 @@ def _store_oauth_exchange(access_token: str, refresh_token: str) -> str:
 
 
 def _consume_oauth_exchange(code: str) -> dict[str, str] | None:
-    """Atomically retrieve-and-delete a cached token pair by its one-time code."""
+    """Atomically retrieve-and-delete a cached token pair by its one-time code.
+
+    Two concurrent callers must never both succeed: the issued code grants
+    a session, so a double-redeem race could hand a session to an attacker
+    racing the legitimate frontend. ``cache.add`` is atomic on both Redis
+    (``SET NX``) and LocMemCache, so the first caller to land the
+    ``:consumed`` sentinel is the unique winner; subsequent callers see
+    ``add`` return ``False`` and get ``None`` even if the original code
+    has not yet been deleted from the cache.
+    """
     key = f"{_OAUTH_EXCHANGE_PREFIX}{code}"
-    data: dict[str, str] | None = cache.get(key)
-    if data is None:
+    sentinel = f"{key}:consumed"
+    if not cache.add(sentinel, 1, timeout=_OAUTH_EXCHANGE_TTL):
         return None
+    data: dict[str, str] | None = cache.get(key)
     cache.delete(key)
     return data
 

@@ -41,6 +41,19 @@ class LogoutSerializer(serializers.Serializer[User]):
 
 class VerifyEmailSerializer(serializers.Serializer[User]):
     token = serializers.CharField()
+    # Optional: invitee accounts (created via ``accept_invitation``) start
+    # with an unusable password. They MUST supply one here so the same
+    # request that proves mailbox control also binds a credential the
+    # invitation-token interceptor cannot have chosen.
+    password = serializers.CharField(
+        min_length=8,
+        max_length=128,
+        write_only=True,
+        required=False,
+    )
+
+    def validate_password(self, value: str) -> str:
+        return _run_password_validators(value)
 
 
 class ForgotPasswordSerializer(serializers.Serializer[User]):

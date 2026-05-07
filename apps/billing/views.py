@@ -380,7 +380,7 @@ async def _default_subscription_context_async(user: User) -> str:
 
 
 async def _resolve_billing_customer(
-    user: User, *, context: str | None = None
+    user: User, *, context: str | None = None, org_id: UUID | None = None
 ) -> StripeCustomer | None:
     """Return the StripeCustomer that owns billing for *user*, or None.
 
@@ -390,27 +390,38 @@ async def _resolve_billing_customer(
     regardless of org membership — required for the concurrent-billing case
     (rule 5a/5b) where an org member still has an active personal sub on
     their user-scoped customer.
+
+    When ``context="team"`` and ``org_id`` is provided, the lookup targets
+    that specific org — required when the caller has memberships in multiple
+    orgs but is only authorised to mutate one (the one returned by
+    ``_require_billing_authority`` / ``_resolve_mutation_context``).
+    Without ``org_id`` we fall back to "any membership the user has", which
+    is fine for team-context defaults but unsafe under concurrent
+    multi-org membership when the org_id has already been authority-pinned
+    upstream.
     """
     repos = get_billing_repos()
     effective = context or await _default_subscription_context_async(user)
     if effective == _SUBSCRIPTION_CONTEXT_TEAM:
         from apps.orgs.models import OrgMember
 
-        membership = (
-            await OrgMember.objects.filter(
-                user_id=user.id,
+        if org_id is None:
+            membership = (
+                await OrgMember.objects.filter(
+                    user_id=user.id,
+                )
+                .only("org_id")
+                .afirst()
             )
-            .only("org_id")
-            .afirst()
-        )
-        if membership is None:
-            return None
-        return await repos.customers.get_by_org_id(membership.org_id)
+            if membership is None:
+                return None
+            org_id = membership.org_id
+        return await repos.customers.get_by_org_id(org_id)
     return await repos.customers.get_by_user_id(user.id)
 
 
 async def _get_customer_and_paid_subscription(
-    user: User, *, context: str | None = None
+    user: User, *, context: str | None = None, org_id: UUID | None = None
 ) -> tuple[StripeCustomer, Subscription, str]:
     """Fetch the Stripe customer, active subscription, and its stripe_id.
 
@@ -420,9 +431,14 @@ async def _get_customer_and_paid_subscription(
     as a non-optional ``str`` lets callers avoid re-checking for ``None`` —
     every persisted Subscription is a Stripe mirror with a non-null
     stripe_id. Raises NotFound when the customer or subscription is missing.
+
+    ``org_id`` is forwarded to :func:`_resolve_billing_customer` to pin
+    multi-org callers to the org that's already been authority-checked
+    upstream — without it, a user who is ``is_billing=True`` on org A but
+    a member of org B could see this lookup land on B's customer.
     """
     repos = get_billing_repos()
-    customer = await _resolve_billing_customer(user, context=context)
+    customer = await _resolve_billing_customer(user, context=context, org_id=org_id)
     if customer is None:
         raise NotFound("No Stripe customer found.")
     sub = await repos.subscriptions.get_active_for_customer(customer.id)
@@ -767,12 +783,14 @@ class PortalSessionView(BillingScopedView):
             if effective == _SUBSCRIPTION_CONTEXT_TEAM:
                 # Same gate as cancel/resume: only is_billing members may open
                 # the team portal (it exposes payment methods, invoices, and
-                # cancel-from-Stripe — not read-only).
-                await sync_to_async(_require_billing_authority)(
+                # cancel-from-Stripe — not read-only). Pass the authorised
+                # ``org_id`` through so a multi-org caller can't open a portal
+                # session against an org they're not is_billing in.
+                authorized_org_id = await sync_to_async(_require_billing_authority)(
                     user, context=_SUBSCRIPTION_CONTEXT_TEAM
                 )
                 customer = await _resolve_billing_customer(
-                    user, context=_SUBSCRIPTION_CONTEXT_TEAM
+                    user, context=_SUBSCRIPTION_CONTEXT_TEAM, org_id=authorized_org_id
                 )
                 if customer is None:
                     raise NotFound("No team Stripe customer found.")
@@ -939,14 +957,17 @@ class CreditBalanceView(BillingScopedView):
     """GET /api/v1/billing/credits/me/ — read the caller's credit balance."""
 
     @extend_schema(
+        parameters=[_SUBSCRIPTION_CONTEXT_PARAM],
         responses={200: CreditBalanceSerializer},
         description=(
-            "Return the caller's current credit balances as a list. Non-org-member"
-            " users see a single entry with their own balance. Org members see"
-            " their org's balance (readable by any active member), plus a"
-            " ``user``-scoped entry iff a personal balance survives from before"
-            " a personal→team upgrade (rule 16) — this entry is omitted when"
-            " the user has no leftover personal credits."
+            "Return the caller's current credit balances as a list. The default"
+            " (no ``?context=``) mirrors the subscription routing: non-org-member"
+            " users see a single entry with their own balance; org members see"
+            " their org's balance plus a ``user``-scoped entry iff a personal"
+            " balance survives from before a personal→team upgrade (rule 16)."
+            " ``?context=personal`` returns only the user-scoped balance,"
+            " ``?context=team`` returns only the org-scoped balance (404 when"
+            " the caller is not in any org)."
         ),
         tags=["billing"],
     )
@@ -954,21 +975,38 @@ class CreditBalanceView(BillingScopedView):
         from apps.orgs.models import OrgMember
 
         user = get_user(request)
+        context = _validate_subscription_context(request.query_params.get("context"))
         balances: list[dict[str, object]] = []
 
-        # Fetch only the org_id — get_credit_balance filters by FK, so we
-        # don't need to hydrate the full Org row via select_related.
-        org_id = OrgMember.objects.filter(user_id=user.id).values_list("org_id", flat=True).first()
-        if org_id is not None:
-            balances.append({"balance": get_credit_balance(org_id=org_id), "scope": "org"})
-            # Surface leftover personal credits from a pre-upgrade purchase
-            # (rule 16). Only emit when > 0 so we don't spam zero-rows for
-            # org members who never had a personal balance.
-            personal_balance = get_credit_balance(user=user)
-            if personal_balance > 0:
-                balances.append({"balance": personal_balance, "scope": "user"})
-        else:
+        # Single deterministic membership lookup — older code re-ran the
+        # OrgMember query at every call site and could disagree about which
+        # row to bind to. The ``id`` ordering pins the resolver onto the
+        # oldest membership so two concurrent reads return the same scope.
+        org_id = (
+            OrgMember.objects.filter(user_id=user.id)
+            .order_by("id")
+            .values_list("org_id", flat=True)
+            .first()
+        )
+
+        if context == _SUBSCRIPTION_CONTEXT_PERSONAL:
             balances.append({"balance": get_credit_balance(user=user), "scope": "user"})
+        elif context == _SUBSCRIPTION_CONTEXT_TEAM:
+            if org_id is None:
+                raise NotFound("Caller is not a member of any organization.")
+            balances.append({"balance": get_credit_balance(org_id=org_id), "scope": "org"})
+        else:
+            # Default routing: org member → both rows when applicable, non-member → user.
+            if org_id is not None:
+                balances.append({"balance": get_credit_balance(org_id=org_id), "scope": "org"})
+                # Surface leftover personal credits from a pre-upgrade purchase
+                # (rule 16). Only emit when > 0 so we don't spam zero-rows for
+                # org members who never had a personal balance.
+                personal_balance = get_credit_balance(user=user)
+                if personal_balance > 0:
+                    balances.append({"balance": personal_balance, "scope": "user"})
+            else:
+                balances.append({"balance": get_credit_balance(user=user), "scope": "user"})
 
         return Response(CreditBalanceSerializer({"balances": balances}).data)
 
@@ -1210,7 +1248,7 @@ class SubscriptionView(BillingScopedView):
         async def _do() -> None:
             repos = get_billing_repos()
             customer, sub, stripe_sub_id = await _get_customer_and_paid_subscription(
-                user, context=context
+                user, context=context, org_id=org_id
             )
             if "cancel_at_period_end" in data:
                 if data["cancel_at_period_end"]:
@@ -1316,7 +1354,9 @@ class SubscriptionView(BillingScopedView):
         context, org_id = _resolve_mutation_context(request, user)
 
         async def _do() -> None:
-            customer, _, _ = await _get_customer_and_paid_subscription(user, context=context)
+            customer, _, _ = await _get_customer_and_paid_subscription(
+                user, context=context, org_id=org_id
+            )
             await cancel_subscription(
                 stripe_customer_id=customer.id,
                 at_period_end=True,
@@ -1388,10 +1428,12 @@ class ScheduledChangeView(BillingScopedView):
     )
     def delete(self, request: Request) -> Response:
         user = get_user(request)
-        context, _org_id = _resolve_mutation_context(request, user)
+        context, org_id = _resolve_mutation_context(request, user)
 
         async def _do() -> None:
-            customer, _, _ = await _get_customer_and_paid_subscription(user, context=context)
+            customer, _, _ = await _get_customer_and_paid_subscription(
+                user, context=context, org_id=org_id
+            )
             await release_pending_schedule_for_customer(
                 stripe_customer_id=customer.id,
                 subscription_repo=get_billing_repos().subscriptions,

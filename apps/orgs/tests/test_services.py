@@ -144,11 +144,11 @@ class TestCreateOrgWithOwner:
             full_name="Dual Owner",
         )
         org1 = Org.objects.create(name="Org1", slug="dual-owner-1", created_by=user)
-        OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER, is_billing=True)
 
         org2 = Org.objects.create(name="Org2", slug="dual-owner-2", created_by=user)
         with pytest.raises(IntegrityError, match="uniq_org_owner_per_user"):
-            OrgMember.objects.create(org=org2, user=user, role=OrgRole.OWNER)
+            OrgMember.objects.create(org=org2, user=user, role=OrgRole.OWNER, is_billing=True)
 
     def test_duplicate_webhook_is_idempotent(self) -> None:
         """A second checkout.session.completed delivery must not raise — it
@@ -571,7 +571,7 @@ class TestDeleteOrgsCreatedByUser:
             full_name="Multi Org",
         )
         org1 = Org.objects.create(name="Org1", slug="org1", created_by=user)
-        OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org1, user=user, role=OrgRole.OWNER, is_billing=True)
         org2 = Org.objects.create(name="Org2", slug="org2", created_by=user)
         org1_id = org1.id
         org2_id = org2.id

@@ -28,7 +28,9 @@ class TestOrgListViewGET:
 
     def test_excludes_orgs_user_not_member_of(self, authed_client, other_user, db):
         other_org = Org.objects.create(name="Other", slug="other", created_by=other_user)
-        OrgMember.objects.create(org=other_org, user=other_user, role=OrgRole.OWNER)
+        OrgMember.objects.create(
+            org=other_org, user=other_user, role=OrgRole.OWNER, is_billing=True
+        )
         resp = authed_client.get("/api/v1/orgs/")
         assert resp.status_code == 200
         assert resp.data["count"] == 0
@@ -44,7 +46,7 @@ class TestOrgListViewGET:
         # on Org.name regardless of the caller's role.
         org_b = Org.objects.create(name="Bravo", slug="bravo", created_by=user)
         org_a = Org.objects.create(name="Alpha", slug="alpha", created_by=user)
-        OrgMember.objects.create(org=org_b, user=user, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org_b, user=user, role=OrgRole.OWNER, is_billing=True)
         OrgMember.objects.create(org=org_a, user=user, role=OrgRole.ADMIN)
         resp = authed_client.get("/api/v1/orgs/")
         names = [o["name"] for o in resp.data["results"]]
@@ -182,7 +184,9 @@ class TestOrgDetailViewDELETE:
         """Access helper returns 403 (not 404) for non-members to avoid leaking
         org existence to an authenticated outsider."""
         other_org = Org.objects.create(name="Other", slug="other", created_by=other_user)
-        OrgMember.objects.create(org=other_org, user=other_user, role=OrgRole.OWNER)
+        OrgMember.objects.create(
+            org=other_org, user=other_user, role=OrgRole.OWNER, is_billing=True
+        )
         resp = authed_client.delete(f"/api/v1/orgs/{other_org.id}/")
         assert resp.status_code == 403
         assert Org.objects.filter(id=other_org.id).exists()
@@ -531,11 +535,11 @@ class TestInvitationCancelView:
 @pytest.mark.django_db
 class TestInvitationAcceptView:
     def test_accept_invitation_registers_user(self, org, owner_membership, user):
-        """Accepting creates an unverified user, joins the org, and prepares a verify email.
+        """Accepting creates an unverified, no-usable-password user and joins the org.
 
-        Tokens are intentionally NOT returned — the invite token alone does
-        not prove mailbox control, so the invitee must click the verification
-        email to activate and sign in.
+        Tokens are intentionally NOT returned, AND the user starts with an
+        unusable password — the invite token alone doesn't prove mailbox
+        control, so credentials are bound later via the verification flow.
         """
         from apps.users.models import EmailVerificationToken
 
@@ -550,7 +554,7 @@ class TestInvitationAcceptView:
         client = APIClient()
         resp = client.post(
             "/api/v1/invitations/accept-token/accept/",
-            {"full_name": "New User", "password": "securepass123"},
+            {"full_name": "New User"},
             format="json",
         )
         assert resp.status_code == 201
@@ -558,14 +562,43 @@ class TestInvitationAcceptView:
         assert resp.data["code"] == "verification_email_sent"
         assert "access_token" not in resp.data
         assert "refresh_token" not in resp.data
-        # New user created and added as org member, not yet verified
         new_user = User.objects.get(email="newuser@example.com")
         assert new_user.is_verified is False
+        # The decoupling fix: no usable password is bound at accept-time.
+        assert not new_user.has_usable_password()
         assert OrgMember.objects.filter(org=org, user=new_user).exists()
         invitation.refresh_from_db()
         assert invitation.status == InvitationStatus.ACCEPTED
-        # A verification token was created so the invitee can prove mailbox control
         assert EmailVerificationToken.objects.filter(user=new_user).exists()
+
+    def test_invitation_acceptance_does_not_bind_attacker_password(
+        self, org, owner_membership, user
+    ):
+        """Even if the request body smuggles ``password``, none is bound.
+
+        Reproduces the leaked-token threat: an attacker who knows the
+        invitation token POSTs ``password`` hoping to prime credentials
+        before the legitimate invitee verifies. The fix drops the field
+        from the serializer; ``has_usable_password`` must remain False.
+        """
+        Invitation.objects.create(
+            org=org,
+            email="targeted@example.com",
+            role=OrgRole.MEMBER,
+            token="targeted-token",  # noqa: S106
+            invited_by=user,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        client = APIClient()
+        resp = client.post(
+            "/api/v1/invitations/targeted-token/accept/",
+            {"full_name": "Targeted", "password": "testpass123"},
+            format="json",
+        )
+        assert resp.status_code == 201
+        new_user = User.objects.get(email="targeted@example.com")
+        assert not new_user.has_usable_password()
+        assert not new_user.check_password("testpass123")
 
     def test_accept_rejects_already_registered_email(self, org, owner_membership, user, other_user):
         """Cannot accept if the invited email is already registered."""
@@ -580,7 +613,7 @@ class TestInvitationAcceptView:
         client = APIClient()
         resp = client.post(
             "/api/v1/invitations/existing-email-token/accept/",
-            {"full_name": "Other", "password": "securepass123"},
+            {"full_name": "Other"},
             format="json",
         )
         assert resp.status_code == 409
@@ -597,7 +630,7 @@ class TestInvitationAcceptView:
         client = APIClient()
         resp = client.post(
             "/api/v1/invitations/expired-token/accept/",
-            {"full_name": "Expired User", "password": "securepass123"},
+            {"full_name": "Expired User"},
             format="json",
         )
         assert resp.status_code == 410
@@ -606,7 +639,7 @@ class TestInvitationAcceptView:
         client = APIClient()
         resp = client.post(
             "/api/v1/invitations/nonexistent/accept/",
-            {"full_name": "Nobody", "password": "securepass123"},
+            {"full_name": "Nobody"},
             format="json",
         )
         assert resp.status_code == 404
@@ -624,69 +657,16 @@ class TestInvitationAcceptView:
         resp = client.post("/api/v1/invitations/nodata-token/accept/", {}, format="json")
         assert resp.status_code == 400
 
-    def test_short_password_rejected(self, org, owner_membership, user):
-        """Passwords shorter than 10 chars fail serializer min_length."""
-        Invitation.objects.create(
-            org=org,
-            email="short@example.com",
-            role=OrgRole.MEMBER,
-            token="short-pass-token",  # noqa: S106
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=7),
-        )
-        client = APIClient()
-        resp = client.post(
-            "/api/v1/invitations/short-pass-token/accept/",
-            {"full_name": "Short Pass", "password": "short1"},
-            format="json",
-        )
-        assert resp.status_code == 400
-        assert "password" in resp.data
+    def test_accept_invitation_rejects_when_seat_cap_reached_at_commit(
+        self, org, owner_membership, user
+    ):
+        """Re-checks seat cap inside the transaction with a row lock.
 
-    def test_common_password_rejected(self, org, owner_membership, user):
-        """Passwords on CommonPasswordValidator's blocklist are rejected."""
-        Invitation.objects.create(
-            org=org,
-            email="common@example.com",
-            role=OrgRole.MEMBER,
-            token="common-pass-token",  # noqa: S106
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=7),
-        )
-        client = APIClient()
-        resp = client.post(
-            "/api/v1/invitations/common-pass-token/accept/",
-            {"full_name": "Common Pass", "password": "password123"},
-            format="json",
-        )
-        assert resp.status_code == 400
-        assert "password" in resp.data
-
-    def test_numeric_password_rejected(self, org, owner_membership, user):
-        """Fully numeric passwords are rejected by NumericPasswordValidator."""
-        Invitation.objects.create(
-            org=org,
-            email="numeric@example.com",
-            role=OrgRole.MEMBER,
-            token="numeric-pass-token",  # noqa: S106
-            invited_by=user,
-            expires_at=timezone.now() + timedelta(days=7),
-        )
-        client = APIClient()
-        resp = client.post(
-            "/api/v1/invitations/numeric-pass-token/accept/",
-            {"full_name": "Numeric Pass", "password": "1234567890"},
-            format="json",
-        )
-        assert resp.status_code == 400
-        assert "password" in resp.data
-
-    def test_accept_succeeds_even_when_seats_exhausted(self, org, owner_membership, user):
-        """Accept-time has no seat check — seat enforcement is invite-time only.
-
-        Documents the intentional behavior: if seats are exhausted between
-        invite creation and accept, the accept still succeeds. Seats are
-        validated at invite-time under a row lock.
+        Invite-time seat enforcement only locks the sub row at invite
+        creation; if seats fill up between invite and accept (e.g., a
+        parallel team checkout reduced ``seat_limit``, or other invites
+        accepted concurrently), the accept must reject rather than silently
+        push the org past its cap.
         """
         from datetime import UTC, datetime
 
@@ -716,7 +696,7 @@ class TestInvitationAcceptView:
             stripe_customer=customer,
             status="active",
             plan=plan,
-            seat_limit=1,  # only 1 seat — already filled by owner
+            seat_limit=1,  # already filled by owner
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
@@ -732,11 +712,15 @@ class TestInvitationAcceptView:
         client = APIClient()
         resp = client.post(
             "/api/v1/invitations/late-accept-token/accept/",
-            {"full_name": "Late Accept", "password": "securepass123"},
+            {"full_name": "Late Accept"},
             format="json",
         )
-        assert resp.status_code == 201
-        assert OrgMember.objects.filter(org=org, user__email="late-accept@example.com").exists()
+        assert resp.status_code == 409
+        assert resp.data["code"] == "seat_limit_reached"
+        assert not OrgMember.objects.filter(
+            org=org, user__email="late-accept@example.com"
+        ).exists()
+        assert not User.objects.filter(email="late-accept@example.com").exists()
 
 
 @pytest.mark.django_db

@@ -71,6 +71,19 @@ class OrgMember(models.Model):
                 condition=models.Q(role="owner"),
                 name="uniq_org_owner_per_user",
             ),
+            # Owner rows MUST also carry ``is_billing=True``. The owner is
+            # the only role permitted to spend org funds — flipping their
+            # is_billing flag off through any code path (manual admin edit,
+            # buggy migration, transfer-ownership refactor) would silently
+            # lock the org out of billing changes since
+            # ``_require_billing_authority`` filters on ``is_billing=True``.
+            # DB-level enforcement keeps the invariant from drifting.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(role="owner", is_billing=True) | ~models.Q(role="owner")
+                ),
+                name="ck_org_owner_must_be_billing",
+            ),
         ]
         indexes = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             # Hot path: `SubscriptionView` checks whether an org-member user has

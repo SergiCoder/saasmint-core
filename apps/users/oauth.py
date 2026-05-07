@@ -224,12 +224,20 @@ async def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUse
             email = google.get("email")
             if not email:
                 raise OAuthError("Google OAuth response missing email")
+            # Strict ``is True`` — ``bool("false")`` is ``True`` for any
+            # non-empty string, so a malformed/proxied response that returned
+            # the verified flag as the JSON string ``"false"`` would have
+            # been auto-linked. Only an honest, JSON-typed boolean ``true``
+            # passes the gate now.
+            verified = (
+                google.get("verified_email") is True or google.get("email_verified") is True
+            )
             return OAuthUserInfo(
                 email=email,
                 full_name=google.get("name") or email.split("@")[0],
                 provider_user_id=str(google["id"]),
                 avatar_url=google.get("picture"),
-                email_verified=bool(google.get("verified_email") or google.get("email_verified")),
+                email_verified=verified,
             )
         case Provider.GITHUB:
             github: _GitHubUserInfo = info

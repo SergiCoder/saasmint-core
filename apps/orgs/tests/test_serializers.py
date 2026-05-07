@@ -63,7 +63,9 @@ class TestOrgMemberSerializer:
         data = OrgMemberSerializer(owner_membership).data
         assert data["id"] == str(owner_membership.id)
         assert data["role"] == "owner"
-        assert data["is_billing"] is False
+        # Owner rows always carry is_billing=True (CheckConstraint
+        # ck_org_owner_must_be_billing); the fixture matches.
+        assert data["is_billing"] is True
         assert "joined_at" in data
 
     def test_all_fields_read_only(self):
