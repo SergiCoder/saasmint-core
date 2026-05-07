@@ -7,7 +7,6 @@ from unittest.mock import patch
 import pytest
 
 from apps.users.email import (
-    _send,
     send_password_reset_email,
     send_social_link_email,
     send_verification_email,
@@ -24,7 +23,7 @@ def email_settings(settings):
 
 class TestSendVerificationEmail:
     def test_calls_resend_with_expected_envelope(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_verification_email("user@example.com", "tok_abc")
 
         mock_send.assert_called_once()
@@ -34,7 +33,7 @@ class TestSendVerificationEmail:
         assert payload["subject"] == "Verify your email address"
 
     def test_html_contains_frontend_verify_link_with_token(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_verification_email("user@example.com", "tok_abc")
 
         html = mock_send.call_args[0][0]["html"]
@@ -43,7 +42,7 @@ class TestSendVerificationEmail:
         assert "24 hours" in html
 
     def test_token_is_embedded_verbatim(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_verification_email("user@example.com", "raw-url-safe_token.xyz")
 
         html = mock_send.call_args[0][0]["html"]
@@ -52,7 +51,7 @@ class TestSendVerificationEmail:
 
 class TestSendPasswordResetEmail:
     def test_calls_resend_with_expected_envelope(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_password_reset_email("user@example.com", "tok_reset")
 
         mock_send.assert_called_once()
@@ -62,7 +61,7 @@ class TestSendPasswordResetEmail:
         assert payload["subject"] == "Reset your password"
 
     def test_html_contains_frontend_reset_link_with_token(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_password_reset_email("user@example.com", "tok_reset")
 
         html = mock_send.call_args[0][0]["html"]
@@ -71,7 +70,7 @@ class TestSendPasswordResetEmail:
         assert "1 hour" in html
 
     def test_warns_if_unsolicited(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_password_reset_email("user@example.com", "tok_reset")
 
         html = mock_send.call_args[0][0]["html"]
@@ -80,7 +79,7 @@ class TestSendPasswordResetEmail:
 
 class TestSendSocialLinkEmail:
     def test_calls_resend_with_expected_envelope(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_social_link_email("user@example.com", "tok_link", "microsoft")
 
         mock_send.assert_called_once()
@@ -89,7 +88,7 @@ class TestSendSocialLinkEmail:
         assert payload["subject"] == "Confirm linking your Microsoft account"
 
     def test_html_contains_confirm_link_route_with_token(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_social_link_email("user@example.com", "tok_link", "github")
 
         html = mock_send.call_args[0][0]["html"]
@@ -98,7 +97,7 @@ class TestSendSocialLinkEmail:
         assert "15 minutes" in html
 
     def test_warns_if_unsolicited(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_social_link_email("user@example.com", "tok_link", "microsoft")
 
         html = mock_send.call_args[0][0]["html"]
@@ -109,7 +108,7 @@ class TestEmailLoggingSocialLink:
     def test_social_link_email_logs_recipient_and_provider(
         self, email_settings, caplog: pytest.LogCaptureFixture
     ):
-        with patch("apps.users.email.resend.Emails.send"):
+        with patch("apps.email_transport.resend.Emails.send"):
             with caplog.at_level("INFO", logger="apps.users.email"):
                 send_social_link_email("user@example.com", "tok_link", "github")
 
@@ -117,54 +116,18 @@ class TestEmailLoggingSocialLink:
         assert any("github" in r.message for r in caplog.records)
 
 
-class TestSendHelper:
-    def test_sets_api_key_when_unset(self, email_settings):
-        import resend
-
-        original = resend.api_key
-        resend.api_key = None
-        try:
-            with patch("apps.users.email.resend.Emails.send"):
-                _send("user@example.com", "Subject", "<p>Body</p>")
-            assert resend.api_key == "re_testkey"
-        finally:
-            resend.api_key = original
-
-    def test_does_not_override_existing_api_key(self, email_settings):
-        import resend
-
-        original = resend.api_key
-        resend.api_key = "re_already_set"
-        try:
-            with patch("apps.users.email.resend.Emails.send"):
-                _send("user@example.com", "Subject", "<p>Body</p>")
-            assert resend.api_key == "re_already_set"
-        finally:
-            resend.api_key = original
-
-    def test_forwards_payload_to_resend(self, email_settings):
-        with patch("apps.users.email.resend.Emails.send") as mock_send:
-            _send("user@example.com", "Hello", "<p>Body</p>")
-
-        payload = mock_send.call_args[0][0]
-        assert payload["to"] == ["user@example.com"]
-        assert payload["subject"] == "Hello"
-        assert payload["html"] == "<p>Body</p>"
-        assert payload["from"] == "noreply@saasmint.test"
-
-
 class TestEmailLogging:
     def test_verification_email_logs_recipient(
         self, email_settings, caplog: pytest.LogCaptureFixture
     ):
-        with patch("apps.users.email.resend.Emails.send"):
+        with patch("apps.email_transport.resend.Emails.send"):
             with caplog.at_level("INFO", logger="apps.users.email"):
                 send_verification_email("user@example.com", "tok_abc")
 
         assert any("user@example.com" in r.message for r in caplog.records)
 
     def test_reset_email_logs_recipient(self, email_settings, caplog: pytest.LogCaptureFixture):
-        with patch("apps.users.email.resend.Emails.send"):
+        with patch("apps.email_transport.resend.Emails.send"):
             with caplog.at_level("INFO", logger="apps.users.email"):
                 send_password_reset_email("user@example.com", "tok_reset")
 

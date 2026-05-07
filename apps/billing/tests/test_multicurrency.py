@@ -483,12 +483,12 @@ class TestDualDisplay:
         assert result["local_currency"] is None
 
 
-# ── _resolve_product_stripe_price_id: non-USD paths ──────────────────────────
+# ── _resolve_stripe_price_id: non-USD paths for products ─────────────────────
 
 
 class TestProductStripePriceIdResolution:
-    """Cover the non-USD branches of _resolve_product_stripe_price_id which
-    are exercised via ProductCheckoutSessionView."""
+    """Cover the non-USD branches of _resolve_stripe_price_id (product variant)
+    via ProductCheckoutSessionView."""
 
     def test_eur_user_gets_eur_stripe_price_at_product_checkout(
         self, authed_client, user, settings

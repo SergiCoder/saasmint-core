@@ -1,4 +1,14 @@
-"""Organization lifecycle services — team checkout, member management, invitations."""
+"""Organization lifecycle services — team checkout, member management, invitations.
+
+Note on the ``apps.billing.*`` imports inside function bodies: ``apps.billing``
+imports ``apps.orgs.models.OrgMember`` at module top (e.g. for the
+billing-authority gates and credit routing in ``apps.billing.views``). A
+top-level ``from apps.billing.models import …`` here would close that loop
+at startup. The lazy function-scope imports below are deliberate — they keep
+the cycle deferred to call time, where Python has finished importing both
+modules. Don't promote any of them to module top without first auditing the
+billing → orgs side.
+"""
 
 from __future__ import annotations
 
@@ -30,10 +40,10 @@ def generate_unique_slug(name: str) -> str:
 
     Race semantics: this is a best-effort generator, not a guarantee. The
     scan + pick is not transactional, so two concurrent callers can land on
-    the same candidate. The unique index on `Org.slug` (`idx_orgs_slug_active`)
-    is the authoritative uniqueness enforcer — callers are expected to wrap
-    the `Org.create()` in a try/except for `IntegrityError` and retry if they
-    must survive a lost race (see `_create_org_with_owner`).
+    the same candidate. The field-level unique index on ``Org.slug`` is the
+    authoritative uniqueness enforcer — callers are expected to wrap the
+    ``Org.create()`` in a try/except for ``IntegrityError`` and retry if
+    they must survive a lost race (see ``_create_org_with_owner``).
     """
     base = slugify(name)
     # Strip any characters not in [a-z0-9-]
@@ -45,11 +55,11 @@ def generate_unique_slug(name: str) -> str:
         base = "org"
 
     # Pull candidate variants in one query (`base`, `base-2`, `base-3`, ...)
-    # using a ``startswith`` scan so the ``idx_orgs_slug_active`` partial index
-    # can seek the prefix — ``slug__regex`` was opaque to the planner and
-    # fell back to a full-table scan. Filter to exact-match or ``-<digits>``
-    # in Python; anything else (e.g. ``foo-bar`` when base=``foo``) is
-    # discarded, so the wider candidate set is harmless.
+    # using a ``startswith`` scan so the field-level unique index on
+    # ``Org.slug`` can seek the prefix — ``slug__regex`` was opaque to the
+    # planner and fell back to a full-table scan. Filter to exact-match or
+    # ``-<digits>`` in Python; anything else (e.g. ``foo-bar`` when
+    # base=``foo``) is discarded, so the wider candidate set is harmless.
     _suffix_re = re.compile(rf"^{re.escape(base)}(?:-\d+)?$")
     existing = {
         slug
@@ -487,16 +497,3 @@ def _get_active_stripe_sub(org_id: UUID) -> SubscriptionModel | None:
     )
 
 
-def _cancel_team_subscription(org: Org) -> None:
-    """Cancel the team subscription for an org via Stripe (immediate, no refund)."""
-    sub = _get_active_stripe_sub(org.id)
-    if sub is None or sub.stripe_id is None:
-        return
-    try:
-        stripe.Subscription.cancel(sub.stripe_id, prorate=False)
-    except stripe.StripeError:
-        logger.exception(
-            "Failed to cancel Stripe sub %s for org %s",
-            sub.stripe_id,
-            org.id,
-        )

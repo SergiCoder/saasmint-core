@@ -24,7 +24,7 @@ class InvitationStatus(models.TextChoices):
 class Org(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
-    slug = models.SlugField(max_length=255)
+    slug = models.SlugField(max_length=255, unique=True)
     logo_url = models.TextField(null=True, blank=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no logo set (distinguishable from empty string)
     created_by = models.ForeignKey(
         "users.User",
@@ -37,12 +37,6 @@ class Org(models.Model):
 
     class Meta:
         db_table = "orgs"
-        constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
-            models.UniqueConstraint(
-                fields=["slug"],
-                name="idx_orgs_slug_active",
-            ),
-        ]
 
     def __str__(self) -> str:
         return self.name
@@ -68,7 +62,7 @@ class OrgMember(models.Model):
             # constraint is the authoritative enforcer for the race.
             models.UniqueConstraint(
                 fields=["user"],
-                condition=models.Q(role="owner"),
+                condition=models.Q(role=OrgRole.OWNER),
                 name="uniq_org_owner_per_user",
             ),
             # Owner rows MUST also carry ``is_billing=True``. The owner is
@@ -80,7 +74,7 @@ class OrgMember(models.Model):
             # DB-level enforcement keeps the invariant from drifting.
             models.CheckConstraint(
                 condition=(
-                    models.Q(role="owner", is_billing=True) | ~models.Q(role="owner")
+                    models.Q(role=OrgRole.OWNER, is_billing=True) | ~models.Q(role=OrgRole.OWNER)
                 ),
                 name="ck_org_owner_must_be_billing",
             ),
@@ -130,7 +124,7 @@ class Invitation(models.Model):
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
             models.UniqueConstraint(
                 fields=["org", "email"],
-                condition=models.Q(status="pending"),
+                condition=models.Q(status=InvitationStatus.PENDING),
                 name="idx_invitations_org_email_pending",
             ),
         ]
@@ -141,7 +135,7 @@ class Invitation(models.Model):
             models.Index(
                 fields=["org", "-created_at"],
                 name="idx_invitation_pending_org",
-                condition=models.Q(status="pending"),
+                condition=models.Q(status=InvitationStatus.PENDING),
             ),
         ]
 

@@ -39,13 +39,6 @@ class TestDomainExceptionHandler:
         assert resp is not None
         assert resp.status_code == 404
 
-    def test_subscription_already_active_returns_409(self, context):
-        from saasmint_core.exceptions import SubscriptionAlreadyActiveError
-
-        resp = domain_exception_handler(SubscriptionAlreadyActiveError("active"), context)
-        assert resp is not None
-        assert resp.status_code == 409
-
     def test_insufficient_permission_returns_403(self, context):
         from saasmint_core.exceptions import InsufficientPermissionError
 
@@ -75,30 +68,6 @@ class TestDomainExceptionHandler:
         resp = domain_exception_handler(exc, context)
         assert resp is not None
         assert resp.status_code == 502
-
-    def test_no_active_subscription_returns_409(self, context):
-        from saasmint_core.exceptions import NoActiveSubscriptionError
-
-        resp = domain_exception_handler(NoActiveSubscriptionError("none"), context)
-        assert resp is not None
-        assert resp.status_code == 409
-        assert resp.data["code"] == "no_active_subscription"
-
-    def test_already_on_plan_returns_409(self, context):
-        from saasmint_core.exceptions import AlreadyOnPlanError
-
-        resp = domain_exception_handler(AlreadyOnPlanError("same plan"), context)
-        assert resp is not None
-        assert resp.status_code == 409
-        assert resp.data["code"] == "already_on_plan"
-
-    def test_plan_context_mismatch_returns_400(self, context):
-        from saasmint_core.exceptions import PlanContextMismatchError
-
-        resp = domain_exception_handler(PlanContextMismatchError("mismatch"), context)
-        assert resp is not None
-        assert resp.status_code == 400
-        assert resp.data["code"] == "plan_context_mismatch"
 
     def test_seats_below_member_count_returns_400(self, context):
         from saasmint_core.exceptions import SeatsBelowMemberCountError

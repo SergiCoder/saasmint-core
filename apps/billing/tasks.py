@@ -24,15 +24,19 @@ def _to_minor_units(display_amount: float, currency: str) -> int:
     """Inverse of ``format_amount``: display units → integer minor units.
 
     Zero-decimal currencies (JPY, KRW, …) are already in whole units; others
-    multiply by 100. ``round`` guards against float drift introduced by
-    ``round_friendly`` returning values like ``9.99`` that aren't exactly
-    representable in IEEE-754.
+    multiply by 100. Goes through :class:`Decimal` with explicit
+    ``ROUND_HALF_UP`` so ``round_friendly`` outputs like ``9.99`` (not
+    exactly representable in IEEE-754) land on ``999`` minor units instead
+    of ``998`` under banker's rounding.
     """
+    from decimal import ROUND_HALF_UP, Decimal
+
     from saasmint_core.services.currency import ZERO_DECIMAL_CURRENCIES
 
-    if currency.lower() in ZERO_DECIMAL_CURRENCIES:
-        return round(display_amount)
-    return round(display_amount * 100)
+    amount = Decimal(str(display_amount))
+    if currency.lower() not in ZERO_DECIMAL_CURRENCIES:
+        amount = amount * 100
+    return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 @app.task  # type: ignore[untyped-decorator]  # celery has no stubs
@@ -188,10 +192,17 @@ def send_subscription_cancel_notice_task(
         if action == "scheduled"
         else send_subscription_cancel_resumed
     )
+    import resend.exceptions
+
     for email in emails:
         try:
             sender(email, subscription_label)
-        except Exception:
+        except (resend.exceptions.ResendError, httpx.HTTPError):
+            # A flaky upstream / one bad address must not block notices to the
+            # rest of the recipient list. Resend retries are idempotent on our
+            # side and the billing state change is authoritative — the email
+            # is best-effort. Programming errors are intentionally not caught
+            # here so they surface in Sentry.
             logger.exception("Failed to send billing notice to %s (action=%s)", email, action)
 
 

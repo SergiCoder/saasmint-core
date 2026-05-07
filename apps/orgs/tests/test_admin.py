@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 from django.test import Client
 
@@ -75,10 +73,8 @@ class TestOrgAdminDeleteAction:
         assert b"TestOrg" in resp.content
         assert b"permanently delete" in resp.content
 
-    @patch("apps.orgs.services._cancel_team_subscription")
     def test_confirm_deletes_org_and_hard_deletes_members(
         self,
-        mock_cancel_sub,
         admin_client_django,
         org,
         owner_membership,

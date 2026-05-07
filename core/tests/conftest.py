@@ -33,18 +33,12 @@ class InMemoryUserRepository:
     async def get_by_id(self, user_id: UUID) -> User | None:
         return self._store.get(user_id)
 
-    async def get_by_email(self, email: str) -> User | None:
-        return next((u for u in self._store.values() if u.email == email), None)
-
     async def save(self, user: User) -> User:
         self._store[user.id] = user
         return user
 
     async def hard_delete(self, user_id: UUID) -> None:
         self._store.pop(user_id, None)
-
-    async def list_by_org(self, org_id: UUID) -> list[User]:
-        return list(self._store.values())
 
 
 class InMemoryStripeCustomerRepository:
@@ -75,9 +69,6 @@ class InMemorySubscriptionRepository:
     def __init__(self) -> None:
         self._store: dict[UUID, Subscription] = {}
 
-    async def get_by_id(self, subscription_id: UUID) -> Subscription | None:
-        return self._store.get(subscription_id)
-
     async def get_by_stripe_id(self, stripe_id: str) -> Subscription | None:
         return next((s for s in self._store.values() if s.stripe_id == stripe_id), None)
 
@@ -106,9 +97,6 @@ class InMemorySubscriptionRepository:
     async def save(self, subscription: Subscription) -> Subscription:
         self._store[subscription.id] = subscription
         return subscription
-
-    async def delete(self, subscription_id: UUID) -> None:
-        self._store.pop(subscription_id, None)
 
 
 class InMemoryStripeEventRepository:

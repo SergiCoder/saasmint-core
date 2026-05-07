@@ -26,7 +26,7 @@ class TestSendInvitationEmail:
         inviter whose ``full_name`` contains markup) could smuggle script
         or styling tags into the recipient's mail client.
         """
-        with patch("apps.orgs.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_invitation_email(
                 email="invitee@example.com",
                 token="invite-token-123",  # noqa: S106
@@ -51,7 +51,7 @@ class TestSendInvitationEmail:
         assert "invite-token-123" in html
 
     def test_invitation_email_contains_inviter_and_org_name_safely(self, email_settings):
-        with patch("apps.orgs.email.resend.Emails.send") as mock_send:
+        with patch("apps.email_transport.resend.Emails.send") as mock_send:
             send_invitation_email(
                 email="invitee@example.com",
                 token="t1",  # noqa: S106

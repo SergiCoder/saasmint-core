@@ -119,7 +119,13 @@ async def test_new_event_is_marked_processed() -> None:
 
 
 @pytest.mark.anyio
-async def test_dispatch_failure_marks_event_failed_and_reraises(monkeypatch) -> None:
+async def test_unhandled_dispatch_failure_propagates_without_marking(monkeypatch) -> None:
+    """An unhandled exception type (e.g. a programming error) propagates to the
+    Celery task as-is — the event row is **not** marked failed, so the bug
+    surfaces in Sentry rather than being silently swallowed onto the audit row.
+    Specific transient/permanent error contracts are covered by the dedicated
+    StripeError / ConnectionError / WebhookDataError tests below.
+    """
     event_repo = InMemoryStripeEventRepository()
     repos = _make_repos(event_repo=event_repo)
 
@@ -140,7 +146,7 @@ async def test_dispatch_failure_marks_event_failed_and_reraises(monkeypatch) -> 
         await process_stored_event(event, stripe_id, repos)
 
     saved = event_repo._store["evt_fail"]
-    assert saved.error == "dispatch boom"
+    assert saved.error is None
     assert saved.processed_at is None
 
 

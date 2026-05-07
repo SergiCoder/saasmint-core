@@ -444,14 +444,19 @@ class TestSendSubscriptionCancelNoticeTask:
         mock_scheduled.assert_not_called()
 
     def test_failure_for_one_recipient_does_not_block_others(self):
-        """A sender raising for one address must not short-circuit the loop —
-        remaining recipients must still be attempted. The task swallows the
-        exception (per implementation) because Resend calls are idempotent and
-        the billing state change is authoritative."""
+        """A Resend / network failure for one address must not short-circuit the
+        loop — remaining recipients must still be attempted. Resend calls are
+        idempotent on our side and the billing state change is authoritative,
+        so per-recipient failures are best-effort. Only ResendError /
+        httpx.HTTPError are swallowed; programming errors propagate so they
+        surface in Sentry rather than being silently dropped."""
+        import resend.exceptions
 
         def _fail_on_bad(email: str, _label: str) -> None:
             if email == "bad@example.com":
-                raise RuntimeError("resend boom")
+                raise resend.exceptions.ResendError(
+                    code=429, message="rate limited", suggested_action="retry", error_type=""
+                )
 
         with patch(
             "apps.billing.email.send_subscription_cancel_scheduled",

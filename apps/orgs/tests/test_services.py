@@ -11,7 +11,6 @@ from asgiref.sync import async_to_sync
 
 from apps.orgs.models import Org, OrgMember, OrgRole
 from apps.orgs.services import (
-    _cancel_team_subscription,
     _create_org_with_owner,
     delete_org,
     delete_org_on_subscription_cancel,
@@ -472,8 +471,7 @@ class TestDeleteOrgOnSubscriptionCancel:
 
 @pytest.mark.django_db
 class TestDeleteOrg:
-    @patch("apps.orgs.services._cancel_team_subscription")
-    def test_hard_deletes_org_and_members(self, mock_cancel):
+    def test_hard_deletes_org_and_members(self):
         user = User.objects.create_user(
             email="delorg@example.com",
             full_name="Del Org",
@@ -496,8 +494,7 @@ class TestDeleteOrg:
         assert not User.objects.filter(id=member_id).exists()
         assert not OrgMember.objects.filter(org_id=org_id).exists()
 
-    @patch("apps.orgs.services._cancel_team_subscription")
-    def test_spares_user_with_active_personal_subscription(self, mock_cancel):
+    def test_spares_user_with_active_personal_subscription(self):
         """A member whose only org is this one but who also has an active
         personal subscription must keep their account — otherwise we'd nuke
         a user still paying for their own personal plan."""
@@ -558,8 +555,7 @@ class TestDeleteOrg:
 
 @pytest.mark.django_db
 class TestDeleteOrgsCreatedByUser:
-    @patch("apps.orgs.services._cancel_team_subscription")
-    def test_deletes_all_active_orgs(self, mock_cancel):
+    def test_deletes_all_active_orgs(self):
         """``delete_orgs_created_by_user`` filters by ``Org.created_by`` and
         is independent of OrgMember role — a user who's only ever owned one
         org at a time (rule 8) can still have *created* multiple orgs over
@@ -582,72 +578,3 @@ class TestDeleteOrgsCreatedByUser:
         assert not Org.objects.filter(id=org2_id).exists()
 
 
-# ---------------------------------------------------------------------------
-# _cancel_team_subscription
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.django_db
-class TestCancelTeamSubscription:
-    def test_no_customer_is_noop(self):
-        user = User.objects.create_user(
-            email="nocust@example.com",
-            full_name="No Cust",
-        )
-        org = Org.objects.create(name="NoCust", slug="nocust", created_by=user)
-        _cancel_team_subscription(org)  # should not raise
-
-    @patch("stripe.Subscription.cancel")
-    def test_cancels_stripe_subscription(self, mock_cancel):
-        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
-
-        user = User.objects.create_user(
-            email="cancelsub@example.com",
-            full_name="Cancel Sub",
-        )
-        org = Org.objects.create(name="CancelSub", slug="cancelsub", created_by=user)
-        customer = StripeCustomer.objects.create(stripe_id="cus_cancel", org=org, livemode=False)
-        plan = Plan.objects.create(name="Team", context="team", interval="month", is_active=True)
-        PlanPrice.objects.create(plan=plan, stripe_price_id="price_cancel", amount=1500)
-        Subscription.objects.create(
-            stripe_id="sub_cancel",
-            stripe_customer=customer,
-            status="active",
-            plan=plan,
-            seat_limit=2,
-            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
-        )
-
-        _cancel_team_subscription(org)
-        mock_cancel.assert_called_once_with("sub_cancel", prorate=False)
-
-    @patch("stripe.Subscription.cancel", side_effect=Exception("Stripe error"))
-    def test_logs_error_on_stripe_failure(self, mock_cancel):
-        import stripe
-
-        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
-
-        mock_cancel.side_effect = stripe.StripeError("fail")
-
-        user = User.objects.create_user(
-            email="failcancel@example.com",
-            full_name="Fail Cancel",
-        )
-        org = Org.objects.create(name="FailCancel", slug="failcancel", created_by=user)
-        customer = StripeCustomer.objects.create(stripe_id="cus_fail", org=org, livemode=False)
-        plan = Plan.objects.create(name="Team", context="team", interval="month", is_active=True)
-        PlanPrice.objects.create(plan=plan, stripe_price_id="price_fail", amount=1500)
-        Subscription.objects.create(
-            stripe_id="sub_fail",
-            stripe_customer=customer,
-            status="active",
-            plan=plan,
-            seat_limit=2,
-            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
-            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
-        )
-
-        # Should not raise — logs the error
-        _cancel_team_subscription(org)
-        mock_cancel.assert_called_once()
