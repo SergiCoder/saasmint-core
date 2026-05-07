@@ -184,7 +184,7 @@ async def test_update_seat_count_increase_prorates() -> None:
     )
     # Optimistic mirror: local row reflects the new seat count before the
     # webhook lands.
-    stored = await repo.get_by_id(active.id)
+    stored = await repo.get_by_stripe_id("sub_abc")
     assert stored is not None
     assert stored.seat_limit == 5
 
@@ -210,7 +210,7 @@ async def test_update_seat_count_decrease_no_proration() -> None:
         items=[{"id": "si_seat", "quantity": 3}],
         proration_behavior="none",
     )
-    stored = await repo.get_by_id(active.id)
+    stored = await repo.get_by_stripe_id("sub_abc")
     assert stored is not None
     assert stored.seat_limit == 3
 
