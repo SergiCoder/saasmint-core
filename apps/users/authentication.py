@@ -30,10 +30,10 @@ if TYPE_CHECKING:
 
     # Wider alias: any model class that exposes ``token_hash``/``expires_at``/
     # ``used_at``/``user`` and is consumed by ``_create_one_time_token`` /
-    # ``_verify_one_time_token``. Keeping the alias as a single ``type[...]``
+    # ``_consume_one_time_token``. Keeping the alias as a single ``type[...]``
     # union node lets mypy infer correct types without enumerating every
     # variant in callers.
-    _OneTimeToken = EmailVerificationToken | PasswordResetToken
+    _OneTimeToken = EmailVerificationToken | PasswordResetToken | SocialLinkRequest
     OneTimeTokenModel = type[_OneTimeToken]
 
 logger = logging.getLogger(__name__)
@@ -146,14 +146,17 @@ def _create_one_time_token(
     return raw
 
 
-def _verify_one_time_token(
+def _consume_one_time_token(
     model_class: OneTimeTokenModel,
     raw_token: str,
     label: str,
-) -> User:
-    """Validate and consume a one-time token. Returns the user.
+) -> _OneTimeToken:
+    """Validate and consume a one-time token row. Returns the row itself.
 
-    Raises AuthenticationFailed on invalid/expired/used tokens.
+    Used by ``_verify_one_time_token`` (returns row.user) and by
+    ``verify_social_link_token`` (returns the row to read provider fields off
+    it). Raises AuthenticationFailed on invalid/expired/used tokens or when
+    the bound user is inactive.
     """
     token_hash = _hash_token(raw_token)
     try:
@@ -168,12 +171,26 @@ def _verify_one_time_token(
     if obj.expires_at <= datetime.now(UTC):
         raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
 
-    user: User = obj.user
-    if not user.is_active:
+    if not obj.user.is_active:
         raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
 
     obj.used_at = datetime.now(UTC)
     obj.save(update_fields=["used_at"])
+    return obj
+
+
+def _verify_one_time_token(
+    model_class: OneTimeTokenModel,
+    raw_token: str,
+    label: str,
+) -> User:
+    """Validate and consume a one-time token. Returns the bound user.
+
+    Thin wrapper over :func:`_consume_one_time_token` for the common case
+    where callers only need the user (email verification, password reset).
+    """
+    obj = _consume_one_time_token(model_class, raw_token, label)
+    user: User = obj.user
     return user
 
 
@@ -237,30 +254,14 @@ def create_social_link_token(
 def verify_social_link_token(raw_token: str) -> SocialLinkRequest:
     """Validate and consume a social-link request token. Returns the row.
 
-    Caller needs `provider`, `provider_user_id`, and `user` to mint the
-    `SocialAccount` row, so the helper returns the request itself rather
-    than just the user (unlike `_verify_one_time_token`).
+    Caller needs ``provider``, ``provider_user_id``, and ``user`` to mint the
+    ``SocialAccount`` row, so the helper returns the request itself rather
+    than just the user (unlike :func:`_verify_one_time_token`).
     """
     from apps.users.models import SocialLinkRequest
 
-    token_hash = _hash_token(raw_token)
-    try:
-        obj = SocialLinkRequest.objects.select_related("user").get(token_hash=token_hash)
-    except SocialLinkRequest.DoesNotExist:
-        raise AuthenticationFailed(
-            {"detail": "Invalid link token.", "code": "invalid_token"}
-        ) from None
-
-    if obj.used_at is not None:
-        raise AuthenticationFailed({"detail": "Token has already been used.", "code": "token_used"})
-    if obj.expires_at <= datetime.now(UTC):
-        raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
-
-    if not obj.user.is_active:
-        raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
-
-    obj.used_at = datetime.now(UTC)
-    obj.save(update_fields=["used_at"])
+    obj = _consume_one_time_token(SocialLinkRequest, raw_token, "link")
+    assert isinstance(obj, SocialLinkRequest)  # noqa: S101  helps mypy narrow the union return
     return obj
 
 
