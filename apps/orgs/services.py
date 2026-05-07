@@ -253,32 +253,77 @@ async def delete_org_on_subscription_cancel(org_id: UUID) -> None:
     delete_org_on_subscription_cancel_task.delay(str(org_id))
 
 
+class SeatCapReachedAtAcceptError(Exception):
+    """Raised by ``accept_invitation`` when the team's seat cap is reached at commit.
+
+    Re-raised by the view layer as a 409 Conflict so the invitee gets a
+    clean error rather than an opaque IntegrityError. Distinct exception
+    type so callers can distinguish it from generic IntegrityError races.
+    """
+
+
 def accept_invitation(
     invitation: Invitation,
     *,
-    password: str,
     full_name: str,
 ) -> tuple[User, Org]:
     """Create the invitee's user + membership and mark the invitation accepted.
 
     The invitation must already have been validated (not expired, org active,
-    email not registered). Runs in a single transaction so a failure midway
-    never leaves a dangling user, member, or accepted-but-unused invitation.
+    email not registered, seat cap not reached). Runs in a single transaction
+    so a failure midway never leaves a dangling user, member, or
+    accepted-but-unused invitation.
 
-    The user is created with ``is_verified=False`` — a verification email is
-    queued on commit so the invitee must prove mailbox control before they
-    can log in. This blocks a leaked/forwarded invitation token from
-    silently onboarding an attacker, since they cannot click the verify
-    link that lands in the real invitee's inbox.
+    The user is created with ``set_unusable_password()`` — the password is
+    set later by the invitee through the verification-email flow
+    (``POST /api/v1/auth/verify-email/`` with both the token and a fresh
+    password). This decouples credential setting from the invitation token:
+    a leaked/forwarded accept link cannot bind an attacker-chosen password,
+    because the only way to set the password is to consume a verification
+    token that's only ever delivered to the invitee's inbox.
+
+    The seat-limit check is re-run inside this transaction with a row-lock
+    on the team Subscription so a leaked-token race against a parallel
+    membership change cannot push the org past its seat cap at commit time.
     """
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+    from apps.billing.models import Subscription as SubscriptionModel
     from apps.users.authentication import create_email_verification_token
     from apps.users.tasks import send_verification_email_task
 
     org = invitation.org
     with transaction.atomic():
+        # Lock the active team sub row first so any concurrent invitation
+        # accept / invite create / member add against the same org serialises
+        # behind us. Mirrors the lock taken at invite-creation time in
+        # ``_validate_seat_limit``.
+        sub = (
+            SubscriptionModel.objects.select_for_update()
+            .filter(
+                stripe_customer__org=org,
+                status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+            )
+            .first()
+        )
+        if sub is not None:
+            from django.db.models import Count
+
+            counts = Org.objects.filter(pk=org.pk).aggregate(
+                member_count=Count("members", distinct=True),
+            )
+            if counts["member_count"] + 1 > sub.seat_limit:
+                raise SeatCapReachedAtAcceptError(
+                    "This invitation cannot be accepted: the org has filled"
+                    " every seat on its current subscription. Ask an admin to"
+                    " expand the plan."
+                )
+
+        # ``UserManager.create_user`` calls ``set_unusable_password()`` when
+        # ``password`` is None — the invitee binds a real password later via
+        # the verify-email flow.
         user = User.objects.create_user(
             email=invitation.email,
-            password=password,
+            password=None,
             full_name=full_name,
             is_verified=False,
         )
