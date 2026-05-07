@@ -71,10 +71,13 @@ class TestSubscriptionSerializer:
         data = SubscriptionSerializer(subscription).data
         assert data["seats_used"] == 1
 
-    def test_seats_used_team_subscription_counts_org_members(self, team_plan, team_plan_price):
-        """Team subs (customer has an org) return the live OrgMember count via
-        the fallback COUNT query (the annotation path is exercised via views)."""
+    def test_seats_used_team_subscription_reads_annotation(self, team_plan, team_plan_price):
+        """Team subs surface the org member count via the ``org_member_count``
+        annotation that ``_get_active_subscriptions_for_user`` attaches; the
+        serializer requires the annotation to avoid a per-row COUNT N+1."""
         from datetime import UTC, datetime
+
+        from django.db.models import Count, OuterRef, Subquery
 
         from apps.billing.models import StripeCustomer, Subscription
         from apps.orgs.models import Org, OrgMember, OrgRole
@@ -90,7 +93,7 @@ class TestSubscriptionSerializer:
         customer = StripeCustomer.objects.create(
             stripe_id="cus_ser_team", org=org, livemode=False
         )
-        sub = Subscription.objects.create(
+        Subscription.objects.create(
             stripe_id="sub_ser_team",
             stripe_customer=customer,
             status="active",
@@ -99,8 +102,21 @@ class TestSubscriptionSerializer:
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
-        # Fetch fresh so stripe_customer is available via select_related.
-        sub = Subscription.objects.select_related("stripe_customer").get(id=sub.id)
+        # Mirror the production annotation from
+        # _get_active_subscriptions_for_user so seats_used reads from the
+        # annotated value instead of raising.
+        org_member_sq = (
+            OrgMember.objects.filter(org_id=OuterRef("stripe_customer__org_id"))
+            .order_by()
+            .values("org_id")
+            .annotate(n=Count("id"))
+            .values("n")
+        )
+        sub = (
+            Subscription.objects.select_related("stripe_customer")
+            .annotate(org_member_count=Subquery(org_member_sq))
+            .get(stripe_id="sub_ser_team")
+        )
         data = SubscriptionSerializer(sub).data
         # 3 members in the org.
         assert data["seats_used"] == 3

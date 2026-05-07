@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -66,6 +67,21 @@ def _local_display(
     return None, None
 
 
+@functools.cache
+def _host_matchers(
+    allowed_hosts: tuple[str, ...],
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Split ALLOWED_HOSTS into ``(exact_hosts, suffix_hosts)`` for O(1) lookups.
+
+    Cache key is the immutable tuple form of ``ALLOWED_HOSTS`` — tests that
+    flip the setting on the fly automatically miss the cache and rebuild,
+    so no manual invalidation is needed.
+    """
+    exact = frozenset(h for h in allowed_hosts if h != "*" and not h.startswith("."))
+    suffixes = tuple(h for h in allowed_hosts if h.startswith("."))
+    return exact, suffixes
+
+
 def _validate_redirect_url(url: str) -> str:
     """Ensure a redirect URL belongs to an allowed domain."""
     allowed_origins: list[str] = getattr(settings, "CORS_ALLOWED_ORIGINS", [])
@@ -88,12 +104,12 @@ def _validate_redirect_url(url: str) -> str:
 
     if allowed_origins and origin in allowed_origins:
         return url
-    if allowed_hosts and any(
-        hostname == host or (host.startswith(".") and hostname.endswith(host))
-        for host in allowed_hosts
-        if host != "*"
-    ):
-        return url
+    if allowed_hosts:
+        exact_hosts, suffix_hosts = _host_matchers(tuple(allowed_hosts))
+        if hostname in exact_hosts:
+            return url
+        if any(hostname.endswith(s) for s in suffix_hosts):
+            return url
 
     raise serializers.ValidationError("URL domain is not in the list of allowed origins.")
 
@@ -129,17 +145,34 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
         )
         read_only_fields = ("id", "amount")
 
+    def to_representation(self, instance: PlanPrice | ProductPrice) -> dict[str, Any]:
+        # Compute the localized + local tuples once per instance and stash
+        # them so the four SerializerMethodField getters below read from a
+        # cache instead of recomputing _localized_display / _local_display
+        # twice per row (each call walks ``localized_prices.all()``).
+        instance._display_tuple = _localized_display(  # type: ignore[union-attr]
+            instance, self.context.get("currency", "usd")
+        )
+        instance._local_tuple = _local_display(  # type: ignore[union-attr]
+            instance, self.context.get("preferred_currency")
+        )
+        return super().to_representation(instance)
+
     def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
-        return _localized_display(obj, self.context.get("currency", "usd"))[0]
+        amount: float = obj._display_tuple[0]  # type: ignore[union-attr]  # populated in to_representation
+        return amount
 
     def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
-        return _localized_display(obj, self.context.get("currency", "usd"))[1]
+        currency: str = obj._display_tuple[1]  # type: ignore[union-attr]  # populated in to_representation
+        return currency
 
     def get_local_display_amount(self, obj: PlanPrice | ProductPrice) -> float | None:
-        return _local_display(obj, self.context.get("preferred_currency"))[0]
+        amount: float | None = obj._local_tuple[0]  # type: ignore[union-attr]  # populated in to_representation
+        return amount
 
     def get_local_currency(self, obj: PlanPrice | ProductPrice) -> str | None:
-        return _local_display(obj, self.context.get("preferred_currency"))[1]
+        currency: str | None = obj._local_tuple[1]  # type: ignore[union-attr]  # populated in to_representation
+        return currency
 
 
 class PlanPriceSerializer(_PriceSerializer):
@@ -216,23 +249,24 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
         """Number of seats currently occupied.
 
         Always 1 for personal subscriptions. For team subscriptions,
-        reflects the current org member count.
-
-        When the queryset was annotated with ``org_member_count`` (as
-        ``_get_active_subscriptions_for_user`` does), that value is read
-        directly from the annotation to avoid a second COUNT query per
-        serialized object. Falls back to a live COUNT for callers that
-        skip the annotation (e.g. direct serializer use in tests).
+        reads the ``org_member_count`` annotation attached by
+        ``_get_active_subscriptions_for_user`` — the only path that
+        serialises team subs through this serializer in production.
+        Raises if the annotation is missing rather than firing a per-row
+        COUNT query, so a future caller that drops the annotation gets a
+        loud error instead of a silent N+1.
         """
-        from apps.orgs.models import OrgMember
-
         org_id = getattr(obj.stripe_customer, "org_id", None) if obj.stripe_customer_id else None
         if org_id is None:
             return 1
         annotated: int | None = getattr(obj, "org_member_count", None)
-        if annotated is not None:
-            return annotated
-        return OrgMember.objects.filter(org_id=org_id).count()
+        if annotated is None:
+            raise RuntimeError(
+                "SubscriptionSerializer requires the org_member_count annotation "
+                "for team subscriptions — call _get_active_subscriptions_for_user "
+                "or annotate the queryset before serialisation."
+            )
+        return annotated
 
 
 class CheckoutRequestSerializer(serializers.Serializer[object]):

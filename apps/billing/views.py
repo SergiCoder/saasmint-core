@@ -8,7 +8,8 @@ from uuid import UUID
 
 from asgiref.sync import async_to_sync, sync_to_async
 from django.conf import settings
-from django.db.models import Count, OuterRef, Prefetch, QuerySet, Subquery
+from django.db import transaction
+from django.db.models import Count, OuterRef, Prefetch, Q, QuerySet, Subquery
 from drf_spectacular.utils import (
     OpenApiParameter,
     OpenApiResponse,
@@ -213,6 +214,33 @@ def _localized_subscription_prefetches(
     ]
 
 
+def _localized_for_currency(
+    price: PlanPrice | ProductPrice, currency: str
+) -> LocalizedPrice | None:
+    """Return the prefetched LocalizedPrice for *currency*, or None.
+
+    ``_get_active_plan_price`` / ``_get_active_product_price`` attach the
+    matching row under ``_resolved_localized`` when called with a non-USD
+    currency. Falls back to a direct query when callers (tests, async
+    paths) skip the prefetch — keeping the resolver functions safe to use
+    on un-prefetched rows.
+    """
+    cached: list[LocalizedPrice] | None = getattr(price, "_resolved_localized", None)
+    if cached is not None:
+        for row in cached:
+            if row.currency == currency and row.stripe_price_id:
+                return row
+        return None
+    filter_kwargs: dict[str, object] = {"currency": currency, "stripe_price_id__isnull": False}
+    if isinstance(price, PlanPrice):
+        filter_kwargs["plan_price"] = price
+    else:
+        filter_kwargs["product_price"] = price
+    return LocalizedPrice.objects.filter(**filter_kwargs).only(
+        "stripe_price_id", "amount_minor", "currency"
+    ).first()
+
+
 def _resolve_plan_stripe_price_id(plan_price: PlanPrice, currency: str) -> str:
     """Return the Stripe Price ID for *plan_price* in *currency*.
 
@@ -220,16 +248,12 @@ def _resolve_plan_stripe_price_id(plan_price: PlanPrice, currency: str) -> str:
     currencies read ``LocalizedPrice.stripe_price_id`` for the matching pair;
     if absent (currency not billable, or sync_stripe_catalog hasn't minted it
     yet), falls back to the USD ID so the customer can still complete checkout.
+    Reuses the prefetched ``_resolved_localized`` rows attached by
+    ``_get_active_plan_price`` when present, avoiding a second round-trip.
     """
     if currency == "usd":
         return plan_price.stripe_price_id
-    row = (
-        LocalizedPrice.objects.filter(
-            plan_price=plan_price, currency=currency, stripe_price_id__isnull=False
-        )
-        .only("stripe_price_id")
-        .first()
-    )
+    row = _localized_for_currency(plan_price, currency)
     return row.stripe_price_id if row and row.stripe_price_id else plan_price.stripe_price_id
 
 
@@ -237,14 +261,10 @@ def _resolve_product_stripe_price_id(product_price: ProductPrice, currency: str)
     """Return the Stripe Price ID for *product_price* in *currency*. See plan variant."""
     if currency == "usd":
         return product_price.stripe_price_id
-    row = (
-        LocalizedPrice.objects.filter(
-            product_price=product_price, currency=currency, stripe_price_id__isnull=False
-        )
-        .only("stripe_price_id")
-        .first()
+    row = _localized_for_currency(product_price, currency)
+    return (
+        row.stripe_price_id if row and row.stripe_price_id else product_price.stripe_price_id
     )
-    return row.stripe_price_id if row and row.stripe_price_id else product_price.stripe_price_id
 
 
 def _resolve_plan_change_price(plan_price: PlanPrice, currency: str) -> tuple[str, int]:
@@ -264,13 +284,7 @@ def _resolve_plan_change_price(plan_price: PlanPrice, currency: str) -> tuple[st
     if currency == "usd":
         return plan_price.stripe_price_id, plan_price.amount
 
-    row = (
-        LocalizedPrice.objects.filter(
-            plan_price=plan_price, currency=currency, stripe_price_id__isnull=False
-        )
-        .only("stripe_price_id", "amount_minor")
-        .first()
-    )
+    row = _localized_for_currency(plan_price, currency)
     if row is None or not row.stripe_price_id:
         raise ValidationError(
             {"plan_price_id": ["Plan unavailable in your subscription's currency."]}
@@ -417,29 +431,60 @@ async def _get_customer_and_paid_subscription(
     return customer, sub, sub.stripe_id
 
 
-def _get_active_plan_price(plan_price_id: UUID) -> PlanPrice:
-    """Validate a PlanPrice with *plan_price_id* exists and belongs to an active plan."""
-    plan_price = (
-        PlanPrice.objects.select_related("plan")
-        .filter(id=plan_price_id, plan__is_active=True)
-        .first()
+def _get_active_plan_price(
+    plan_price_id: UUID, *, currency: str | None = None
+) -> PlanPrice:
+    """Validate a PlanPrice with *plan_price_id* exists and belongs to an active plan.
+
+    When *currency* is non-USD, prefetch the matching :class:`LocalizedPrice`
+    row onto the returned PlanPrice as ``_resolved_localized``. The
+    ``_resolve_plan_*`` helpers then read it from the cache instead of
+    firing a second round-trip per checkout / patch.
+    """
+    qs = PlanPrice.objects.select_related("plan").filter(
+        id=plan_price_id, plan__is_active=True
     )
+    if currency and currency != "usd":
+        qs = qs.prefetch_related(
+            Prefetch(
+                "localized_prices",
+                queryset=LocalizedPrice.objects.filter(
+                    currency=currency, stripe_price_id__isnull=False
+                ).only("stripe_price_id", "amount_minor", "currency"),
+                to_attr="_resolved_localized",
+            )
+        )
+    plan_price = qs.first()
     if plan_price is None:
         raise NotFound("Invalid plan price.")
     return plan_price
 
 
-def _get_active_product_price(product_price_id: UUID) -> ProductPrice:
+def _get_active_product_price(
+    product_price_id: UUID, *, currency: str | None = None
+) -> ProductPrice:
     """Validate a ProductPrice with *product_price_id* exists and is active.
 
     The view only reads ``product_id`` (the FK column, already on the row) and
     ``stripe_price_id`` off the result, so ``select_related("product")`` would
     hydrate a Product we never touch — ``product__is_active=True`` still uses
     a JOIN in the WHERE clause, just without pulling the row into Python.
+
+    When *currency* is non-USD, prefetch the matching LocalizedPrice row so
+    ``_resolve_product_stripe_price_id`` can skip the second query.
     """
-    product_price = ProductPrice.objects.filter(
-        id=product_price_id, product__is_active=True
-    ).first()
+    qs = ProductPrice.objects.filter(id=product_price_id, product__is_active=True)
+    if currency and currency != "usd":
+        qs = qs.prefetch_related(
+            Prefetch(
+                "localized_prices",
+                queryset=LocalizedPrice.objects.filter(
+                    currency=currency, stripe_price_id__isnull=False
+                ).only("stripe_price_id", "amount_minor", "currency"),
+                to_attr="_resolved_localized",
+            )
+        )
+    product_price = qs.first()
     if product_price is None:
         raise NotFound("Invalid product price.")
     return product_price
@@ -588,12 +633,14 @@ class CheckoutSessionView(BillingScopedView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        plan_price = _get_active_plan_price(data["plan_price_id"])
-        quantity = _validate_quantity_for_plan(plan_price, data["seat_limit"])
-
+        # Resolve currency first so _get_active_plan_price can prefetch the
+        # matching LocalizedPrice in the same query — _resolve_plan_stripe_price_id
+        # then reads from the prefetched cache.
         billing_currency, _ = _resolve_billing_currency(
             request.query_params.get("currency"), user
         )
+        plan_price = _get_active_plan_price(data["plan_price_id"], currency=billing_currency)
+        quantity = _validate_quantity_for_plan(plan_price, data["seat_limit"])
         stripe_price_id = _resolve_plan_stripe_price_id(plan_price, billing_currency)
 
         is_team = plan_price.plan.context == PlanContext.TEAM
@@ -845,11 +892,15 @@ class ProductCheckoutSessionView(BillingScopedView):
         data = ser.validated_data
 
         context = _validate_subscription_context(request.query_params.get("context"))
-        product_price = _get_active_product_price(data["product_price_id"])
         org_id = _resolve_product_purchase_context(user, context)
 
+        # Currency resolved first so the LocalizedPrice prefetch lands in
+        # the same query as _get_active_product_price.
         billing_currency, _ = _resolve_billing_currency(
             request.query_params.get("currency"), user
+        )
+        product_price = _get_active_product_price(
+            data["product_price_id"], currency=billing_currency
         )
         stripe_price_id = _resolve_product_stripe_price_id(product_price, billing_currency)
 
@@ -977,22 +1028,22 @@ def _get_active_subscriptions_for_user(
             seen_ids.add(team_sub.id)
 
     # Personal sub — picked up via either ``Subscription.user_id`` or
-    # ``stripe_customer.user_id``. Split into two queries so each can use its
-    # own partial index (idx_sub_user_status / idx_sub_customer_status)
-    # instead of degenerating into a scan on an OR'd predicate.
-    customer = getattr(user, "stripe_customer", None)
-    customer_id = customer.id if customer is not None else None
-    sub_user = base.filter(user_id=user.id).order_by("-created_at").first()
-    sub_customer = (
-        base.filter(stripe_customer_id=customer_id).order_by("-created_at").first()
-        if customer_id is not None
-        else None
+    # ``stripe_customer.user_id``. One OR'd query lets Postgres BitmapOr the
+    # two partial indexes (idx_sub_user_status / idx_sub_customer_status)
+    # into a single index union, saving the second round-trip. Pull the
+    # customer id directly via the FK so we don't materialise the full
+    # StripeCustomer row just to read its primary key.
+    from apps.billing.models import StripeCustomer
+
+    customer_id = (
+        StripeCustomer.objects.filter(user_id=user.id).values_list("id", flat=True).first()
     )
-    personal_candidates = [s for s in (sub_user, sub_customer) if s is not None]
-    if personal_candidates:
-        latest_personal = max(personal_candidates, key=lambda s: s.created_at)
-        if latest_personal.id not in seen_ids:
-            subs.append(latest_personal)
+    predicate = Q(user_id=user.id)
+    if customer_id is not None:
+        predicate |= Q(stripe_customer_id=customer_id)
+    latest_personal = base.filter(predicate).order_by("-created_at").first()
+    if latest_personal is not None and latest_personal.id not in seen_ids:
+        subs.append(latest_personal)
 
     return subs
 
@@ -1218,10 +1269,15 @@ class SubscriptionView(BillingScopedView):
         if "cancel_at_period_end" in data:
             recipients = _billing_notice_recipients(user, org_id)
             if recipients:
-                send_subscription_cancel_notice_task.delay(
-                    recipients,
-                    sub.plan.name,
-                    "scheduled" if data["cancel_at_period_end"] else "resumed",
+                # Defer to on_commit so we can never queue a notification that
+                # references a subscription state the DB later rolls back. No-op
+                # outside an atomic block — runs immediately, current behavior.
+                action = "scheduled" if data["cancel_at_period_end"] else "resumed"
+                plan_name = sub.plan.name
+                transaction.on_commit(
+                    lambda: send_subscription_cancel_notice_task.delay(
+                        recipients, plan_name, action
+                    )
                 )
         return Response(SubscriptionSerializer(sub, context=ctx).data)
 
@@ -1277,7 +1333,12 @@ class SubscriptionView(BillingScopedView):
         )
         recipients = _billing_notice_recipients(user, org_id)
         if recipients:
-            send_subscription_cancel_notice_task.delay(recipients, sub.plan.name, "scheduled")
+            plan_name = sub.plan.name
+            transaction.on_commit(
+                lambda: send_subscription_cancel_notice_task.delay(
+                    recipients, plan_name, "scheduled"
+                )
+            )
         return Response(
             SubscriptionSerializer(sub, context=ctx).data,
             status=status.HTTP_202_ACCEPTED,

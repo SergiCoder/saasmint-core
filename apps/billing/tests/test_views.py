@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from django.test import TestCase
 from rest_framework.test import APIClient
 from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
 
@@ -1926,7 +1927,11 @@ class TestCancelNoticeEmail:
     def test_delete_sends_scheduled_notice(
         self, _mock_cancel, mock_task, authed_client, subscription
     ):
-        resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
+        # The .delay call is wrapped in transaction.on_commit so it only fires
+        # at commit — captureOnCommitCallbacks runs the callbacks under the
+        # rolled-back test transaction.
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 202
         mock_task.delay.assert_called_once()
         recipients, label, action = mock_task.delay.call_args.args
@@ -1939,11 +1944,12 @@ class TestCancelNoticeEmail:
     def test_patch_cancel_at_period_end_true_sends_scheduled(
         self, _mock_cancel, mock_task, authed_client, subscription
     ):
-        resp = authed_client.patch(
-            "/api/v1/billing/subscriptions/me/",
-            {"cancel_at_period_end": True},
-            format="json",
-        )
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            resp = authed_client.patch(
+                "/api/v1/billing/subscriptions/me/",
+                {"cancel_at_period_end": True},
+                format="json",
+            )
         assert resp.status_code == 200
         assert mock_task.delay.call_args.args[2] == "scheduled"
 
@@ -1952,11 +1958,12 @@ class TestCancelNoticeEmail:
     def test_patch_cancel_at_period_end_false_sends_resumed(
         self, _mock_resume, mock_task, authed_client, subscription
     ):
-        resp = authed_client.patch(
-            "/api/v1/billing/subscriptions/me/",
-            {"cancel_at_period_end": False},
-            format="json",
-        )
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            resp = authed_client.patch(
+                "/api/v1/billing/subscriptions/me/",
+                {"cancel_at_period_end": False},
+                format="json",
+            )
         assert resp.status_code == 200
         assert mock_task.delay.call_args.args[2] == "resumed"
 
@@ -1993,7 +2000,8 @@ class TestCancelNoticeEmail:
         )
         OrgMember.objects.create(org=org, user=non_billing, role=OrgRole.MEMBER, is_billing=False)
 
-        resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 202
         recipients = mock_task.delay.call_args.args[0]
         assert set(recipients) == {"orgowner@example.com", "finance@example.com"}

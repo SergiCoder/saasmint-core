@@ -459,6 +459,8 @@ def _validate_seat_limit(org: Org) -> None:
     commits — otherwise two concurrent invites can both pass the check and
     overrun the quota.
     """
+    from django.db.models import Count, Q
+
     from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
     from apps.billing.models import Subscription as SubscriptionModel
 
@@ -476,12 +478,18 @@ def _validate_seat_limit(org: Org) -> None:
     if sub is None:
         return  # No active subscription — can't validate seats
 
-    current_members = OrgMember.objects.filter(org=org).count()
-    pending_invitations = Invitation.objects.filter(
-        org=org, status=InvitationStatus.PENDING
-    ).count()
-
-    if current_members + pending_invitations >= sub.seat_limit:
+    # Count active members and pending invites in a single round-trip. Each
+    # COUNT lands on its own partial/standard index (org_members.org_id,
+    # idx_invitation_pending_org) so the joined plan stays index-only.
+    counts = Org.objects.filter(pk=org.pk).aggregate(
+        member_count=Count("members", distinct=True),
+        pending_count=Count(
+            "invitations",
+            filter=Q(invitations__status=InvitationStatus.PENDING),
+            distinct=True,
+        ),
+    )
+    if counts["member_count"] + counts["pending_count"] >= sub.seat_limit:
         raise _SeatLimitReached
 
 
