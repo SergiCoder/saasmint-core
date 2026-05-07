@@ -13,13 +13,6 @@ from stripe.params._subscription_modify_params import (
 from saasmint_core.domain.subscription import Subscription
 from saasmint_core.repositories.subscription import SubscriptionRepository
 
-# Returned by ``change_plan`` to tell the caller whether the switch happened
-# now (immediate Subscription.modify) or was deferred to period end via a
-# SubscriptionSchedule. The caller uses this to decide whether to skip the
-# refetch (the scheduled mirror lands via webhook, not immediately) and
-# what notice copy to surface.
-ChangePlanResult = Literal["applied_now", "scheduled_for_period_end"]
-
 
 def _safe_get(obj: object, key: str) -> object:
     """Return ``obj[key]`` or ``None`` if missing.
@@ -45,7 +38,7 @@ async def change_plan(
     new_price_amount: int | None = None,
     prorate: bool = True,
     quantity: int | None = None,
-) -> ChangePlanResult:
+) -> None:
     """
     Upgrade or downgrade to a new plan price, optionally updating quantity.
 
@@ -69,11 +62,6 @@ async def change_plan(
     ``customer.subscription.updated``; for the deferred path the
     ``subscription_schedule.created`` webhook mirrors the pending change
     onto the local row.
-
-    Returns:
-        ``"applied_now"`` for immediate ``Subscription.modify`` calls,
-        ``"scheduled_for_period_end"`` when a SubscriptionSchedule was
-        created.
     """
     sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
     first_item = sub["items"]["data"][0]
@@ -104,7 +92,7 @@ async def change_plan(
             new_stripe_price_id=new_stripe_price_id,
             quantity=quantity if quantity is not None else current_quantity,
         )
-        return "scheduled_for_period_end"
+        return
 
     await _apply_immediate_plan_change(
         sub=sub,
@@ -114,7 +102,6 @@ async def change_plan(
         prorate=prorate,
         quantity=quantity if quantity is not None else current_quantity,
     )
-    return "applied_now"
 
 
 async def _apply_immediate_plan_change(

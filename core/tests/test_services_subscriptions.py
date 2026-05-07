@@ -356,13 +356,12 @@ async def test_change_plan_downgrade_defers_via_schedule() -> None:
         ) as mock_create,
         patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_basic",
             new_price_amount=999,
         )
 
-    assert result == "scheduled_for_period_end"
     mock_modify.assert_not_called()
     mock_create.assert_called_once_with(from_subscription="sub_dg")
     args, kwargs = mock_sched_modify.call_args
@@ -391,13 +390,12 @@ async def test_change_plan_upgrade_applies_immediately() -> None:
         patch("stripe.Subscription.modify") as mock_modify,
         patch("stripe.SubscriptionSchedule.create") as mock_create,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_pro",
             new_price_amount=2000,
         )
 
-    assert result == "applied_now"
     mock_create.assert_not_called()
     mock_modify.assert_called_once()
 
@@ -413,13 +411,12 @@ async def test_change_plan_same_amount_applies_immediately() -> None:
         patch("stripe.Subscription.modify") as mock_modify,
         patch("stripe.SubscriptionSchedule.create") as mock_create,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_other",
             new_price_amount=1500,
         )
 
-    assert result == "applied_now"
     mock_create.assert_not_called()
     mock_modify.assert_called_once()
 
@@ -437,12 +434,11 @@ async def test_change_plan_without_amount_uses_legacy_immediate_path() -> None:
         patch("stripe.Subscription.modify") as mock_modify,
         patch("stripe.SubscriptionSchedule.create") as mock_create,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_basic",
         )
 
-    assert result == "applied_now"
     mock_create.assert_not_called()
     mock_modify.assert_called_once()
 
@@ -564,13 +560,12 @@ async def test_change_plan_downgrade_reuses_existing_schedule() -> None:
         patch("stripe.SubscriptionSchedule.create") as mock_create,
         patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_basic",
             new_price_amount=999,
         )
 
-    assert result == "scheduled_for_period_end"
     # Must NOT create a new schedule — the existing one is reused.
     mock_create.assert_not_called()
     # Must modify the existing schedule id.
@@ -616,13 +611,12 @@ async def test_change_plan_upgrade_with_existing_schedule_releases_schedule_firs
         patch("stripe.Subscription.modify") as mock_modify,
         patch("stripe.SubscriptionSchedule.create") as mock_create,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_upgrade_sched",
             new_stripe_price_id="price_pro",
             new_price_amount=2000,  # upgrade
         )
 
-    assert result == "applied_now"
     # Must NOT have created a new schedule.
     mock_create.assert_not_called()
     # Must have released the pinning schedule before modifying.
@@ -665,13 +659,12 @@ async def test_change_plan_downgrade_period_fallback_from_subscription_level() -
         ) as mock_create,
         patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_fallback",
             new_stripe_price_id="price_basic",
             new_price_amount=999,
         )
 
-    assert result == "scheduled_for_period_end"
     mock_create.assert_called_once_with(from_subscription="sub_fallback")
     phases = mock_sched_modify.call_args.kwargs["phases"]
     assert phases[0]["start_date"] == 1_700_000_000
