@@ -188,7 +188,13 @@ class Subscription(models.Model):
             models.Index(
                 fields=["stripe_customer", "user"],
                 name="idx_sub_active_owner",
-                condition=models.Q(status__in=("active", "trialing", "past_due")),
+                condition=models.Q(
+                    status__in=(
+                        SubscriptionStatus.ACTIVE,
+                        SubscriptionStatus.TRIALING,
+                        SubscriptionStatus.PAST_DUE,
+                    )
+                ),
             ),
         ]
         constraints = [  # noqa: RUF012  # mutable default in Meta inner class; ClassVar not applicable here
