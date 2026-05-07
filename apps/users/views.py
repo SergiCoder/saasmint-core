@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-import io
 import uuid
 from typing import TYPE_CHECKING, ClassVar
 
-from asgiref.sync import async_to_sync
-from django.conf import settings
-from django.core.files.base import ContentFile
-from django.core.files.storage import default_storage
-from django.db.models import prefetch_related_objects
+from asgiref.sync import async_to_sync, sync_to_async
 from drf_spectacular.utils import extend_schema, inline_serializer
-from PIL import Image, ImageOps, UnidentifiedImageError
 from rest_framework import serializers, status
 from rest_framework.parsers import MultiPartParser
 from rest_framework.request import Request
@@ -24,8 +18,10 @@ from saasmint_core.services.gdpr import (
 
 from apps.base_views import AccountScopedView
 from apps.billing.repositories import get_billing_repos
+from apps.users.models import User
 from apps.users.repositories import DjangoUserRepository
 from apps.users.serializers import UpdateUserSerializer, UserSerializer
+from apps.users.services import process_and_save_avatar
 from helpers import get_user
 
 if TYPE_CHECKING:
@@ -55,27 +51,25 @@ class AccountView(AccountScopedView):
 
     @extend_schema(responses=UserSerializer, tags=["account"])
     def get(self, request: Request) -> Response:
-        user = get_user(request)
-        # UserSerializer.get_linked_providers prefers the prefetch cache over a
-        # second .values_list() round-trip; populating it here lets every
-        # serialized response (including the patch path below) take the cache
-        # branch without falling back to per-request lookup.
-        prefetch_related_objects([user], "social_accounts")
+        # Single round-trip with the prefetch attached up front — avoids the
+        # extra query that ``prefetch_related_objects`` would issue against
+        # an already-loaded user. ``UserSerializer.get_linked_providers``
+        # reads from the prefetch cache.
+        user = User.objects.prefetch_related("social_accounts").get(id=get_user(request).id)
         return Response(UserSerializer(user).data)
 
     @extend_schema(request=UpdateUserSerializer, responses=UserSerializer, tags=["account"])
     def patch(self, request: Request) -> Response:
         """PATCH /api/v1/account — update profile fields."""
-        user = get_user(request)
         ser = UpdateUserSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
+        user = User.objects.prefetch_related("social_accounts").get(id=get_user(request).id)
         if ser.validated_data:
             for field, value in ser.validated_data.items():
                 setattr(user, field, value)
             user.save(update_fields=[*ser.validated_data.keys(), "updated_at"])
 
-        prefetch_related_objects([user], "social_accounts")
         return Response(UserSerializer(user).data)
 
     @extend_schema(
@@ -88,8 +82,6 @@ class AccountView(AccountScopedView):
 
         Immediately hard-deletes the user and all associated data.
         """
-        from asgiref.sync import sync_to_async
-
         from apps.orgs.models import OrgMember
         from apps.orgs.services import delete_orgs_created_by_user
 
@@ -146,17 +138,6 @@ class AccountExportView(AccountScopedView):
 
 
 _MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB upload cap
-_AVATAR_DIM = 128  # final square dimension
-_AVATAR_WEBP_QUALITY = 80
-_ALLOWED_AVATAR_INPUT_FORMATS: frozenset[str] = frozenset({"JPEG", "PNG", "WEBP", "GIF"})
-
-
-def _delete_local_avatar(avatar_url: str | None) -> None:
-    """Remove a locally-stored avatar file if it exists."""
-    if avatar_url and avatar_url.startswith(settings.MEDIA_URL):
-        old_path = avatar_url.removeprefix(settings.MEDIA_URL)
-        if default_storage.exists(old_path):
-            default_storage.delete(old_path)
 
 
 class _AvatarUploadSerializer(serializers.Serializer["_AvatarUploadSerializer"]):
@@ -177,7 +158,7 @@ class AvatarView(AccountScopedView):
     @extend_schema(
         request=_AvatarUploadSerializer,
         responses={
-            200: inline_serializer("AvatarResponse", {"avatar_url": serializers.URLField()})
+            201: inline_serializer("AvatarResponse", {"avatar_url": serializers.URLField()})
         },
         tags=["account"],
     )
@@ -195,48 +176,21 @@ class AvatarView(AccountScopedView):
         ser.is_valid(raise_exception=True)
         file = ser.validated_data["avatar"]
 
-        file.seek(0)
-        try:
-            with Image.open(file) as opened:
-                fmt = (opened.format or "").upper()
-                if fmt not in _ALLOWED_AVATAR_INPUT_FORMATS:
-                    raise serializers.ValidationError(
-                        {"avatar": ["Unsupported image type."]},
-                    )
-                img: Image.Image = ImageOps.exif_transpose(opened) or opened
-                if img.mode not in ("RGB", "RGBA"):
-                    img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
-                img.thumbnail((_AVATAR_DIM, _AVATAR_DIM), Image.Resampling.LANCZOS)
-
-                buffer = io.BytesIO()
-                img.save(
-                    buffer,
-                    format="WEBP",
-                    quality=_AVATAR_WEBP_QUALITY,
-                    method=6,
-                )
-        except (UnidentifiedImageError, OSError) as exc:
-            raise serializers.ValidationError(
-                {"avatar": ["Invalid image file."]},
-            ) from exc
-
-        _delete_local_avatar(user.avatar_url)
-
-        path = f"avatars/{user.id}/{uuid.uuid4().hex}.webp"
-        saved_path = default_storage.save(path, ContentFile(buffer.getvalue()))
-        avatar_url = request.build_absolute_uri(f"{settings.MEDIA_URL}{saved_path}")
-
-        user.avatar_url = avatar_url
-        user.save(update_fields=["avatar_url", "updated_at"])
+        avatar_url = process_and_save_avatar(file, user, request)
 
         return Response(
             {"avatar_url": avatar_url},
-            status=status.HTTP_200_OK,
+            status=status.HTTP_201_CREATED,
+            headers={"Location": avatar_url},
         )
 
     @extend_schema(responses={204: None}, tags=["account"])
     def delete(self, request: Request) -> Response:
         """Delete avatar."""
+        # Local import keeps the helper colocated with the upload service
+        # without forcing a circular import at module load time.
+        from apps.users.services import _delete_local_avatar
+
         user = get_user(request)
 
         _delete_local_avatar(user.avatar_url)

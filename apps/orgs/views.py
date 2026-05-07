@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 from uuid import UUID
 
 from django.db import transaction
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
@@ -314,9 +315,9 @@ class OrgMemberDetailView(OrgsScopedView):
         )
 
         target_user = target.user
-        with transaction.atomic():
-            target.delete()
-            target_user.delete()
+        # ``OrgMember.user`` is ``on_delete=CASCADE``, so deleting the user
+        # cascades the membership row — one DELETE round-trip instead of two.
+        target_user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -479,22 +480,11 @@ def _validate_seat_limit(org: Org) -> None:
     commits — otherwise two concurrent invites can both pass the check and
     overrun the quota.
     """
-    from django.db.models import Count, Q
+    from apps.orgs.services import _lock_active_team_sub
 
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
-    from apps.billing.models import Subscription as SubscriptionModel
-
-    # Lock the active team sub row. We can't use the shared read-only helper
-    # here because this one must take a row lock.
-    sub = (
-        SubscriptionModel.objects.select_for_update()
-        .select_related("stripe_customer")
-        .filter(
-            stripe_customer__org=org,
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        )
-        .first()
-    )
+    # Lock the active team sub row. Shared with ``accept_invitation`` so the
+    # invite-create and invite-accept paths serialise on the same row.
+    sub = _lock_active_team_sub(org)
     if sub is None:
         return  # No active subscription — can't validate seats
 
@@ -621,6 +611,7 @@ class InvitationAcceptView(OrgsScopedView):
                 "code": "verification_email_sent",
             },
             status=status.HTTP_201_CREATED,
+            headers={"Location": f"/api/v1/orgs/{org.id}/"},
         )
 
 

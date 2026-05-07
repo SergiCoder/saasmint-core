@@ -6,7 +6,7 @@ import functools
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, TypedDict, assert_never
+from typing import Any, TypedDict, assert_never, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -217,10 +217,16 @@ async def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUse
     )
     userinfo_resp.raise_for_status()
     info = userinfo_resp.json()
+    # The TypedDict casts below are static-only; Pillow-thin runtime guard
+    # protects against a provider that returned a JSON list/scalar instead
+    # of an object (would surface as opaque ``KeyError``/``AttributeError``
+    # in the per-provider branches otherwise).
+    if not isinstance(info, dict):
+        raise OAuthError("Provider returned non-dict userinfo response")
 
     match prov:
         case Provider.GOOGLE:
-            google: _GoogleUserInfo = info
+            google = cast(_GoogleUserInfo, info)
             email = google.get("email")
             if not email:
                 raise OAuthError("Google OAuth response missing email")
@@ -240,7 +246,7 @@ async def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUse
                 email_verified=verified,
             )
         case Provider.GITHUB:
-            github: _GitHubUserInfo = info
+            github = cast(_GitHubUserInfo, info)
             # Always use /user/emails as the authoritative source — the public
             # email on /user is not guaranteed verified.
             email = await _fetch_github_primary_email(access_token)
@@ -252,7 +258,7 @@ async def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUse
                 email_verified=True,
             )
         case Provider.MICROSOFT:
-            ms: _MicrosoftUserInfo = info
+            ms = cast(_MicrosoftUserInfo, info)
             # Trust the email iff Microsoft's OIDC id_token is signature-valid
             # AND carries `xms_edov: true` — the claim Microsoft sets only when
             # it has verified the email's domain belongs to the user's tenant.

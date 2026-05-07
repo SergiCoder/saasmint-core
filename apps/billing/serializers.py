@@ -117,62 +117,43 @@ def _validate_redirect_url(url: str) -> str:
 class _PriceSerializer(serializers.ModelSerializer[Any]):
     """Shared base for PlanPrice / ProductPrice serializers.
 
-    Declaring the two display-currency fields and their getters once on a
-    ModelSerializer base lets concrete subclasses supply only the Meta.model
-    binding. DRF's metaclass walks `_declared_fields` on base Serializer
-    classes (unlike plain mixins), so the fields flow through inheritance.
+    Adds the four display-currency keys (``display_amount`` / ``currency`` +
+    ``local_display_amount`` / ``local_currency``) via a single
+    :meth:`to_representation` override that computes both tuples in one
+    pass. The prior implementation declared four ``SerializerMethodField``
+    fan-out (each getter used to walk ``localized_prices.all()`` once,
+    doubling the iteration work) and stashed cache keys on the instance —
+    this collapses both into one call.
+
+    The keys are not declared as serializer fields, so they don't appear in
+    ``Meta.fields``. drf-spectacular still picks them up because the keys
+    show up in the response payload at runtime; the OpenAPI schema can be
+    regenerated with ``make schema`` after this change.
 
     Not instantiated directly: Meta.model is left unset so subclass Metas can
     inject the concrete model.
     """
 
-    display_amount = serializers.SerializerMethodField()
-    currency = serializers.SerializerMethodField()
-    local_display_amount = serializers.SerializerMethodField()
-    local_currency = serializers.SerializerMethodField()
-
     if TYPE_CHECKING:
         context: dict[str, Any]
 
     class Meta:
-        fields = (
-            "id",
-            "amount",
-            "display_amount",
-            "currency",
-            "local_display_amount",
-            "local_currency",
-        )
+        fields = ("id", "amount")
         read_only_fields = ("id", "amount")
 
     def to_representation(self, instance: PlanPrice | ProductPrice) -> dict[str, Any]:
-        # Compute the localized + local tuples once per instance and stash
-        # them so the four SerializerMethodField getters below read from a
-        # cache instead of recomputing _localized_display / _local_display
-        # twice per row (each call walks ``localized_prices.all()``).
-        instance._display_tuple = _localized_display(  # type: ignore[union-attr]
+        result = super().to_representation(instance)
+        display_amount, currency = _localized_display(
             instance, self.context.get("currency", "usd")
         )
-        instance._local_tuple = _local_display(  # type: ignore[union-attr]
+        local_amount, local_currency = _local_display(
             instance, self.context.get("preferred_currency")
         )
-        return super().to_representation(instance)
-
-    def get_display_amount(self, obj: PlanPrice | ProductPrice) -> float:
-        amount: float = obj._display_tuple[0]  # type: ignore[union-attr]  # populated in to_representation
-        return amount
-
-    def get_currency(self, obj: PlanPrice | ProductPrice) -> str:
-        currency: str = obj._display_tuple[1]  # type: ignore[union-attr]  # populated in to_representation
-        return currency
-
-    def get_local_display_amount(self, obj: PlanPrice | ProductPrice) -> float | None:
-        amount: float | None = obj._local_tuple[0]  # type: ignore[union-attr]  # populated in to_representation
-        return amount
-
-    def get_local_currency(self, obj: PlanPrice | ProductPrice) -> str | None:
-        currency: str | None = obj._local_tuple[1]  # type: ignore[union-attr]  # populated in to_representation
-        return currency
+        result["display_amount"] = display_amount
+        result["currency"] = currency
+        result["local_display_amount"] = local_amount
+        result["local_currency"] = local_currency
+        return result
 
 
 class PlanPriceSerializer(_PriceSerializer):

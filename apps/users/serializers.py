@@ -8,7 +8,7 @@ from zoneinfo import available_timezones
 
 from rest_framework import serializers
 
-from apps.users.models import User
+from apps.users.models import FULL_NAME_MIN_LENGTH, User
 
 
 @functools.cache
@@ -76,7 +76,9 @@ class _PhoneWriteSerializer(serializers.Serializer[User]):
 
 
 class UpdateUserSerializer(serializers.Serializer[User]):
-    full_name = serializers.CharField(min_length=3, max_length=255, required=False)
+    full_name = serializers.CharField(
+        min_length=FULL_NAME_MIN_LENGTH, max_length=255, required=False
+    )
     preferred_locale = serializers.CharField(max_length=10, required=False)
     preferred_currency = serializers.CharField(max_length=3, required=False)
     phone = _PhoneWriteSerializer(required=False, allow_null=True)

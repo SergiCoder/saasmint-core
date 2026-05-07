@@ -6,7 +6,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
-from apps.users.models import User
+from apps.users.models import FULL_NAME_MIN_LENGTH, User
 
 
 def _run_password_validators(password: str, user: User | None = None) -> str:
@@ -19,8 +19,8 @@ def _run_password_validators(password: str, user: User | None = None) -> str:
 
 class RegisterSerializer(serializers.Serializer[User]):
     email = serializers.EmailField()
-    password = serializers.CharField(min_length=8, max_length=128, write_only=True)
-    full_name = serializers.CharField(min_length=3, max_length=255)
+    password = serializers.CharField(min_length=10, max_length=128, write_only=True)
+    full_name = serializers.CharField(min_length=FULL_NAME_MIN_LENGTH, max_length=255)
 
     def validate_password(self, value: str) -> str:
         return _run_password_validators(value)
@@ -46,7 +46,7 @@ class VerifyEmailSerializer(serializers.Serializer[User]):
     # request that proves mailbox control also binds a credential the
     # invitation-token interceptor cannot have chosen.
     password = serializers.CharField(
-        min_length=8,
+        min_length=10,
         max_length=128,
         write_only=True,
         required=False,
@@ -70,7 +70,7 @@ class OAuthConfirmLinkSerializer(serializers.Serializer[User]):
 
 class ResetPasswordSerializer(serializers.Serializer[User]):
     token = serializers.CharField()
-    password = serializers.CharField(min_length=8, max_length=128, write_only=True)
+    password = serializers.CharField(min_length=10, max_length=128, write_only=True)
 
     def validate_password(self, value: str) -> str:
         return _run_password_validators(value)
@@ -78,7 +78,7 @@ class ResetPasswordSerializer(serializers.Serializer[User]):
 
 class ChangePasswordSerializer(serializers.Serializer[User]):
     current_password = serializers.CharField(write_only=True)
-    new_password = serializers.CharField(min_length=8, max_length=128, write_only=True)
+    new_password = serializers.CharField(min_length=10, max_length=128, write_only=True)
 
     def validate_new_password(self, value: str) -> str:
         return _run_password_validators(value)

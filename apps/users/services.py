@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import io
+import uuid
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
+from django.conf import settings
+from django.core.files.base import ContentFile
+from django.core.files.storage import default_storage
 from django.db import IntegrityError, transaction
+from PIL import Image, ImageOps, UnidentifiedImageError
+from rest_framework import serializers as drf_serializers
 
 from apps.users.models import SocialAccount, User
-from apps.users.oauth import OAuthEmailNotVerifiedError, OAuthUserInfo
+from apps.users.oauth import OAuthEmailNotVerifiedError, OAuthUserInfo, Provider
+
+if TYPE_CHECKING:
+    from rest_framework.request import Request
 
 # OAuth providers whose ``email_verified=True`` we trust to auto-link onto an
 # existing local account. A provider qualifies when its email-ownership
@@ -25,7 +35,13 @@ from apps.users.oauth import OAuthEmailNotVerifiedError, OAuthUserInfo
 # A provider missing from this set still works for fresh signups but cannot
 # silently auto-link onto an existing local account — the user proves
 # mailbox control via the email-confirm flow (see ``OAuthConfirmLinkView``).
-TRUSTED_FOR_AUTO_LINK: frozenset[str] = frozenset({"google", "github", "microsoft"})
+#
+# Derived from the canonical ``Provider`` enum so adding a new provider
+# there automatically extends the trust list. If a future provider only
+# qualifies for fresh signups but NOT auto-link (e.g. an unverified-by-
+# default OAuth source), drop the derivation back to a literal set and
+# document the divergence.
+TRUSTED_FOR_AUTO_LINK: frozenset[str] = frozenset(p.value for p in Provider)
 
 
 @dataclass(frozen=True)
@@ -69,14 +85,12 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> OAuthResoluti
     3. Brand new user — only when the provider has confirmed email
        ownership.
     """
-    try:
-        social = SocialAccount.objects.select_related("user").get(
-            provider=provider,
-            provider_user_id=user_info.provider_user_id,
-        )
+    social = SocialAccount.objects.select_related("user").filter(
+        provider=provider,
+        provider_user_id=user_info.provider_user_id,
+    ).first()
+    if social is not None:
         return OAuthResolution(kind="user", user=social.user)
-    except SocialAccount.DoesNotExist:
-        pass
 
     # Case-insensitive: provider returning "Alice@Example.com" must match
     # a stored "alice@example.com" — otherwise we'd create a duplicate user
@@ -131,3 +145,78 @@ def _link_or_request(
     if not existing.is_active:
         return OAuthResolution(kind="collision", existing_user=None)
     return OAuthResolution(kind="collision", existing_user=existing)
+
+
+# ---------------------------------------------------------------------------
+# Avatar upload pipeline
+# ---------------------------------------------------------------------------
+
+_AVATAR_DIM = 128  # final square dimension
+_AVATAR_WEBP_QUALITY = 80
+_ALLOWED_AVATAR_INPUT_FORMATS: frozenset[str] = frozenset({"JPEG", "PNG", "WEBP", "GIF"})
+
+
+def _delete_local_avatar(avatar_url: str | None) -> None:
+    """Remove a locally-stored avatar file if it exists.
+
+    Used by the avatar upload (replace previous file) and the avatar delete
+    endpoints. The path-prefix check ensures we never try to delete an
+    externally-hosted avatar (e.g. an OAuth provider's CDN URL): we parse
+    out the URL path so the absolute form (``http://host/media/…``) the
+    upload endpoint persists matches the same ``MEDIA_URL`` prefix as a
+    relative form would.
+    """
+    if not avatar_url:
+        return
+    from urllib.parse import urlparse
+
+    path = urlparse(avatar_url).path
+    if path.startswith(settings.MEDIA_URL):
+        old_path = path.removeprefix(settings.MEDIA_URL)
+        if default_storage.exists(old_path):
+            default_storage.delete(old_path)
+
+
+def process_and_save_avatar(file: object, user: User, request: Request) -> str:
+    """Decode, normalise, encode, store and persist a user's avatar.
+
+    Pillow round-trip strips metadata and re-encodes as a 128x128 WebP, so
+    the original bytes and client-supplied filename/content_type never
+    reach storage. Raises :class:`drf_serializers.ValidationError` on
+    unsupported formats or undecodable input — callers (the view) propagate
+    those as 400 responses with the field-shaped error envelope.
+    """
+    file.seek(0)  # type: ignore[attr-defined]
+    try:
+        with Image.open(file) as opened:  # type: ignore[arg-type]
+            fmt = (opened.format or "").upper()
+            if fmt not in _ALLOWED_AVATAR_INPUT_FORMATS:
+                raise drf_serializers.ValidationError(
+                    {"avatar": ["Unsupported image type."]},
+                )
+            img: Image.Image = ImageOps.exif_transpose(opened) or opened
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA" if "A" in img.getbands() else "RGB")
+            img.thumbnail((_AVATAR_DIM, _AVATAR_DIM), Image.Resampling.LANCZOS)
+
+            buffer = io.BytesIO()
+            img.save(
+                buffer,
+                format="WEBP",
+                quality=_AVATAR_WEBP_QUALITY,
+                method=6,
+            )
+    except (UnidentifiedImageError, OSError) as exc:
+        raise drf_serializers.ValidationError(
+            {"avatar": ["Invalid image file."]},
+        ) from exc
+
+    _delete_local_avatar(user.avatar_url)
+
+    path = f"avatars/{user.id}/{uuid.uuid4().hex}.webp"
+    saved_path = default_storage.save(path, ContentFile(buffer.getvalue()))
+    avatar_url = request.build_absolute_uri(f"{settings.MEDIA_URL}{saved_path}")
+
+    user.avatar_url = avatar_url
+    user.save(update_fields=["avatar_url", "updated_at"])
+    return avatar_url

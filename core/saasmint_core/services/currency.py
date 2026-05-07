@@ -1,11 +1,13 @@
 """Display-currency helpers used by the billing serializers.
 
-The catalog is USD-only and Stripe is always charged in USD. ``format_amount``
-converts minor units to a display float; ``round_friendly`` snaps a converted
-amount to a charm price (``.49``/``.99`` for two-decimal currencies; nearest
-10/100 for zero-decimal). Both run at sync time inside
-``apps.billing.tasks.sync_localized_prices`` — request-path serializers
-just read the precomputed ``LocalizedPrice`` rows.
+The catalog stores amounts in USD cents (the source of truth). Stripe charges
+in the user's resolved billing currency — USD for display-only currencies in
+``SUPPORTED_CURRENCIES``, native currency for those also in
+``BILLING_CURRENCIES``. ``format_amount`` converts minor units to a display
+float; ``round_friendly`` snaps a converted amount to a charm price
+(``.49``/``.99`` for two-decimal currencies; nearest 10/100 for zero-decimal).
+Both run at sync time inside ``apps.billing.tasks.sync_localized_prices`` —
+request-path serializers just read the precomputed ``LocalizedPrice`` rows.
 """
 
 SUPPORTED_CURRENCIES: frozenset[str] = frozenset(
@@ -37,7 +39,10 @@ ZERO_DECIMAL_CURRENCIES: frozenset[str] = frozenset({"jpy", "krw", "idr", "twd"}
 
 
 def format_amount(amount: int, currency: str) -> float:
-    """Convert minor units to display amount. JPY/KRW/IDR are zero-decimal."""
+    """Convert minor units to display amount.
+
+    Currencies listed in ``ZERO_DECIMAL_CURRENCIES`` are zero-decimal.
+    """
     if currency.lower() in ZERO_DECIMAL_CURRENCIES:
         return float(amount)
     return amount / 100

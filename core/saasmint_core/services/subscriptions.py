@@ -20,14 +20,16 @@ def _safe_get(obj: object, key: str) -> object:
     Works on both ``dict`` and ``stripe.StripeObject``. The latter supports
     ``__getitem__`` but its ``__getattr__`` raises ``AttributeError`` for
     unknown keys, which surfaces here on some SDK paths — catch it alongside
-    ``KeyError``/``TypeError`` so the helper returns ``None`` for any
-    missing key regardless of dispatch route.
+    ``KeyError`` so the helper returns ``None`` for any missing key
+    regardless of dispatch route. ``TypeError`` is not caught: the
+    ``obj is None`` guard above eliminates the only case where ``obj[key]``
+    would raise it.
     """
     if obj is None:
         return None
     try:
         return obj[key]  # type: ignore[index]
-    except (KeyError, TypeError, AttributeError):
+    except (KeyError, AttributeError):
         return None
 
 
