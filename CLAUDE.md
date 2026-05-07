@@ -1,12 +1,14 @@
 # SaasMint Core
 
-Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Redis.
+Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (docker-compose / CI service), Celery + Redis.
+
+API endpoints in this doc are written without the `/api/v1/` prefix for brevity (e.g. `/billing/subscriptions/me/` is served at `/api/v1/billing/subscriptions/me/`).
 
 ## Architecture
 
 - `core/saasmint_core/` — framework-agnostic domain layer (domain models, services, repository interfaces).
 - `apps/` — Django apps (`users`, `billing`, `orgs`, `dashboard`, `admin_panel`, `marketing`). Each has models, views, serializers, urls, tests/.
-- `config/` — Django settings (base/dev/test/prod), root urls, celery.
+- `config/` — Django settings (base/dev/test/prod), root urls, celery, `wsgi.py` and `asgi.py` entrypoints.
 - `middleware/` — `security.py` (CSP / security headers), `exceptions.py` (DRF error-envelope normalisation).
 - Django apps implement core's repository interfaces and wire them to DRF views/serializers.
 
@@ -15,7 +17,7 @@ Django 6 SaaS backend. Python 3.12, uv, PostgreSQL (testcontainers), Celery + Re
 - **Catalog**: USD-only source of truth. `PlanPrice`/`ProductPrice` store `amount` in USD cents — the value Stripe charges against for USD transactions. Endpoints accept `?currency=` for display; the response's `display_amount` comes from precomputed `LocalizedPrice` rows (one per `(price, currency)`, friendly-rounded by the daily `sync_localized_prices` task). Missing row → fall back to USD `amount`. Stripe charges in the user's resolved billing currency (from `BILLING_CURRENCIES`); display-only currencies (in `SUPPORTED_CURRENCIES` but not `BILLING_CURRENCIES`) fall back to USD at checkout.
 - **Plans**: `(context, tier, interval)` — `context` is `personal`|`team`, `tier` is `IntegerChoices` (`2=basic`, `3=pro`; `1=free` reserved for legacy, not seeded).
 - **Subscription = pure Stripe mirror**. Every row has a `stripe_id`, synced via webhooks. Free tier = absence of a row. `GET /billing/subscriptions/me/` returns paginated `{count,next,previous,results}` with 0–2 rows (one personal, one team for concurrent billers).
-- **Products**: one-time purchases (credit packs / Boost). `POST /billing/product-checkout-sessions/` (Stripe Checkout `mode=payment`). Webhook `_on_product_checkout_completed` grants credits via `CreditTransaction` + `CreditBalance`.
+- **Products**: one-time purchases (credit packs / Boost). `POST /billing/product-checkout-sessions/` (Stripe Checkout `mode=payment`). Webhook `on_product_checkout_completed` grants credits via `CreditTransaction` + `CreditBalance`.
 - **Credits**: `CreditBalance` (denormalized, XOR `user`/`org`) + `CreditTransaction` (immutable, unique on `stripe_session_id` for idempotency). `GET /billing/credits/me/` → `{balances:[...]}`.
 - **Context selector**: subscription mutations and product checkout accept `?context=personal|team`. Default: `team` for org members, `personal` otherwise. `?context=team` requires `OrgMember.role=OWNER`. The `is_billing=True` gate only applies to team-context.
 - **Org membership**: derived from `OrgMember.objects.filter(user_id=...).exists()`. The legacy `User.account_type` and the org-owner registration endpoint were removed — there is now exactly one register path: `POST /auth/register/`.
@@ -32,7 +34,7 @@ The catalog has three layers; touch them in order. Each step is idempotent.
 
 1. **Edit the USD amount in `apps/billing/management/commands/seed_catalog.py`.** USD cents are the source of truth Stripe charges against — every other amount derives from this. To change a price, change it here.
 2. **Run `seed_catalog`** (`docker compose run --rm django uv run python manage.py seed_catalog`, or just redeploy — `infra/entrypoint.sh` runs it). Updates `PlanPrice.amount` / `ProductPrice.amount` in the DB.
-3. **Run `sync_localized_prices`** (or wait for the daily Celery beat tick) to regenerate `LocalizedPrice` rows for every `(price, currency)`. The task fetches USD→all rates from `open.er-api.com` and applies `format_amount` + `round_friendly` (charm-pricing for two-decimal currencies, nearest 10/100 for zero-decimal). Failure is non-fatal: existing rows are preserved so a flaky upstream never erases the catalog. **Must run before `sync_stripe_catalog`** — the next step reads `LocalizedPrice.amount_minor` when minting non-USD Stripe Prices.
+3. **Run `sync_localized_prices`** (or wait for the daily Celery beat tick) to regenerate `LocalizedPrice` rows for every `(price, currency)`. The task fetches USD→all rates from `open.er-api.com` and applies `format_amount` + `round_friendly` (charm-pricing for two-decimal currencies, nearest 10/100 for zero-decimal). Failure is non-fatal at every layer: a flaky FX feed, a transient HTTP error, or a malformed payload all log a warning and exit 0 — existing `LocalizedPrice` rows are preserved so the catalog is never erased. **Must run before `sync_stripe_catalog`** — the next step reads `LocalizedPrice.amount_minor` when minting non-USD Stripe Prices.
 4. **Run `sync_stripe_catalog`** to mint a new immutable Stripe `Price` and repoint `stripe_price_id` via `lookup_key`. USD lands on `PlanPrice`/`ProductPrice.stripe_price_id`; non-USD billing currencies land on `LocalizedPrice.stripe_price_id`. Existing subscriptions stay on the old Stripe price until they renew or are migrated; new checkouts use the new one.
 
 **Adding a new display-only currency**: append the ISO code to `SUPPORTED_CURRENCIES` in `core/saasmint_core/services/currency.py` (and `ZERO_DECIMAL_CURRENCIES` if applicable), then run `sync_localized_prices`. No migration. The new currency is immediately accepted on `?currency=`; until `sync_localized_prices` finishes, the API falls back to the USD `amount` for that currency. Checkout still charges in USD for display-only currencies.
@@ -57,10 +59,10 @@ Fix errors before pushing. Do not skip.
 make dev         # docker compose up (Django + Celery + Postgres + Redis)
 make test        # pytest -v
 make migrate     # run migrations (stack running)
-docker compose exec django uv run python manage.py spectacular --file schema.yml  # regenerate OpenAPI
+make schema      # regenerate schema.yml (drf-spectacular --file schema.yml)
 ```
 
-After modifying any endpoint, regenerate `schema.yml`.
+After modifying any endpoint, run `make schema` to regenerate `schema.yml`.
 
 ## Code style
 
@@ -87,7 +89,7 @@ For bugs touching infra, proxy, OAuth, or deploy:
 
 - Never set `ALLOWED_HOSTS=["*"]` when `USE_X_FORWARDED_HOST=True`.
 - Separate env vars for secrets with different rotation lifecycles (`JWT_SIGNING_KEY` vs `SECRET_KEY`).
-- CSP applied only to HTML responses. `/api/docs/` + `/api/redoc/` get the docs bucket; everything else (`/admin/`, `/hijack/`, `/dashboard/`, DRF browsable API) shares moderate `default-src 'self'` + `style-src 'self' 'unsafe-inline'` + `frame-ancestors 'self'`.
+- CSP applied only to HTML responses. `/api/docs/` + `/api/redoc/` get the docs bucket; everything else (`/admin/`, `/hijack/`, `/dashboard/`, DRF browsable API) shares moderate `default-src 'self'` + `script-src 'self'` + `style-src 'self' 'unsafe-inline'` + `frame-ancestors 'self'`.
 
 ## CI/CD
 
