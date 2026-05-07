@@ -1,4 +1,12 @@
-"""Read-only reference-data endpoints for user profile dropdowns."""
+"""Read-only reference-data endpoints for user profile dropdowns.
+
+These endpoints intentionally deviate from the paginated
+``{count,next,previous,results}`` envelope used elsewhere: each list is a
+hard-bounded enumeration (timezones, locales, currencies, phone prefixes)
+loaded into memory at process start. Paginating bounded data is pure cost
+— extra round-trips, more client code, no scalability win — so the FE
+consumes a single bare array and renders it directly into a dropdown.
+"""
 
 from __future__ import annotations
 

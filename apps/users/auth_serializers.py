@@ -88,9 +88,6 @@ class TokenResponseSerializer(serializers.Serializer[User]):
     access_token = serializers.CharField()
     refresh_token = serializers.CharField()
     token_type = serializers.CharField(default="Bearer")
-
-
-class OAuthExchangeResponseSerializer(TokenResponseSerializer):
     expires_in = serializers.IntegerField(help_text="Access token lifetime in seconds.")
 
 

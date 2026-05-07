@@ -649,7 +649,7 @@ class CheckoutSessionView(BillingScopedView):
         request=CheckoutRequestSerializer,
         parameters=[_CURRENCY_PARAM],
         responses={
-            200: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()}),
+            201: inline_serializer("CheckoutResponse", {"url": drf_serializers.URLField()}),
             400: OpenApiResponse(
                 description=(
                     "Request body failed validation (e.g. ``org_name`` missing for a"
@@ -665,6 +665,12 @@ class CheckoutSessionView(BillingScopedView):
                 )
             ),
         },
+        description=(
+            "Create a Stripe Checkout Session. Returns ``201 Created`` with the"
+            " Stripe-hosted checkout URL in both the body (``url``) and the"
+            " ``Location`` response header — clients should redirect the user"
+            " there to complete payment."
+        ),
         tags=["billing"],
     )
     def post(self, request: Request) -> Response:
@@ -730,7 +736,7 @@ class CheckoutSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url})
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 class PortalSessionView(BillingScopedView):
@@ -740,7 +746,7 @@ class PortalSessionView(BillingScopedView):
         parameters=[_SUBSCRIPTION_CONTEXT_PARAM],
         request=PortalRequestSerializer,
         responses={
-            200: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()}),
+            201: inline_serializer("PortalResponse", {"url": drf_serializers.URLField()}),
             400: OpenApiResponse(
                 description=(
                     "The ``?context=`` query param is set to a value other than"
@@ -819,7 +825,7 @@ class PortalSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url})
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 def _resolve_product_purchase_context(user: User, context: str | None) -> UUID | None:
@@ -881,7 +887,7 @@ class ProductCheckoutSessionView(BillingScopedView):
             ),
         ],
         responses={
-            200: inline_serializer("ProductCheckoutResponse", {"url": drf_serializers.URLField()}),
+            201: inline_serializer("ProductCheckoutResponse", {"url": drf_serializers.URLField()}),
             400: OpenApiResponse(
                 description=(
                     "Invalid ``?context=`` value, non-org-member caller"
@@ -953,7 +959,7 @@ class ProductCheckoutSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url})
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 class CreditBalanceView(BillingScopedView):
@@ -970,7 +976,12 @@ class CreditBalanceView(BillingScopedView):
             " balance survives from before a personal→team upgrade (rule 16)."
             " ``?context=personal`` returns only the user-scoped balance,"
             " ``?context=team`` returns only the org-scoped balance (404 when"
-            " the caller is not in any org)."
+            " the caller is not in any org).\n\n"
+            "Response shape ``{balances: [...]}`` intentionally deviates from"
+            " the paginated ``{count,next,previous,results}`` envelope used"
+            " for unbounded list endpoints: ``balances`` is hard-bounded to"
+            " 0-2 rows (one per scope) so pagination would add cost without"
+            " benefit."
         ),
         tags=["billing"],
     )
