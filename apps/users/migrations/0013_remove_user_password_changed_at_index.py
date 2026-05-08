@@ -7,18 +7,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('users', '0012_user_password_changed_at'),
+        ("users", "0012_user_password_changed_at"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='user',
-            name='password_changed_at',
+            model_name="user",
+            name="password_changed_at",
             field=models.DateTimeField(
                 blank=True,
-                help_text='Last password reset/change. Access tokens minted before this moment are rejected by JWTAuthentication.',
+                db_index=False,
+                help_text="Last password reset/change. Access tokens minted before this moment are rejected by JWTAuthentication.",
                 null=True,
             ),
         ),
