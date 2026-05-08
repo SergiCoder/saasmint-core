@@ -71,6 +71,12 @@ After modifying any endpoint, run `make schema` to regenerate `schema.yml`.
 - Always use type hints.
 - Don't hand-edit auto-generated migrations — regenerate.
 
+## Refactoring guardrails
+
+- **`201 Created` responses must include `Location: <url>`** alongside the URL in the body. The header serves HTTP intermediaries / observability tooling; the body serves the SPA. Don't drop one when refactoring the other — applies to all Stripe-session creators (`/billing/checkout-sessions/`, `/billing/portal-sessions/`, `/billing/product-checkout-sessions/`) and any new 201 endpoint.
+- **`@functools.cache` on a function that reads `settings` (or any module-level mutable) must take the relevant value as a parameter** so the cache key varies under `override_settings`. Zero-arg cached helpers reading `settings.X` freeze on first call and silently ignore test overrides — see `_host_matchers` in `apps/billing/serializers.py` for the correct pattern (settings value passed in).
+- **Removing the only production caller of a helper means deleting the helper.** Don't leave functions kept alive only by their tests — the tests give false confidence about a code path that no longer runs in production.
+
 ## Bug investigation
 
 For bugs touching infra, proxy, OAuth, or deploy:
