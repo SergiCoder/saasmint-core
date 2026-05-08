@@ -719,9 +719,7 @@ class TestAcceptInvitation:
         binding is deferred to the verify-email flow."""
         from apps.orgs.services import accept_invitation
 
-        owner = User.objects.create_user(
-            email="svc-owner@example.com", full_name="Owner"
-        )
+        owner = User.objects.create_user(email="svc-owner@example.com", full_name="Owner")
         org = Org.objects.create(name="SvcOrg", slug="svc-org", created_by=owner)
         OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
         invitation = self._make_invitation(org, owner)
@@ -748,14 +746,10 @@ class TestAcceptInvitation:
         )
         from apps.orgs.services import SeatCapReachedAtAcceptError, accept_invitation
 
-        owner = User.objects.create_user(
-            email="svc-cap-owner@example.com", full_name="Cap Owner"
-        )
+        owner = User.objects.create_user(email="svc-cap-owner@example.com", full_name="Cap Owner")
         org = Org.objects.create(name="CapOrg", slug="cap-org", created_by=owner)
         OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
-        customer = StripeCustomer.objects.create(
-            stripe_id="cus_svc_cap", org=org, livemode=False
-        )
+        customer = StripeCustomer.objects.create(stripe_id="cus_svc_cap", org=org, livemode=False)
         plan = Plan.objects.create(
             name="Cap-plan",
             context=PlanContext.TEAM,
@@ -781,5 +775,3 @@ class TestAcceptInvitation:
         # No dangling user or membership must be left behind.
         assert not User.objects.filter(email="invitee@example.com").exists()
         assert OrgMember.objects.filter(org=org).count() == 1  # only owner
-
-

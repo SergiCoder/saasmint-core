@@ -43,9 +43,7 @@ def _patch_post(resp: MagicMock | None = None) -> Any:
     return patch("apps.users.oauth._oauth_client.post", new_callable=AsyncMock, return_value=resp)
 
 
-def _patch_get(
-    resp: MagicMock | None = None, *, side_effect: list[MagicMock] | None = None
-) -> Any:
+def _patch_get(resp: MagicMock | None = None, *, side_effect: list[MagicMock] | None = None) -> Any:
     """Patch the async _oauth_client.get; pass *side_effect* for sequential responses."""
     if side_effect is not None:
         return patch(

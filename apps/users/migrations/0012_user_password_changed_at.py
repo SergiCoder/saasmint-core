@@ -4,15 +4,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('users', '0011_user_uniq_users_lower_email'),
+        ("users", "0011_user_uniq_users_lower_email"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='user',
-            name='password_changed_at',
-            field=models.DateTimeField(blank=True, db_index=True, help_text='Last password reset/change. Access tokens minted before this moment are rejected by JWTAuthentication.', null=True),
+            model_name="user",
+            name="password_changed_at",
+            field=models.DateTimeField(
+                blank=True,
+                db_index=True,
+                help_text="Last password reset/change. Access tokens minted before this moment are rejected by JWTAuthentication.",
+                null=True,
+            ),
         ),
     ]

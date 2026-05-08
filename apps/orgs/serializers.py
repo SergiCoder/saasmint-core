@@ -30,9 +30,7 @@ class OrgSerializer(serializers.ModelSerializer[Org]):
 
 class UpdateOrgSerializer(serializers.Serializer[Org]):
     name = serializers.CharField(max_length=255, required=False)
-    logo_url = serializers.URLField(
-        required=False, allow_null=True, validators=[_HTTPS_ONLY]
-    )
+    logo_url = serializers.URLField(required=False, allow_null=True, validators=[_HTTPS_ONLY])
 
 
 class _MemberUserSerializer(serializers.ModelSerializer[User]):

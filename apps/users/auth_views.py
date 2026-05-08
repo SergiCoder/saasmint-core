@@ -258,9 +258,9 @@ class ResendVerificationView(AuthPublicView):
         if user is not None:
             # Invalidate any prior unused verification tokens for this user so
             # only the freshest link works.
-            EmailVerificationToken.objects.filter(
-                user=user, used_at__isnull=True
-            ).update(used_at=datetime.now(UTC))
+            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).update(
+                used_at=datetime.now(UTC)
+            )
             token = create_email_verification_token(user)
             send_verification_email_task.delay(user.email, token)
 
@@ -542,9 +542,7 @@ class OAuthCallbackView(AuthPublicView):
                     full_name=user_info.full_name,
                     avatar_url=user_info.avatar_url,
                 )
-                send_social_link_email_task.delay(
-                    resolution.existing_user.email, token, provider
-                )
+                send_social_link_email_task.delay(resolution.existing_user.email, token, provider)
             return HttpResponseRedirect(f"{frontend_url}/auth/link-email-sent")
 
         user = resolution.user

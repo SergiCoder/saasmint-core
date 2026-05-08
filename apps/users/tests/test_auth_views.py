@@ -503,9 +503,7 @@ class TestResendVerificationView:
 
         assert resp.status_code == 200
         mock_delay.assert_called_once()
-        assert (
-            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
-        )
+        assert EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
 
     @patch("apps.users.tasks.send_verification_email_task.delay")
     def test_resend_invalidates_prior_unused_tokens(self, mock_delay, api, db):
@@ -529,9 +527,7 @@ class TestResendVerificationView:
         old_row = EmailVerificationToken.objects.get(token_hash=old_hash)
         assert old_row.used_at is not None
         # exactly one fresh, unused token now exists
-        assert (
-            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
-        )
+        assert EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
 
     @patch("apps.users.tasks.send_verification_email_task.delay")
     def test_resend_double_invocation_only_freshest_works(self, mock_delay, api, db):
@@ -569,14 +565,10 @@ class TestResendVerificationView:
         assert first_row.used_at is not None
         assert second_row.used_at is None
         # Exactly one unused token (the freshest) survives.
-        assert (
-            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
-        )
+        assert EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
 
     @patch("apps.users.tasks.send_verification_email_task.delay")
-    def test_resend_for_already_verified_user_is_noop(
-        self, mock_delay, api, verified_user
-    ):
+    def test_resend_for_already_verified_user_is_noop(self, mock_delay, api, verified_user):
         resp = api.post(self.URL, {"email": verified_user.email}, format="json")
         assert resp.status_code == 200
         mock_delay.assert_not_called()
@@ -703,9 +695,7 @@ class TestResetPasswordView:
         unverified.refresh_from_db()
         assert unverified.is_verified is True
 
-    def test_reset_password_keeps_verified_flag_for_already_verified(
-        self, api, verified_user
-    ):
+    def test_reset_password_keeps_verified_flag_for_already_verified(self, api, verified_user):
         token = create_password_reset_token(verified_user)
         resp = api.post(
             self.URL,
@@ -833,9 +823,7 @@ class TestOAuthAuthorizeView:
         assert resp.status_code == 302
         # Funneled through the same frontend error page as callback failures
         # — no JSON body in a browser flow.
-        assert resp["Location"] == (
-            "https://localhost:3000/auth/error?error=invalid_provider"
-        )
+        assert resp["Location"] == ("https://localhost:3000/auth/error?error=invalid_provider")
 
     def test_authorize_github_redirects(self, api, settings):
         settings.OAUTH_GITHUB_CLIENT_ID = "gh-client-id"

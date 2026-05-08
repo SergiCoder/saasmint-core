@@ -235,9 +235,7 @@ async def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUse
             # the verified flag as the JSON string ``"false"`` would have
             # been auto-linked. Only an honest, JSON-typed boolean ``true``
             # passes the gate now.
-            verified = (
-                google.get("verified_email") is True or google.get("email_verified") is True
-            )
+            verified = google.get("verified_email") is True or google.get("email_verified") is True
             return OAuthUserInfo(
                 email=email,
                 full_name=google.get("name") or email.split("@")[0],

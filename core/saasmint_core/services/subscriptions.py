@@ -78,9 +78,7 @@ async def change_plan(
     if new_price_amount is not None:
         price_obj = _safe_get(first_item, "price")
         current_amount = _safe_get(price_obj, "unit_amount") if price_obj is not None else None
-        is_downgrade = (
-            isinstance(current_amount, int) and new_price_amount < current_amount
-        )
+        is_downgrade = isinstance(current_amount, int) and new_price_amount < current_amount
 
     if is_downgrade:
         # Subscription Schedules don't mix with subscriptions that already
@@ -129,9 +127,7 @@ async def _apply_immediate_plan_change(
     """
     existing_schedule_id = _safe_get(sub, "schedule")
     if existing_schedule_id:
-        await asyncio.to_thread(
-            stripe.SubscriptionSchedule.release, str(existing_schedule_id)
-        )
+        await asyncio.to_thread(stripe.SubscriptionSchedule.release, str(existing_schedule_id))
         sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
         first_item = sub["items"]["data"][0]
         item_id = str(first_item["id"])

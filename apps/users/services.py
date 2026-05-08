@@ -88,10 +88,14 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> OAuthResoluti
     3. Brand new user — only when the provider has confirmed email
        ownership.
     """
-    social = SocialAccount.objects.select_related("user").filter(
-        provider=provider,
-        provider_user_id=user_info.provider_user_id,
-    ).first()
+    social = (
+        SocialAccount.objects.select_related("user")
+        .filter(
+            provider=provider,
+            provider_user_id=user_info.provider_user_id,
+        )
+        .first()
+    )
     if social is not None:
         return OAuthResolution(kind="user", user=social.user)
 
@@ -130,9 +134,7 @@ def resolve_oauth_user(provider: str, user_info: OAuthUserInfo) -> OAuthResoluti
         return _link_or_request(provider, user_info, existing)
 
 
-def _link_or_request(
-    provider: str, user_info: OAuthUserInfo, existing: User
-) -> OAuthResolution:
+def _link_or_request(provider: str, user_info: OAuthUserInfo, existing: User) -> OAuthResolution:
     """Auto-link if ``email_verified`` and the provider is trusted; otherwise return a collision."""
     if user_info.email_verified and provider in TRUSTED_FOR_AUTO_LINK:
         SocialAccount.objects.get_or_create(

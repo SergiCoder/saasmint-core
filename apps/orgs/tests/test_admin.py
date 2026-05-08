@@ -142,9 +142,7 @@ class TestDeleteOrgView:
 
         # Authenticated non-staff user → admin login redirect (admin_view
         # treats non-staff identically to anonymous).
-        user = User.objects.create_user(
-            email="nonstaff@example.com", full_name="Non Staff"
-        )
+        user = User.objects.create_user(email="nonstaff@example.com", full_name="Non Staff")
         client = Client()
         client.force_login(user)
         resp = client.get(f"/admin/orgs/org/{org.id}/delete-org/")

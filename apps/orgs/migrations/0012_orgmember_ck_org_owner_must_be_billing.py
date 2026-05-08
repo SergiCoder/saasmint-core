@@ -5,9 +5,8 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('orgs', '0011_uniq_org_owner_per_user'),
+        ("orgs", "0011_uniq_org_owner_per_user"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -24,7 +23,14 @@ class Migration(migrations.Migration):
             reverse_sql=migrations.RunSQL.noop,
         ),
         migrations.AddConstraint(
-            model_name='orgmember',
-            constraint=models.CheckConstraint(condition=models.Q(models.Q(('is_billing', True), ('role', 'owner')), models.Q(('role', 'owner'), _negated=True), _connector='OR'), name='ck_org_owner_must_be_billing'),
+            model_name="orgmember",
+            constraint=models.CheckConstraint(
+                condition=models.Q(
+                    models.Q(("is_billing", True), ("role", "owner")),
+                    models.Q(("role", "owner"), _negated=True),
+                    _connector="OR",
+                ),
+                name="ck_org_owner_must_be_billing",
+            ),
         ),
     ]

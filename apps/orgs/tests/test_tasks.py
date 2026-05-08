@@ -159,9 +159,7 @@ class TestDeleteOrgOnSubscriptionCancelTask:
         org_b = Org.objects.create(name="OrgB", slug="orgb", created_by=multi_member)
         OrgMember.objects.create(org=org_a, user=owner, role=OrgRole.OWNER, is_billing=True)
         OrgMember.objects.create(org=org_a, user=multi_member, role=OrgRole.MEMBER)
-        OrgMember.objects.create(
-            org=org_b, user=multi_member, role=OrgRole.OWNER, is_billing=True
-        )
+        OrgMember.objects.create(org=org_b, user=multi_member, role=OrgRole.OWNER, is_billing=True)
 
         delete_org_on_subscription_cancel_task(str(org_a.id))
 

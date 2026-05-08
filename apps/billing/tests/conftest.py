@@ -29,9 +29,7 @@ def fx_response(rates: dict[str, float]) -> MagicMock:
 
 def seed_plan_price(amount: int = 999) -> PlanPrice:
     """Create a Plan + PlanPrice row for use in tests that need a catalog entry."""
-    plan = Plan.objects.create(
-        name="Pro Monthly", context="personal", tier=3, interval="month"
-    )
+    plan = Plan.objects.create(name="Pro Monthly", context="personal", tier=3, interval="month")
     return PlanPrice.objects.create(plan=plan, stripe_price_id=f"price_{plan.id}", amount=amount)
 
 

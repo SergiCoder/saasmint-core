@@ -112,9 +112,7 @@ def sync_localized_prices() -> int:
         plan_price_id: UUID | None = None,
         product_price_id: UUID | None = None,
         existing_by_currency: dict[str, LocalizedPrice] | None = None,
-    ) -> tuple[
-        list[LocalizedPrice], list[LocalizedPrice], list[LocalizedPrice], int
-    ]:
+    ) -> tuple[list[LocalizedPrice], list[LocalizedPrice], list[LocalizedPrice], int]:
         """Compute create/update/heartbeat lists for one (price, currencies) pair.
 
         Reads pre-bucketed existing rows from ``existing_by_currency`` instead of
@@ -160,8 +158,11 @@ def sync_localized_prices() -> int:
                 existing.synced_at = now
                 to_update_heartbeat.append(existing)
 
-        return to_create, to_update_changed, to_update_heartbeat, (
-            len(to_create) + len(to_update_changed)
+        return (
+            to_create,
+            to_update_changed,
+            to_update_heartbeat,
+            (len(to_create) + len(to_update_changed)),
         )
 
     with transaction.atomic():
@@ -218,9 +219,7 @@ def sync_localized_prices() -> int:
         if all_create:
             LocalizedPrice.objects.bulk_create(all_create)
         if all_update_changed:
-            LocalizedPrice.objects.bulk_update(
-                all_update_changed, ["amount_minor", "synced_at"]
-            )
+            LocalizedPrice.objects.bulk_update(all_update_changed, ["amount_minor", "synced_at"])
         if all_update_heartbeat:
             LocalizedPrice.objects.bulk_update(all_update_heartbeat, ["synced_at"])
 

@@ -364,9 +364,7 @@ class TestOrgTransferOwnershipView:
         )
         assert resp.status_code == 201
         # Location header points at the new owner-member resource.
-        assert resp["Location"].endswith(
-            f"/api/v1/orgs/{org.id}/members/{admin_user.id}/"
-        )
+        assert resp["Location"].endswith(f"/api/v1/orgs/{org.id}/members/{admin_user.id}/")
         admin_membership.refresh_from_db()
         owner_membership.refresh_from_db()
         assert admin_membership.role == OrgRole.OWNER
@@ -721,9 +719,7 @@ class TestInvitationAcceptView:
         )
         assert resp.status_code == 409
         assert resp.data["code"] == "seat_limit_reached"
-        assert not OrgMember.objects.filter(
-            org=org, user__email="late-accept@example.com"
-        ).exists()
+        assert not OrgMember.objects.filter(org=org, user__email="late-accept@example.com").exists()
         assert not User.objects.filter(email="late-accept@example.com").exists()
 
 

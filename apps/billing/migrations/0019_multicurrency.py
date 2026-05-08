@@ -4,24 +4,27 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('billing', '0018_localizedprice_drop_exchangerate'),
+        ("billing", "0018_localizedprice_drop_exchangerate"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='localizedprice',
-            name='stripe_price_id',
+            model_name="localizedprice",
+            name="stripe_price_id",
             field=models.CharField(blank=True, max_length=255, null=True),
         ),
         migrations.AddField(
-            model_name='subscription',
-            name='currency',
-            field=models.CharField(default='usd', max_length=3),
+            model_name="subscription",
+            name="currency",
+            field=models.CharField(default="usd", max_length=3),
         ),
         migrations.AddConstraint(
-            model_name='localizedprice',
-            constraint=models.UniqueConstraint(condition=models.Q(('stripe_price_id__isnull', False)), fields=('stripe_price_id',), name='uniq_localized_stripe_price_id'),
+            model_name="localizedprice",
+            constraint=models.UniqueConstraint(
+                condition=models.Q(("stripe_price_id__isnull", False)),
+                fields=("stripe_price_id",),
+                name="uniq_localized_stripe_price_id",
+            ),
         ),
     ]

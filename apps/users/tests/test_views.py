@@ -556,9 +556,7 @@ class TestAvatarView:
     def test_avatar_post_rejects_invalid_image(self, authed_client):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
-        upload = SimpleUploadedFile(
-            "evil.jpg", b"not-an-image", content_type="image/jpeg"
-        )
+        upload = SimpleUploadedFile("evil.jpg", b"not-an-image", content_type="image/jpeg")
         resp = authed_client.post(
             "/api/v1/account/avatar/",
             {"avatar": upload},
@@ -636,9 +634,7 @@ class TestAvatarView:
         user.avatar_url = "https://lh3.googleusercontent.com/a/abc123"
         user.save(update_fields=["avatar_url"])
 
-        with patch.object(
-            default_storage, "delete", wraps=default_storage.delete
-        ) as mock_delete:
+        with patch.object(default_storage, "delete", wraps=default_storage.delete) as mock_delete:
             upload = _png_upload()
             resp = authed_client.post(
                 "/api/v1/account/avatar/",

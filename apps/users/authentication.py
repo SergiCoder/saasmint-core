@@ -342,9 +342,7 @@ class JWTAuthentication(BaseAuthentication):
         pwd_changed = getattr(user, "password_changed_at", None)
         user_pwd_iat = int(pwd_changed.timestamp()) if pwd_changed else 0
         if pwd_iat < user_pwd_iat:
-            raise AuthenticationFailed(
-                {"detail": "Token invalidated.", "code": "token_revoked"}
-            )
+            raise AuthenticationFailed({"detail": "Token invalidated.", "code": "token_revoked"})
 
         return (user, token)
 

@@ -456,9 +456,7 @@ async def test_sync_subscription_multi_item_logs_warning_and_uses_first(caplog) 
     first_price = make_plan_price(plan_id=plan.id, stripe_price_id="price_first")
     second_plan = make_plan()
     plan_repo._plans[second_plan.id] = second_plan
-    second_price = make_plan_price(
-        plan_id=second_plan.id, stripe_price_id="price_second"
-    )
+    second_price = make_plan_price(plan_id=second_plan.id, stripe_price_id="price_second")
     plan_repo._prices[first_price.id] = first_price
     plan_repo._prices[second_price.id] = second_price
 
@@ -503,8 +501,7 @@ async def test_sync_subscription_multi_item_logs_warning_and_uses_first(caplog) 
 
     # Warning logged with the right shape.
     assert any(
-        "has 2 line items" in record.getMessage()
-        and record.levelname == "WARNING"
+        "has 2 line items" in record.getMessage() and record.levelname == "WARNING"
         for record in caplog.records
     )
     # And the persisted sub used the first item's price + quantity, not the
@@ -1490,14 +1487,10 @@ async def test_schedule_created_mirrors_pending_change() -> None:
     await customer_repo.save(customer)
     target_plan = make_plan()
     plan_repo._plans[target_plan.id] = target_plan
-    target_price = make_plan_price(
-        plan_id=target_plan.id, stripe_price_id="price_basic_target"
-    )
+    target_price = make_plan_price(plan_id=target_plan.id, stripe_price_id="price_basic_target")
     plan_repo._prices[target_price.id] = target_price
 
-    sub = make_subscription(
-        stripe_id="sub_sched_target", stripe_customer_id=customer.id
-    )
+    sub = make_subscription(stripe_id="sub_sched_target", stripe_customer_id=customer.id)
     await subscription_repo.save(sub)
 
     repos = _make_repos(
@@ -1535,9 +1528,7 @@ async def test_schedule_updated_overwrites_existing_pending_change() -> None:
     await customer_repo.save(customer)
     new_target = make_plan()
     plan_repo._plans[new_target.id] = new_target
-    new_target_price = make_plan_price(
-        plan_id=new_target.id, stripe_price_id="price_new_target"
-    )
+    new_target_price = make_plan_price(plan_id=new_target.id, stripe_price_id="price_new_target")
     plan_repo._prices[new_target_price.id] = new_target_price
 
     old_target_id = uuid4()
@@ -1622,9 +1613,7 @@ async def test_schedule_created_for_unknown_subscription_skipped() -> None:
     plan_repo = InMemoryPlanRepository()
     target_plan = make_plan()
     plan_repo._plans[target_plan.id] = target_plan
-    target_price = make_plan_price(
-        plan_id=target_plan.id, stripe_price_id="price_orphan"
-    )
+    target_price = make_plan_price(plan_id=target_plan.id, stripe_price_id="price_orphan")
     plan_repo._prices[target_price.id] = target_price
 
     repos = _make_repos(event_repo=event_repo, plan_repo=plan_repo)
@@ -1652,9 +1641,7 @@ async def test_schedule_created_with_unknown_target_price_skipped() -> None:
 
     customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_orphan_price")
     await customer_repo.save(customer)
-    sub = make_subscription(
-        stripe_id="sub_sched_target", stripe_customer_id=customer.id
-    )
+    sub = make_subscription(stripe_id="sub_sched_target", stripe_customer_id=customer.id)
     await subscription_repo.save(sub)
 
     repos = _make_repos(
@@ -1662,9 +1649,7 @@ async def test_schedule_created_with_unknown_target_price_skipped() -> None:
         customer_repo=customer_repo,
         subscription_repo=subscription_repo,
     )
-    event = _schedule_event(
-        "subscription_schedule.created", target_price_id="price_not_synced"
-    )
+    event = _schedule_event("subscription_schedule.created", target_price_id="price_not_synced")
     stripe_id = await _persist(event_repo, event)
     await process_stored_event(event, stripe_id, repos)
 
@@ -1684,9 +1669,7 @@ async def test_schedule_created_with_single_phase_skipped() -> None:
 
     customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_one_phase")
     await customer_repo.save(customer)
-    sub = make_subscription(
-        stripe_id="sub_sched_target", stripe_customer_id=customer.id
-    )
+    sub = make_subscription(stripe_id="sub_sched_target", stripe_customer_id=customer.id)
     await subscription_repo.save(sub)
 
     repos = _make_repos(
@@ -1862,9 +1845,7 @@ async def test_schedule_upserted_next_phase_empty_items_is_noop() -> None:
 
     customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_empty_items")
     await customer_repo.save(customer)
-    sub = make_subscription(
-        stripe_id="sub_sched_target", stripe_customer_id=customer.id
-    )
+    sub = make_subscription(stripe_id="sub_sched_target", stripe_customer_id=customer.id)
     await subscription_repo.save(sub)
 
     repos = _make_repos(
@@ -1906,9 +1887,7 @@ async def test_schedule_upserted_next_phase_item_missing_price_id_is_noop() -> N
 
     customer = make_stripe_customer(user_id=uuid4(), stripe_id="cus_no_price_id")
     await customer_repo.save(customer)
-    sub = make_subscription(
-        stripe_id="sub_sched_target", stripe_customer_id=customer.id
-    )
+    sub = make_subscription(stripe_id="sub_sched_target", stripe_customer_id=customer.id)
     await subscription_repo.save(sub)
 
     repos = _make_repos(
@@ -1953,14 +1932,10 @@ async def test_schedule_upserted_missing_phase_boundary_timestamp_is_noop() -> N
     await customer_repo.save(customer)
     target_plan = make_plan()
     plan_repo._plans[target_plan.id] = target_plan
-    target_price = make_plan_price(
-        plan_id=target_plan.id, stripe_price_id="price_no_ts_target"
-    )
+    target_price = make_plan_price(plan_id=target_plan.id, stripe_price_id="price_no_ts_target")
     plan_repo._prices[target_price.id] = target_price
 
-    sub = make_subscription(
-        stripe_id="sub_sched_target", stripe_customer_id=customer.id
-    )
+    sub = make_subscription(stripe_id="sub_sched_target", stripe_customer_id=customer.id)
     await subscription_repo.save(sub)
 
     repos = _make_repos(

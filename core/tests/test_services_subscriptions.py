@@ -448,9 +448,7 @@ async def test_change_plan_downgrade_quantity_override_wins() -> None:
         patch("stripe.Subscription.retrieve", return_value=sub),
         patch("stripe.Subscription.modify"),
         patch("stripe.Price.retrieve", return_value=_retrieved_price()),
-        patch(
-            "stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_q"}
-        ),
+        patch("stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_q"}),
         patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
     ):
         await change_plan(

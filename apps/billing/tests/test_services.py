@@ -125,9 +125,7 @@ class TestOnProductCheckoutCompleted:
         assert CreditBalance.objects.get(org=org).balance == boost_product.credits
         assert not CreditBalance.objects.filter(user=org_member).exists()
 
-    def test_duplicate_session_id_is_noop_for_org_scope(
-        self, org_member, org, boost_product
-    ):
+    def test_duplicate_session_id_is_noop_for_org_scope(self, org_member, org, boost_product):
         """Same idempotency contract as the user-scoped duplicate test, but
         for ``org_id`` purchases: a replayed webhook with the same
         ``stripe_session_id`` must not double-credit the org. The unique
@@ -148,10 +146,7 @@ class TestOnProductCheckoutCompleted:
         # Org balance reflects exactly one grant — duplicate was suppressed.
         assert CreditBalance.objects.get(org=org).balance == boost_product.credits
         # And exactly one CreditTransaction row exists for that session id.
-        assert (
-            CreditTransaction.objects.filter(stripe_session_id="cs_team_dup").count()
-            == 1
-        )
+        assert CreditTransaction.objects.filter(stripe_session_id="cs_team_dup").count() == 1
         # No personal balance was minted as a side-effect.
         assert not CreditBalance.objects.filter(user=org_member).exists()
 

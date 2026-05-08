@@ -5,15 +5,16 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('auth', '0012_alter_user_first_name_max_length'),
-        ('users', '0010_emailverificationtoken_idx_email_verif_expires_at_and_more'),
+        ("auth", "0012_alter_user_first_name_max_length"),
+        ("users", "0010_emailverificationtoken_idx_email_verif_expires_at_and_more"),
     ]
 
     operations = [
         migrations.AddConstraint(
-            model_name='user',
-            constraint=models.UniqueConstraint(django.db.models.functions.text.Lower('email'), name='uniq_users_lower_email'),
+            model_name="user",
+            constraint=models.UniqueConstraint(
+                django.db.models.functions.text.Lower("email"), name="uniq_users_lower_email"
+            ),
         ),
     ]

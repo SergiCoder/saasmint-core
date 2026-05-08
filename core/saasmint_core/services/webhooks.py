@@ -95,10 +95,7 @@ async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
             await _sync_subscription(event["data"]["object"], repos)
         case "customer.subscription.deleted":
             await _on_subscription_deleted(event["data"]["object"], repos)
-        case (
-            "subscription_schedule.created"
-            | "subscription_schedule.updated"
-        ):
+        case "subscription_schedule.created" | "subscription_schedule.updated":
             await _on_subscription_schedule_upserted(event["data"]["object"], repos)
         case (
             "subscription_schedule.released"
@@ -413,9 +410,7 @@ def _parse_schedule_pending_change(
         return None
 
     next_price = next_items[0].get("price")
-    next_price_id: str | None = (
-        next_price.get("id") if isinstance(next_price, dict) else next_price
-    )
+    next_price_id: str | None = next_price.get("id") if isinstance(next_price, dict) else next_price
     if not next_price_id:
         logger.warning("subscription_schedule %s next phase missing price id", schedule_id)
         return None
@@ -423,9 +418,7 @@ def _parse_schedule_pending_change(
     change_at_ts = current_phase.get("end_date") or next_phase.get("start_date")
     change_at = ts_to_dt(change_at_ts)
     if change_at is None:
-        logger.warning(
-            "subscription_schedule %s missing phase boundary timestamp", schedule_id
-        )
+        logger.warning("subscription_schedule %s missing phase boundary timestamp", schedule_id)
         return None
 
     return str(next_price_id), change_at
@@ -525,9 +518,7 @@ async def _on_subscription_schedule_cleared(
         return
 
     await repos.subscriptions.save(
-        existing.model_copy(
-            update={"scheduled_plan_id": None, "scheduled_change_at": None}
-        )
+        existing.model_copy(update={"scheduled_plan_id": None, "scheduled_change_at": None})
     )
 
 

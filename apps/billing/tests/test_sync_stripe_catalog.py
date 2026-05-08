@@ -487,8 +487,6 @@ class TestMultiCurrencySync:
 
         # USD price was created, EUR was skipped — exactly one Price.create call.
         assert mock_pricecreate.call_count == 1
-        created_currencies = [
-            call.kwargs["currency"] for call in mock_pricecreate.call_args_list
-        ]
+        created_currencies = [call.kwargs["currency"] for call in mock_pricecreate.call_args_list]
         assert created_currencies == ["usd"]
         assert "no LocalizedPrice row" in out

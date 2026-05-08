@@ -13,9 +13,7 @@ from saasmint_core.services.currency import format_amount
 from apps.billing.models import Plan, PlanPrice, PlanTier, Product, ProductPrice, Subscription
 
 
-def _localized_display(
-    price: PlanPrice | ProductPrice, currency: str
-) -> tuple[float, str]:
+def _localized_display(price: PlanPrice | ProductPrice, currency: str) -> tuple[float, str]:
     """Return ``(display_amount, effective_currency)`` for ``price``.
 
     Reads a precomputed ``LocalizedPrice`` row written by the daily
@@ -150,9 +148,7 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
 
     def to_representation(self, instance: PlanPrice | ProductPrice) -> dict[str, Any]:
         result = super().to_representation(instance)
-        display_amount, currency = _localized_display(
-            instance, self.context.get("currency", "usd")
-        )
+        display_amount, currency = _localized_display(instance, self.context.get("currency", "usd"))
         local_amount, local_currency = _local_display(
             instance, self.context.get("preferred_currency")
         )
@@ -267,9 +263,7 @@ class _SuccessCancelUrlMixin:
         return _validate_redirect_url(value)
 
 
-class CheckoutRequestSerializer(
-    _SuccessCancelUrlMixin, serializers.Serializer[object]
-):
+class CheckoutRequestSerializer(_SuccessCancelUrlMixin, serializers.Serializer[object]):
     """Request body for POST /billing/checkout-sessions/."""
 
     plan_price_id = serializers.UUIDField()
@@ -290,9 +284,7 @@ class PortalRequestSerializer(serializers.Serializer[object]):
         return _validate_redirect_url(value)
 
 
-class ProductCheckoutRequestSerializer(
-    _SuccessCancelUrlMixin, serializers.Serializer[object]
-):
+class ProductCheckoutRequestSerializer(_SuccessCancelUrlMixin, serializers.Serializer[object]):
     """Request body for POST /billing/product-checkout-sessions/."""
 
     product_price_id = serializers.UUIDField()
