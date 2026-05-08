@@ -206,6 +206,11 @@ REST_FRAMEWORK = {
         "account": "120/hour",
         "account_export": "3/hour",
         "orgs": "60/hour",
+        # Tighter scope for destructive admin actions on member accounts —
+        # an admin removing members hard-deletes user accounts, so a
+        # compromised admin token shouldn't get to spend the entire
+        # ``orgs`` budget on cascading deletes before throttling kicks in.
+        "orgs_member_delete": "5/hour",
         "references": "120/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",

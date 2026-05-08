@@ -63,6 +63,9 @@ def generate_unique_slug(name: str) -> str:
     # planner and fell back to a full-table scan. Filter to exact-match or
     # ``-<digits>`` in Python; anything else (e.g. ``foo-bar`` when
     # base=``foo``) is discarded, so the wider candidate set is harmless.
+    # The pattern depends on ``base`` so the ``re`` module's internal LRU
+    # cache can't share compiles across calls — compiling per-call is
+    # intentional, and cheap relative to the DB round-trip.
     _suffix_re = re.compile(rf"^{re.escape(base)}(?:-\d+)?$")
     existing = {
         slug

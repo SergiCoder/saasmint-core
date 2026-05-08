@@ -83,7 +83,10 @@ class PlanPrice(models.Model):
         db_table = "plan_prices"
 
     def __str__(self) -> str:
-        return f"{self.plan.name} — ${self.amount / 100:.2f}"
+        # Use ``plan_id`` instead of ``self.plan.name`` so admin list views
+        # don't fire an N+1 fetch for every row when ``select_related`` was
+        # not applied upstream.
+        return f"PlanPrice({self.plan_id}, ${self.amount / 100:.2f})"
 
 
 class StripeCustomer(models.Model):
@@ -244,7 +247,10 @@ class ProductPrice(models.Model):
         db_table = "product_prices"
 
     def __str__(self) -> str:
-        return f"{self.product.name} — ${self.amount / 100:.2f}"
+        # Use ``product_id`` instead of ``self.product.name`` so admin list
+        # views don't fire an N+1 fetch when ``select_related`` was not
+        # applied upstream.
+        return f"ProductPrice({self.product_id}, ${self.amount / 100:.2f})"
 
 
 class LocalizedPrice(models.Model):

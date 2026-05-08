@@ -99,6 +99,10 @@ async def on_product_checkout_completed(
             )
             return
 
+        # Two parallel branches because ``grant_credits_for_session`` takes
+        # ``org`` and ``user`` as separately-typed kwargs and the alternative
+        # (a heterogeneous ``**dict``) trips mypy's per-arg checks.
+        reason = f"purchase:{product.name}"
         if org_id is not None:
             org = Org.objects.only("id").filter(id=org_id).first()
             if org is None:
@@ -111,7 +115,7 @@ async def on_product_checkout_completed(
             grant_credits_for_session(
                 stripe_session_id=stripe_session_id,
                 amount=product.credits,
-                reason=f"purchase:{product.name}",
+                reason=reason,
                 org=org,
             )
         else:
@@ -126,7 +130,7 @@ async def on_product_checkout_completed(
             grant_credits_for_session(
                 stripe_session_id=stripe_session_id,
                 amount=product.credits,
-                reason=f"purchase:{product.name}",
+                reason=reason,
                 user=user,
             )
 

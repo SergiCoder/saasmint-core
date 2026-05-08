@@ -122,13 +122,16 @@ def sync_localized_prices() -> int:
         """
         # The conditional below guarantees a non-None UUID is selected; the
         # narrower annotation makes the kwarg shape passed to LocalizedPrice
-        # explicit (the FK fields it lands on are NOT NULL).
+        # explicit (the FK fields it lands on are NOT NULL). Use an explicit
+        # ``ValueError`` rather than ``assert`` so the invariant survives
+        # ``python -O`` (where ``assert`` is stripped).
         owner_kwargs: dict[str, UUID]
         if plan_price_id is not None:
             owner_kwargs = {"plan_price_id": plan_price_id}
-        else:
-            assert product_price_id is not None  # noqa: S101  # exactly-one invariant
+        elif product_price_id is not None:
             owner_kwargs = {"product_price_id": product_price_id}
+        else:
+            raise ValueError("Exactly one of plan_price_id or product_price_id must be set")
         new_amounts = _compute_new_amounts(amount)
         existing_by_currency = existing_by_currency or {}
 

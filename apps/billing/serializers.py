@@ -99,8 +99,15 @@ def _validate_redirect_url(url: str) -> str:
 
     origin = f"{parsed.scheme}://{parsed.netloc}"
     hostname = parsed.hostname or ""
+    # Also try the port-stripped origin so a non-standard port doesn't fall
+    # through CORS (which compares scheme+netloc verbatim) into the looser
+    # ALLOWED_HOSTS path (which only checks hostname). Without this, a URL
+    # like ``https://app.example.com:9999/`` would be accepted via
+    # ALLOWED_HOSTS even though the operator only allowlisted the canonical
+    # ``https://app.example.com`` origin.
+    origin_no_port = f"{parsed.scheme}://{hostname}" if hostname else origin
 
-    if allowed_origins and origin in allowed_origins:
+    if allowed_origins and (origin in allowed_origins or origin_no_port in allowed_origins):
         return url
     if allowed_hosts:
         exact_hosts, suffix_hosts = _host_matchers(tuple(allowed_hosts))

@@ -82,7 +82,9 @@ async def process_stored_event(
         # processed_at remain NULL, indistinguishable from a fresh row and
         # invisible to monitoring. Includes the exception class so the
         # stored message distinguishes a KeyError from a TypeError without
-        # rummaging through Sentry.
+        # rummaging through Sentry. ``asyncio.CancelledError`` is a
+        # ``BaseException`` in Python 3.8+ and therefore deliberately not
+        # caught here — task cancellation must propagate cleanly.
         await repos.events.mark_failed(stripe_id, f"{type(exc).__name__}: {exc}")
         raise
 
