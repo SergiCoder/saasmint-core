@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import timedelta
-from typing import Any, ClassVar
+from typing import ClassVar
 from uuid import UUID
 
 from django.db import transaction
@@ -30,7 +30,7 @@ from saasmint_core.domain.org import OrgRole as CoreOrgRole
 from saasmint_core.exceptions import InsufficientPermissionError, OrgNotFoundError
 from saasmint_core.services.orgs import check_can_manage_member
 
-from apps.base_views import OrgsScopedView
+from apps.base_views import OrgsScopedView, paginated_response_schema
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
 from apps.orgs.serializers import (
     CreateInvitationSerializer,
@@ -42,6 +42,7 @@ from apps.orgs.serializers import (
     UpdateMemberSerializer,
     UpdateOrgSerializer,
 )
+from apps.orgs.services import _lock_active_team_sub
 from apps.users.services import email_is_registered
 from helpers import get_user
 
@@ -102,23 +103,6 @@ def _default_paginator() -> LimitOffsetPagination:
     return paginator
 
 
-def _paginated_response_schema(
-    name: str, child: drf_serializers.BaseSerializer[Any]
-) -> drf_serializers.Serializer[object]:
-    """Build an inline serializer for the DRF paginated envelope.
-
-    Document the real wire shape of ``LimitOffsetPagination`` responses —
-    a bare ``child(many=True)`` hides ``count``/``next``/``previous``.
-    """
-    return inline_serializer(
-        name,
-        {
-            "count": drf_serializers.IntegerField(),
-            "next": drf_serializers.URLField(allow_null=True),
-            "previous": drf_serializers.URLField(allow_null=True),
-            "results": child,
-        },
-    )
 
 
 def _get_org_and_member(
@@ -150,7 +134,7 @@ class OrgListView(OrgsScopedView):
     """GET /api/v1/orgs/ — list user's orgs."""
 
     @extend_schema(
-        responses=_paginated_response_schema("OrgListResponse", OrgSerializer(many=True)),
+        responses=paginated_response_schema("OrgListResponse", OrgSerializer(many=True)),
         parameters=[
             OpenApiParameter("limit", int, description="Page size (max 100)"),
             OpenApiParameter("offset", int, description="Number of items to skip"),
@@ -159,9 +143,10 @@ class OrgListView(OrgsScopedView):
     )
     def get(self, request: Request) -> Response:
         user = get_user(request)
-        orgs = Org.objects.filter(
-            id__in=OrgMember.objects.filter(user=user).values("org_id"),
-        ).order_by("name")
+        # JOIN form lets the planner use the org_members.user_id index directly.
+        # The (org_id, user_id) unique constraint guarantees no duplicates so
+        # ``.distinct()`` is defensive — bounded result regardless.
+        orgs = Org.objects.filter(members__user=user).order_by("name").distinct()
         paginator = _default_paginator()
         page = paginator.paginate_queryset(orgs, request)
         return paginator.get_paginated_response(OrgSerializer(page, many=True).data)
@@ -223,7 +208,7 @@ class OrgMemberListView(OrgsScopedView):
     """GET /api/v1/orgs/{org_id}/members/ — list members."""
 
     @extend_schema(
-        responses=_paginated_response_schema(
+        responses=paginated_response_schema(
             "OrgMemberListResponse", OrgMemberSerializer(many=True)
         ),
         parameters=[
@@ -389,7 +374,7 @@ class InvitationListCreateView(OrgsScopedView):
     """GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations."""
 
     @extend_schema(
-        responses=_paginated_response_schema(
+        responses=paginated_response_schema(
             "InvitationListResponse", InvitationSerializer(many=True)
         ),
         parameters=[
@@ -480,8 +465,6 @@ def _validate_seat_limit(org: Org) -> None:
     commits — otherwise two concurrent invites can both pass the check and
     overrun the quota.
     """
-    from apps.orgs.services import _lock_active_team_sub
-
     # Lock the active team sub row. Shared with ``accept_invitation`` so the
     # invite-create and invite-accept paths serialise on the same row.
     sub = _lock_active_team_sub(org)
