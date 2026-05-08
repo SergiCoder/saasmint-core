@@ -51,6 +51,11 @@ class TestUpdateOrgSerializer:
         assert not ser.is_valid()
         assert "logo_url" in ser.errors
 
+    def test_http_logo_url_rejected(self):
+        ser = UpdateOrgSerializer(data={"logo_url": "http://example.com/logo.png"})
+        assert not ser.is_valid()
+        assert "logo_url" in ser.errors
+
     def test_name_max_length_exceeded(self):
         ser = UpdateOrgSerializer(data={"name": "X" * 256})
         assert not ser.is_valid()
