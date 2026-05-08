@@ -145,7 +145,7 @@ async def test_unhandled_dispatch_failure_marks_failed_and_propagates(monkeypatc
         await process_stored_event(event, stripe_id, repos)
 
     saved = event_repo._store["evt_fail"]
-    assert saved.error == "dispatch boom"
+    assert saved.error == "RuntimeError: dispatch boom"
     assert saved.processed_at is None
 
 

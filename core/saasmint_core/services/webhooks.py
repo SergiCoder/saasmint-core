@@ -80,8 +80,10 @@ async def process_stored_event(
         # bug, future-handler regression) leaves the row in a definitively
         # "failed" state with an error message — otherwise both error and
         # processed_at remain NULL, indistinguishable from a fresh row and
-        # invisible to monitoring.
-        await repos.events.mark_failed(stripe_id, str(exc))
+        # invisible to monitoring. Includes the exception class so the
+        # stored message distinguishes a KeyError from a TypeError without
+        # rummaging through Sentry.
+        await repos.events.mark_failed(stripe_id, f"{type(exc).__name__}: {exc}")
         raise
 
 
