@@ -74,7 +74,6 @@ class User(AbstractBaseUser, PermissionsMixin):
     password_changed_at = models.DateTimeField(
         null=True,
         blank=True,
-        db_index=True,
         help_text=(
             "Last password reset/change. Access tokens minted before this "
             "moment are rejected by JWTAuthentication."
