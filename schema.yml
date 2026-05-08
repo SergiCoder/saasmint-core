@@ -1472,6 +1472,7 @@ components:
       - new_password
     CheckoutRequestRequest:
       type: object
+      description: Re-usable validators for serializers carrying success_url/cancel_url.
       properties:
         plan_price_id:
           type: string
@@ -1986,6 +1987,10 @@ components:
     PlanListResponse:
       type: object
       properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Plan'
         count:
           type: integer
         next:
@@ -1996,10 +2001,6 @@ components:
           type: string
           format: uri
           nullable: true
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/Plan'
       required:
       - count
       - next
@@ -2103,6 +2104,7 @@ components:
       - type
     ProductCheckoutRequestRequest:
       type: object
+      description: Re-usable validators for serializers carrying success_url/cancel_url.
       properties:
         product_price_id:
           type: string
@@ -2130,6 +2132,10 @@ components:
     ProductListResponse:
       type: object
       properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
         count:
           type: integer
         next:
@@ -2140,10 +2146,6 @@ components:
           type: string
           format: uri
           nullable: true
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/Product'
       required:
       - count
       - next
@@ -2373,6 +2375,10 @@ components:
     SubscriptionListResponse:
       type: object
       properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Subscription'
         count:
           type: integer
         next:
@@ -2383,10 +2389,6 @@ components:
           type: string
           format: uri
           nullable: true
-        results:
-          type: array
-          items:
-            $ref: '#/components/schemas/Subscription'
       required:
       - count
       - next
