@@ -130,9 +130,7 @@ class TestMultiCurrencySync:
         # assert exact Stripe call counts without seed-data noise.
         Product.objects.all().delete()
         Plan.objects.exclude(id=plan.id).delete()
-        price = PlanPrice.objects.create(
-            plan=plan, stripe_price_id="price_old_local", amount=1900
-        )
+        price = PlanPrice.objects.create(plan=plan, stripe_price_id="price_old_local", amount=1900)
         return plan, price
 
     def test_mints_one_stripe_price_per_billing_currency(self, plan_with_price, settings):
@@ -200,9 +198,7 @@ class TestMultiCurrencySync:
 
 
 class TestCheckoutCurrencyRouting:
-    def test_eur_user_gets_eur_stripe_price_at_checkout(
-        self, authed_client, plan_price, user
-    ):
+    def test_eur_user_gets_eur_stripe_price_at_checkout(self, authed_client, plan_price, user):
         eur_row = LocalizedPrice.objects.create(
             plan_price=plan_price,
             currency="eur",
@@ -319,9 +315,7 @@ class TestCheckoutSessionParams:
 
 
 class TestSubscriptionPatchCurrency:
-    def test_rejects_cross_currency_plan_change(
-        self, authed_client, subscription, plan_price
-    ):
+    def test_rejects_cross_currency_plan_change(self, authed_client, subscription, plan_price):
         # Existing sub is in EUR; user tries to switch to a plan whose only
         # billable currency is USD (no EUR LocalizedPrice with stripe_price_id).
         subscription.currency = "eur"
@@ -385,9 +379,7 @@ class TestSubscriptionPatchCurrency:
 
 
 class TestWebhookCurrency:
-    def test_sync_subscription_persists_currency(
-        self, plan, plan_price, stripe_customer
-    ):
+    def test_sync_subscription_persists_currency(self, plan, plan_price, stripe_customer):
         from asgiref.sync import async_to_sync
         from saasmint_core.services.webhooks import sync_subscription_from_data
 
@@ -601,9 +593,7 @@ class TestPlanChangePriceResolution:
     TestSubscriptionPatchCurrency.test_rejects_cross_currency_plan_change.
     """
 
-    def test_returns_eur_stripe_price_id_and_minor_amount_when_row_exists(
-        self, plan_price
-    ):
+    def test_returns_eur_stripe_price_id_and_minor_amount_when_row_exists(self, plan_price):
         """When a LocalizedPrice row with a non-null stripe_price_id exists,
         _resolve_plan_change_price must return that ID and the row's
         amount_minor (not the USD amount) so the deferred-downgrade

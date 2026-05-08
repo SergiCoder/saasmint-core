@@ -104,8 +104,11 @@ class OAuthUserInfo:
     email_verified: bool = False
 
 
-@functools.cache
 def _get_config(provider: Provider) -> _ProviderConfig:
+    # Reads ``settings.OAUTH_*`` on every call so test ``override_settings``
+    # is honoured. Not cached — building a six-key TypedDict is trivial and
+    # caching here would freeze the first-seen credentials per process,
+    # silently bypassing test overrides (CLAUDE.md refactoring guardrail).
     match provider:
         case Provider.GOOGLE:
             return _ProviderConfig(
@@ -137,10 +140,12 @@ def _get_config(provider: Provider) -> _ProviderConfig:
 
 
 @functools.cache
-def _ms_jwks_client() -> PyJWKClient:
-    # PyJWKClient caches keys in-process for the lifetime of the worker.
-    # Lazy-initialised so import-time has no network dependency.
-    return PyJWKClient(_MS_JWKS_URI)
+def _ms_jwks_client(jwks_uri: str = _MS_JWKS_URI) -> PyJWKClient:
+    # Cache key is the URI, not module-internal state — ``override_settings``
+    # or a test-specific URI yield a fresh client. PyJWKClient itself caches
+    # the JWKS keys for the lifetime of the worker; lazy-initialised so
+    # import has no network dependency.
+    return PyJWKClient(jwks_uri)
 
 
 def _verify_microsoft_id_token(id_token: str) -> dict[str, Any] | None:
@@ -235,9 +240,7 @@ async def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUse
             # the verified flag as the JSON string ``"false"`` would have
             # been auto-linked. Only an honest, JSON-typed boolean ``true``
             # passes the gate now.
-            verified = (
-                google.get("verified_email") is True or google.get("email_verified") is True
-            )
+            verified = google.get("verified_email") is True or google.get("email_verified") is True
             return OAuthUserInfo(
                 email=email,
                 full_name=google.get("name") or email.split("@")[0],

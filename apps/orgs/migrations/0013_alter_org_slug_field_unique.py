@@ -4,19 +4,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('orgs', '0012_orgmember_ck_org_owner_must_be_billing'),
+        ("orgs", "0012_orgmember_ck_org_owner_must_be_billing"),
     ]
 
     operations = [
         migrations.RemoveConstraint(
-            model_name='org',
-            name='idx_orgs_slug_active',
+            model_name="org",
+            name="idx_orgs_slug_active",
         ),
         migrations.AlterField(
-            model_name='org',
-            name='slug',
+            model_name="org",
+            name="slug",
             field=models.SlugField(max_length=255, unique=True),
         ),
     ]

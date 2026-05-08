@@ -84,9 +84,7 @@ class Command(BaseCommand):
 
         self._archive_strays(strays)
 
-    def _archive_strays(
-        self, strays: list[tuple[stripe.Product, dict[str, str]]]
-    ) -> None:
+    def _archive_strays(self, strays: list[tuple[stripe.Product, dict[str, str]]]) -> None:
         """Set ``active=False`` on each stray product that has no active subscription."""
         for sp, _md in strays:
             has_active_sub = False
@@ -101,9 +99,7 @@ class Command(BaseCommand):
                     has_active_sub = True
                     break
             if has_active_sub:
-                self.stdout.write(
-                    self.style.WARNING(f"  ! Skipping {sp.id}: active subscription")
-                )
+                self.stdout.write(self.style.WARNING(f"  ! Skipping {sp.id}: active subscription"))
                 continue
             stripe.Product.modify(sp.id, active=False)
             self.stdout.write(self.style.SUCCESS(f"  ✓ Archived {sp.id}"))

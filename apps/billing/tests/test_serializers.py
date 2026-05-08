@@ -13,6 +13,7 @@ from apps.billing.serializers import (
     PlanPriceSerializer,
     PlanSerializer,
     PortalRequestSerializer,
+    ProductCheckoutRequestSerializer,
     ProductPriceSerializer,
     ProductSerializer,
     SubscriptionSerializer,
@@ -22,6 +23,7 @@ from apps.billing.serializers import (
 # Sample valid UUID for serializer-level tests that don't need a real DB row.
 # UUIDField only validates format, not existence.
 _PLAN_PRICE_UUID = "11111111-1111-1111-1111-111111111111"
+_PRODUCT_PRICE_UUID = "22222222-2222-2222-2222-222222222222"
 
 
 @pytest.mark.django_db
@@ -97,9 +99,7 @@ class TestSubscriptionSerializer:
         OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
         OrgMember.objects.create(org=org, user=member1, role=OrgRole.MEMBER)
         OrgMember.objects.create(org=org, user=member2, role=OrgRole.MEMBER)
-        customer = StripeCustomer.objects.create(
-            stripe_id="cus_ser_team", org=org, livemode=False
-        )
+        customer = StripeCustomer.objects.create(stripe_id="cus_ser_team", org=org, livemode=False)
         Subscription.objects.create(
             stripe_id="sub_ser_team",
             stripe_customer=customer,
@@ -264,6 +264,51 @@ class TestPortalRequestSerializer:
         assert not ser.is_valid()
 
 
+class TestProductCheckoutRequestSerializer:
+    def test_valid_data(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = ProductCheckoutRequestSerializer(
+            data={
+                "product_price_id": _PRODUCT_PRICE_UUID,
+                "success_url": "https://example.com/success",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert ser.is_valid(), ser.errors
+
+    def test_missing_required_fields(self):
+        ser = ProductCheckoutRequestSerializer(data={})
+        assert not ser.is_valid()
+        assert "product_price_id" in ser.errors
+        assert "success_url" in ser.errors
+        assert "cancel_url" in ser.errors
+
+    def test_invalid_success_url_rejected(self, settings):
+        settings.CORS_ALLOW_ALL_ORIGINS = False
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        settings.ALLOWED_HOSTS = ["example.com"]
+        ser = ProductCheckoutRequestSerializer(
+            data={
+                "product_price_id": _PRODUCT_PRICE_UUID,
+                "success_url": "https://evil.com/phish",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert not ser.is_valid()
+        assert "success_url" in ser.errors
+
+    def test_non_http_scheme_rejected(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = ProductCheckoutRequestSerializer(
+            data={
+                "product_price_id": _PRODUCT_PRICE_UUID,
+                "success_url": "javascript://example.com/xss",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert not ser.is_valid()
+
+
 class TestUpdateSubscriptionSerializer:
     def test_valid_plan_change(self):
         ser = UpdateSubscriptionSerializer(data={"plan_price_id": _PLAN_PRICE_UUID})
@@ -384,6 +429,46 @@ class TestPlanPriceSerializerCurrency:
         """
         data = PlanPriceSerializer(plan_price, context={"currency": "eur"}).data
         assert data["display_amount"] == 9.99
+
+    def test_local_display_amount_populated_for_preferred_currency(self, plan_price):
+        """When ``preferred_currency`` is in the context (display-only currency
+        whose charge falls back to USD), the serializer populates
+        ``local_display_amount`` and ``local_currency`` from the matching
+        ``LocalizedPrice`` row so the FE can show a dual-currency card.
+        """
+        LocalizedPrice.objects.create(
+            plan_price=plan_price, currency="eur", amount_minor=899, synced_at=datetime.now(UTC)
+        )
+        # The view passes ``currency="usd"`` (billable) and
+        # ``preferred_currency="eur"`` (display-only) at the same time.
+        data = PlanPriceSerializer(
+            plan_price,
+            context={"currency": "usd", "preferred_currency": "eur"},
+        ).data
+        assert data["display_amount"] == 9.99  # USD billable charge
+        assert data["currency"] == "usd"
+        assert data["local_display_amount"] == 8.99  # EUR display approximation
+        assert data["local_currency"] == "eur"
+
+    def test_local_display_amount_is_none_when_preferred_currency_not_in_context(self, plan_price):
+        """No ``preferred_currency`` key in context → both local fields are None.
+        This is the normal single-currency path (billable preferred currency).
+        """
+        data = PlanPriceSerializer(plan_price, context={"currency": "usd"}).data
+        assert data["local_display_amount"] is None
+        assert data["local_currency"] is None
+
+    def test_local_display_amount_is_none_when_localized_row_missing(self, plan_price):
+        """``_local_display`` does NOT fall back to USD — if the row is missing
+        the primary ``display_amount`` already covers the actual charge and no
+        local approximation is shown to the user."""
+        # No LocalizedPrice row for "eur".
+        data = PlanPriceSerializer(
+            plan_price,
+            context={"currency": "usd", "preferred_currency": "eur"},
+        ).data
+        assert data["local_display_amount"] is None
+        assert data["local_currency"] is None
 
 
 @pytest.mark.django_db

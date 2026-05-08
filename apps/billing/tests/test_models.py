@@ -268,9 +268,7 @@ class TestCreditBalanceConstraints:
     def test_xor_owner_rejects_both_user_and_org_set(self, user):
         from apps.orgs.models import Org
 
-        org = Org.objects.create(
-            name="CB Both", slug="cb-both", created_by=user
-        )
+        org = Org.objects.create(name="CB Both", slug="cb-both", created_by=user)
         with pytest.raises(IntegrityError):
             CreditBalance.objects.create(user=user, org=org, balance=100)
 
@@ -288,9 +286,7 @@ class TestCreditTransactionConstraints:
     def test_xor_owner_rejects_both_user_and_org(self, user):
         from apps.orgs.models import Org
 
-        org = Org.objects.create(
-            name="CT Both", slug="ct-both", created_by=user
-        )
+        org = Org.objects.create(name="CT Both", slug="ct-both", created_by=user)
         with pytest.raises(IntegrityError):
             CreditTransaction.objects.create(
                 user=user,

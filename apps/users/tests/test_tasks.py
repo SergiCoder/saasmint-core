@@ -42,9 +42,7 @@ class TestSendSocialLinkEmailTask:
 
     def test_passes_provider_verbatim(self):
         with patch("apps.users.email.send_social_link_email") as mock_send:
-            send_social_link_email_task.apply(
-                args=["other@example.com", "tok_gh", "github"]
-            ).get()
+            send_social_link_email_task.apply(args=["other@example.com", "tok_gh", "github"]).get()
 
         _, _, provider = mock_send.call_args.args
         assert provider == "github"

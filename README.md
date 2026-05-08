@@ -88,6 +88,7 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 | `DATABASE_URL` | PostgreSQL connection string |
 | `STRIPE_SECRET_KEY` | Stripe API secret key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
+| `BILLING_CURRENCIES` | JSON array of ISO 4217 codes Stripe charges in (e.g. `["usd","eur","gbp"]`). Defaults to `["usd","eur","gbp","jpy","cny"]`. `usd` must always be included. Add a code here to mint real Stripe Prices for it; display-only currencies do not need to be listed here |
 | `REDIS_URL` | Redis connection string (defaults to `redis://localhost:6379/0`) |
 | `DEBUG` | Set to `True` for local development |
 | `ALLOWED_HOSTS` | JSON array of allowed hosts (e.g. `["localhost","127.0.0.1"]`) |
@@ -105,7 +106,7 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 | `OAUTH_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret (optional) |
 | `OAUTH_MICROSOFT_CLIENT_ID` | Microsoft OAuth app client ID (optional) |
 | `OAUTH_MICROSOFT_CLIENT_SECRET` | Microsoft OAuth app client secret (optional) |
-| `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only) |
+| `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only — production boot fails if this is set) |
 
 ## Project structure
 

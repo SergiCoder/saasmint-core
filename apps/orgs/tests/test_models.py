@@ -91,9 +91,7 @@ class TestOrgMember:
         assert m.is_billing is False
 
     def test_owner_with_is_billing_true_passes_constraint(self, org, other_user):
-        m = OrgMember.objects.create(
-            org=org, user=other_user, role=OrgRole.OWNER, is_billing=True
-        )
+        m = OrgMember.objects.create(org=org, user=other_user, role=OrgRole.OWNER, is_billing=True)
         assert m.role == OrgRole.OWNER and m.is_billing is True
 
 

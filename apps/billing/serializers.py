@@ -13,9 +13,7 @@ from saasmint_core.services.currency import format_amount
 from apps.billing.models import Plan, PlanPrice, PlanTier, Product, ProductPrice, Subscription
 
 
-def _localized_display(
-    price: PlanPrice | ProductPrice, currency: str
-) -> tuple[float, str]:
+def _localized_display(price: PlanPrice | ProductPrice, currency: str) -> tuple[float, str]:
     """Return ``(display_amount, effective_currency)`` for ``price``.
 
     Reads a precomputed ``LocalizedPrice`` row written by the daily
@@ -101,8 +99,15 @@ def _validate_redirect_url(url: str) -> str:
 
     origin = f"{parsed.scheme}://{parsed.netloc}"
     hostname = parsed.hostname or ""
+    # Also try the port-stripped origin so a non-standard port doesn't fall
+    # through CORS (which compares scheme+netloc verbatim) into the looser
+    # ALLOWED_HOSTS path (which only checks hostname). Without this, a URL
+    # like ``https://app.example.com:9999/`` would be accepted via
+    # ALLOWED_HOSTS even though the operator only allowlisted the canonical
+    # ``https://app.example.com`` origin.
+    origin_no_port = f"{parsed.scheme}://{hostname}" if hostname else origin
 
-    if allowed_origins and origin in allowed_origins:
+    if allowed_origins and (origin in allowed_origins or origin_no_port in allowed_origins):
         return url
     if allowed_hosts:
         exact_hosts, suffix_hosts = _host_matchers(tuple(allowed_hosts))
@@ -150,9 +155,7 @@ class _PriceSerializer(serializers.ModelSerializer[Any]):
 
     def to_representation(self, instance: PlanPrice | ProductPrice) -> dict[str, Any]:
         result = super().to_representation(instance)
-        display_amount, currency = _localized_display(
-            instance, self.context.get("currency", "usd")
-        )
+        display_amount, currency = _localized_display(instance, self.context.get("currency", "usd"))
         local_amount, local_currency = _local_display(
             instance, self.context.get("preferred_currency")
         )
@@ -257,7 +260,19 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
         return annotated
 
 
-class CheckoutRequestSerializer(serializers.Serializer[object]):
+class _SuccessCancelUrlMixin:
+    """Re-usable validators for serializers carrying success_url/cancel_url."""
+
+    def validate_success_url(self, value: str) -> str:
+        return _validate_redirect_url(value)
+
+    def validate_cancel_url(self, value: str) -> str:
+        return _validate_redirect_url(value)
+
+
+class CheckoutRequestSerializer(_SuccessCancelUrlMixin, serializers.Serializer[object]):
+    """Request body for POST /billing/checkout-sessions/."""
+
     plan_price_id = serializers.UUIDField()
     seat_limit = serializers.IntegerField(default=1, min_value=1, max_value=10000)
     success_url = serializers.URLField()
@@ -268,12 +283,6 @@ class CheckoutRequestSerializer(serializers.Serializer[object]):
     org_name = serializers.CharField(max_length=255, required=False)
     keep_personal_subscription = serializers.BooleanField(default=False)
 
-    def validate_success_url(self, value: str) -> str:
-        return _validate_redirect_url(value)
-
-    def validate_cancel_url(self, value: str) -> str:
-        return _validate_redirect_url(value)
-
 
 class PortalRequestSerializer(serializers.Serializer[object]):
     return_url = serializers.URLField()
@@ -282,16 +291,12 @@ class PortalRequestSerializer(serializers.Serializer[object]):
         return _validate_redirect_url(value)
 
 
-class ProductCheckoutRequestSerializer(serializers.Serializer[object]):
+class ProductCheckoutRequestSerializer(_SuccessCancelUrlMixin, serializers.Serializer[object]):
+    """Request body for POST /billing/product-checkout-sessions/."""
+
     product_price_id = serializers.UUIDField()
     success_url = serializers.URLField()
     cancel_url = serializers.URLField()
-
-    def validate_success_url(self, value: str) -> str:
-        return _validate_redirect_url(value)
-
-    def validate_cancel_url(self, value: str) -> str:
-        return _validate_redirect_url(value)
 
 
 class CreditBalanceEntrySerializer(serializers.Serializer[object]):

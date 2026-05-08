@@ -103,9 +103,7 @@ class Command(BaseCommand):
         result: dict[str, stripe.Price] = {}
         for i in range(0, len(lookup_keys), 10):
             batch = lookup_keys[i : i + 10]
-            page = stripe.Price.list(
-                lookup_keys=batch, limit=10, expand=["data.product"]
-            )
+            page = stripe.Price.list(lookup_keys=batch, limit=10, expand=["data.product"])
             for price in page.data:
                 if price.lookup_key:
                     result[price.lookup_key] = price
@@ -113,9 +111,7 @@ class Command(BaseCommand):
 
     # ------------------------------------------------------------------ plans
 
-    def _sync_plans(
-        self, currency: str, existing_prices: dict[str, stripe.Price]
-    ) -> None:
+    def _sync_plans(self, currency: str, existing_prices: dict[str, stripe.Price]) -> None:
         plans = Plan.objects.filter(is_active=True).select_related("price")
         for plan in plans:
             price_row: PlanPrice | None = getattr(plan, "price", None)
@@ -146,9 +142,7 @@ class Command(BaseCommand):
 
     # --------------------------------------------------------------- products
 
-    def _sync_products(
-        self, currency: str, existing_prices: dict[str, stripe.Price]
-    ) -> None:
+    def _sync_products(self, currency: str, existing_prices: dict[str, stripe.Price]) -> None:
         products = Product.objects.filter(is_active=True).select_related("price")
         for product in products:
             price_row: ProductPrice | None = getattr(product, "price", None)
@@ -156,9 +150,7 @@ class Command(BaseCommand):
                 self.stdout.write(f"  · Skipping product {product.name}: no ProductPrice row")
                 continue
 
-            unit_amount = self._unit_amount_for(
-                price_row, currency, owner_kwarg="product_price_id"
-            )
+            unit_amount = self._unit_amount_for(price_row, currency, owner_kwarg="product_price_id")
             if unit_amount is None:
                 continue
 
@@ -356,9 +348,7 @@ class Command(BaseCommand):
         localized = LocalizedPrice.objects.filter(currency=currency, **owner_kwargs).first()
         if localized is None:
             # Should be unreachable: _unit_amount_for already triggered bootstrap.
-            self.stdout.write(
-                f"  ! {full_label}: LocalizedPrice row vanished mid-sync; skipping"
-            )
+            self.stdout.write(f"  ! {full_label}: LocalizedPrice row vanished mid-sync; skipping")
             return
         if localized.stripe_price_id == new_price_id:
             self.stdout.write(f"  = {full_label}: already in sync ({new_price_id})")

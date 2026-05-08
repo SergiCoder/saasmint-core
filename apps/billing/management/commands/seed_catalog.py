@@ -145,9 +145,7 @@ class Command(BaseCommand):
                 # restore the placeholder if no real ID was ever stamped.
                 existing.amount = spec["amount"]
                 existing.save(update_fields=["amount"])
-                self.stdout.write(
-                    f"  ✓ PlanPrice: {plan.name} updated to {spec['amount']}c"
-                )
+                self.stdout.write(f"  ✓ PlanPrice: {plan.name} updated to {spec['amount']}c")
 
     def _seed_products(self) -> None:
         for name, credit_count, amount in BOOST_PRODUCTS:

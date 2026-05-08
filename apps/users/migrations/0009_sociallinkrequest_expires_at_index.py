@@ -4,14 +4,13 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('users', '0008_sociallinkrequest'),
+        ("users", "0008_sociallinkrequest"),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='sociallinkrequest',
-            index=models.Index(fields=['expires_at'], name='idx_social_link_expires_at'),
+            model_name="sociallinkrequest",
+            index=models.Index(fields=["expires_at"], name="idx_social_link_expires_at"),
         ),
     ]

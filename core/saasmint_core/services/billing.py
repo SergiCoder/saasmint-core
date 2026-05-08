@@ -269,9 +269,7 @@ async def _release_pending_schedule(stripe_subscription_id: str) -> None:
     if not schedule_id:
         return
 
-    schedule = await asyncio.to_thread(
-        stripe.SubscriptionSchedule.retrieve, str(schedule_id)
-    )
+    schedule = await asyncio.to_thread(stripe.SubscriptionSchedule.retrieve, str(schedule_id))
     # Only ``not_started`` and ``active`` schedules are releasable. Released
     # / canceled / completed schedules are terminal and Stripe rejects further
     # release calls on them.
@@ -306,9 +304,7 @@ async def release_pending_schedule_for_customer(
     # cleared state idempotently.
     if active.scheduled_plan_id is not None or active.scheduled_change_at is not None:
         await subscription_repo.save(
-            active.model_copy(
-                update={"scheduled_plan_id": None, "scheduled_change_at": None}
-            )
+            active.model_copy(update={"scheduled_plan_id": None, "scheduled_change_at": None})
         )
 
 

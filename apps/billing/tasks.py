@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
 import httpx
 import stripe
 from asgiref.sync import async_to_sync
 from django.db import transaction
+from django.db.models import QuerySet
 from django.db.utils import OperationalError
 
 from apps.billing.repositories import get_webhook_repos
@@ -29,8 +31,8 @@ def _to_minor_units(display_amount: float, currency: str) -> int:
     exactly representable in IEEE-754) land on ``999`` minor units instead
     of ``998`` under banker's rounding.
     """
-    from decimal import ROUND_HALF_UP, Decimal
-
+    # Deferred to avoid a circular import at module load (currency module
+    # imports from a chain that ends back at apps.billing).
     from saasmint_core.services.currency import ZERO_DECIMAL_CURRENCIES
 
     amount = Decimal(str(display_amount))
@@ -110,9 +112,7 @@ def sync_localized_prices() -> int:
         plan_price_id: UUID | None = None,
         product_price_id: UUID | None = None,
         existing_by_currency: dict[str, LocalizedPrice] | None = None,
-    ) -> tuple[
-        list[LocalizedPrice], list[LocalizedPrice], list[LocalizedPrice], int
-    ]:
+    ) -> tuple[list[LocalizedPrice], list[LocalizedPrice], list[LocalizedPrice], int]:
         """Compute create/update/heartbeat lists for one (price, currencies) pair.
 
         Reads pre-bucketed existing rows from ``existing_by_currency`` instead of
@@ -120,11 +120,18 @@ def sync_localized_prices() -> int:
         to_update_heartbeat, changed_count)`` so the caller can aggregate across
         all prices and apply bulk_create / bulk_update once at the end.
         """
-        owner_kwargs: dict[str, UUID | None] = (
-            {"plan_price_id": plan_price_id}
-            if plan_price_id is not None
-            else {"product_price_id": product_price_id}
-        )
+        # The conditional below guarantees a non-None UUID is selected; the
+        # narrower annotation makes the kwarg shape passed to LocalizedPrice
+        # explicit (the FK fields it lands on are NOT NULL). Use an explicit
+        # ``ValueError`` rather than ``assert`` so the invariant survives
+        # ``python -O`` (where ``assert`` is stripped).
+        owner_kwargs: dict[str, UUID]
+        if plan_price_id is not None:
+            owner_kwargs = {"plan_price_id": plan_price_id}
+        elif product_price_id is not None:
+            owner_kwargs = {"product_price_id": product_price_id}
+        else:
+            raise ValueError("Exactly one of plan_price_id or product_price_id must be set")
         new_amounts = _compute_new_amounts(amount)
         existing_by_currency = existing_by_currency or {}
 
@@ -154,8 +161,11 @@ def sync_localized_prices() -> int:
                 existing.synced_at = now
                 to_update_heartbeat.append(existing)
 
-        return to_create, to_update_changed, to_update_heartbeat, (
-            len(to_create) + len(to_update_changed)
+        return (
+            to_create,
+            to_update_changed,
+            to_update_heartbeat,
+            (len(to_create) + len(to_update_changed)),
         )
 
     with transaction.atomic():
@@ -183,34 +193,36 @@ def sync_localized_prices() -> int:
         all_update_heartbeat: list[LocalizedPrice] = []
         changed = 0
 
-        for plan_price in PlanPrice.objects.all().only("id", "amount"):
-            create, upd_changed, upd_heartbeat, n = _upsert_for_price(
-                plan_price.amount,
-                plan_price_id=plan_price.id,
-                existing_by_currency=plan_buckets.get(plan_price.id, {}),
-            )
-            all_create.extend(create)
-            all_update_changed.extend(upd_changed)
-            all_update_heartbeat.extend(upd_heartbeat)
-            changed += n
-
-        for product_price in ProductPrice.objects.all().only("id", "amount"):
-            create, upd_changed, upd_heartbeat, n = _upsert_for_price(
-                product_price.amount,
-                product_price_id=product_price.id,
-                existing_by_currency=product_buckets.get(product_price.id, {}),
-            )
-            all_create.extend(create)
-            all_update_changed.extend(upd_changed)
-            all_update_heartbeat.extend(upd_heartbeat)
-            changed += n
+        sources: list[
+            tuple[
+                QuerySet[PlanPrice] | QuerySet[ProductPrice],
+                str,
+                dict[UUID, dict[str, LocalizedPrice]],
+            ]
+        ] = [
+            (PlanPrice.objects.all().only("id", "amount"), "plan_price_id", plan_buckets),
+            (
+                ProductPrice.objects.all().only("id", "amount"),
+                "product_price_id",
+                product_buckets,
+            ),
+        ]
+        for queryset, owner_kwarg, buckets in sources:
+            for price in queryset:
+                create, upd_changed, upd_heartbeat, n = _upsert_for_price(
+                    price.amount,
+                    existing_by_currency=buckets.get(price.id, {}),
+                    **{owner_kwarg: price.id},
+                )
+                all_create.extend(create)
+                all_update_changed.extend(upd_changed)
+                all_update_heartbeat.extend(upd_heartbeat)
+                changed += n
 
         if all_create:
             LocalizedPrice.objects.bulk_create(all_create)
         if all_update_changed:
-            LocalizedPrice.objects.bulk_update(
-                all_update_changed, ["amount_minor", "synced_at"]
-            )
+            LocalizedPrice.objects.bulk_update(all_update_changed, ["amount_minor", "synced_at"])
         if all_update_heartbeat:
             LocalizedPrice.objects.bulk_update(all_update_heartbeat, ["synced_at"])
 

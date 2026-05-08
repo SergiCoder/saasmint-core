@@ -376,9 +376,7 @@ class TestOAuthCallbackUnverifiedEmail:
         assert called_email == "victim@example.com"
         assert called_provider == "microsoft"
 
-    def test_unverified_email_collision_inactive_user_silently_drops(
-        self, client, _oauth_state
-    ):
+    def test_unverified_email_collision_inactive_user_silently_drops(self, client, _oauth_state):
         """Inactive existing user → same redirect as active, but NO email
         queued and NO SocialLinkRequest minted. Anti-enumeration: an
         attacker cannot probe whether a deactivated account exists."""
@@ -511,9 +509,7 @@ class TestOAuthCallbackStateValidation:
 
 @pytest.mark.django_db
 class TestOAuthCallbackParamValidation:
-    def test_unsupported_provider_redirects_to_frontend_error(
-        self, client, _oauth_state, settings
-    ):
+    def test_unsupported_provider_redirects_to_frontend_error(self, client, _oauth_state, settings):
         # Funneled through the same frontend error page as other callback
         # failures — no JSON body in a browser flow.
         settings.FRONTEND_URL = "https://localhost:3000"
@@ -522,9 +518,7 @@ class TestOAuthCallbackParamValidation:
             {"code": "auth-code", "state": "test-state"},
         )
         assert resp.status_code == 302
-        assert resp["Location"] == (
-            "https://localhost:3000/auth/error?error=invalid_provider"
-        )
+        assert resp["Location"] == ("https://localhost:3000/auth/error?error=invalid_provider")
 
     def test_missing_code_redirects_missing_code(self, client, _oauth_state):
         with _patch_exchange() as mock_exchange:
@@ -545,6 +539,21 @@ class TestOAuthCallbackParamValidation:
             )
         assert resp.status_code == 302
         assert "access_denied" in resp["Location"]
+        mock_exchange.assert_not_called()
+
+    def test_unknown_oauth_error_is_sanitized_to_exchange_failed(self, client, _oauth_state):
+        # Provider-specific or arbitrary error codes outside
+        # ``_FORWARDABLE_OAUTH_ERRORS`` must be replaced with
+        # ``exchange_failed`` so a hostile provider can't reflect arbitrary
+        # strings into the redirect URL.
+        with _patch_exchange() as mock_exchange:
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"error": "some_proprietary_error_code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "exchange_failed" in resp["Location"]
+        assert "some_proprietary_error_code" not in resp["Location"]
         mock_exchange.assert_not_called()
 
 

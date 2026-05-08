@@ -22,6 +22,16 @@ if not os.environ.get("JWT_SIGNING_KEY"):
         " lifecycle from SECRET_KEY)."
     )
 
+# Session-based DRF auth is a dev-only convenience for the browsable API;
+# enabling it in production exposes mutating endpoints to CSRF + cookie-based
+# attacks even when the JWT path is the documented entry point. The "dev-only"
+# label on the env var is too easy to miss — fail boot if it's set.
+if os.environ.get("ENABLE_SESSION_AUTH", "").lower() in ("1", "true", "yes"):
+    raise ImproperlyConfigured(
+        "ENABLE_SESSION_AUTH must not be set in production — it adds DRF "
+        "SessionAuthentication, which weakens the JWT-only auth surface."
+    )
+
 _HOST_RE = re.compile(r"^(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))*$")
 
 if not ALLOWED_HOSTS:  # noqa: F405  # ALLOWED_HOSTS imported via star import above; F405 expected

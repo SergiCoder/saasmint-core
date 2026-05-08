@@ -51,6 +51,11 @@ class TestUpdateOrgSerializer:
         assert not ser.is_valid()
         assert "logo_url" in ser.errors
 
+    def test_http_logo_url_rejected(self):
+        ser = UpdateOrgSerializer(data={"logo_url": "http://example.com/logo.png"})
+        assert not ser.is_valid()
+        assert "logo_url" in ser.errors
+
     def test_name_max_length_exceeded(self):
         ser = UpdateOrgSerializer(data={"name": "X" * 256})
         assert not ser.is_valid()
@@ -163,6 +168,8 @@ class TestInvitationSerializer:
         assert data["email"] == "invitee@example.com"
         assert data["role"] == "member"
         assert data["status"] == "pending"
-        assert data["invited_by"]["email"] == user.email
+        # Inviter email is no longer exposed — only ``id`` and ``full_name``.
+        assert data["invited_by"]["full_name"] == user.full_name
+        assert "email" not in data["invited_by"]
         assert "created_at" in data
         assert "expires_at" in data

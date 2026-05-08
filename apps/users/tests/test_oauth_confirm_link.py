@@ -152,9 +152,7 @@ class TestConfirmLinkRejection:
         owner = User.objects.create_user(
             email="owner@example.com", full_name="Owner", registration_method="google"
         )
-        SocialAccount.objects.create(
-            user=owner, provider="microsoft", provider_user_id="ms-shared"
-        )
+        SocialAccount.objects.create(user=owner, provider="microsoft", provider_user_id="ms-shared")
 
         intruder = User.objects.create_user(
             email="intruder@example.com",
@@ -177,9 +175,7 @@ class TestConfirmLinkIdempotency:
         user = User.objects.create_user(
             email="bob@example.com", full_name="Bob", registration_method="google"
         )
-        SocialAccount.objects.create(
-            user=user, provider="microsoft", provider_user_id="ms-1"
-        )
+        SocialAccount.objects.create(user=user, provider="microsoft", provider_user_id="ms-1")
         token = _mint(user)
 
         resp = api.post(URL, {"token": token}, format="json")

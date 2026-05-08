@@ -107,6 +107,16 @@ class InvalidOAuthCode(APIException):
     default_code = "invalid_code"
 
 
+def _token_payload(access_token: str, refresh_token: str) -> dict[str, str | int]:
+    """The wire shape of an authenticated token-pair response."""
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "Bearer",
+        "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
+    }
+
+
 def _token_response(
     user: User,
     refresh_token: str,
@@ -115,12 +125,7 @@ def _token_response(
     headers: dict[str, str] | None = None,
 ) -> Response:
     return Response(
-        {
-            "access_token": create_access_token(user),
-            "refresh_token": refresh_token,
-            "token_type": "Bearer",
-            "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
-        },
+        _token_payload(create_access_token(user), refresh_token),
         status=http_status,
         headers=headers,
     )
@@ -253,9 +258,9 @@ class ResendVerificationView(AuthPublicView):
         if user is not None:
             # Invalidate any prior unused verification tokens for this user so
             # only the freshest link works.
-            EmailVerificationToken.objects.filter(
-                user=user, used_at__isnull=True
-            ).update(used_at=datetime.now(UTC))
+            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).update(
+                used_at=datetime.now(UTC)
+            )
             token = create_email_verification_token(user)
             send_verification_email_task.delay(user.email, token)
 
@@ -419,6 +424,15 @@ class ChangePasswordView(AuthScopedView):
 # ---------------------------------------------------------------------------
 
 
+# Allowlist of error codes the OAuth callback is allowed to forward into the
+# ``?error=`` redirect param. The provider can return arbitrary strings, and a
+# direct GET to the callback URL can plant any value in the query — pinning to
+# a known set prevents reflected-XSS-via-error-text and audit-log spoofing.
+_FORWARDABLE_OAUTH_ERRORS = frozenset(
+    {"access_denied", "server_error", "temporarily_unavailable", "invalid_request"}
+)
+
+
 def _oauth_error_redirect(frontend_url: str, code: str) -> HttpResponseRedirect:
     """Send the browser back to the frontend's OAuth error page."""
     return HttpResponseRedirect(f"{frontend_url}/auth/error?{urlencode({'error': code})}")
@@ -473,10 +487,18 @@ class OAuthCallbackView(AuthPublicView):
         state = request.query_params.get("state")
         error = request.query_params.get("error")
 
-        if error:
-            return _oauth_error_redirect(frontend_url, error)
-
+        # Pop the state token unconditionally — any hit on the callback URL
+        # (success OR provider-error) consumes it. Otherwise an attacker who
+        # triggers the error branch via ``?error=access_denied`` would leave
+        # ``oauth_state`` in the session, and a follow-up navigation back to
+        # the legitimate callback would still find a "valid" state, opening
+        # a replay window.
         expected_state = request.session.pop("oauth_state", None)
+
+        if error:
+            forwarded = error if error in _FORWARDABLE_OAUTH_ERRORS else "exchange_failed"
+            return _oauth_error_redirect(frontend_url, forwarded)
+
         if not state or state != expected_state:
             return _oauth_error_redirect(frontend_url, "invalid_state")
 
@@ -527,9 +549,7 @@ class OAuthCallbackView(AuthPublicView):
                     full_name=user_info.full_name,
                     avatar_url=user_info.avatar_url,
                 )
-                send_social_link_email_task.delay(
-                    resolution.existing_user.email, token, provider
-                )
+                send_social_link_email_task.delay(resolution.existing_user.email, token, provider)
             return HttpResponseRedirect(f"{frontend_url}/auth/link-email-sent")
 
         user = resolution.user
@@ -605,14 +625,7 @@ class OAuthExchangeView(AuthPublicView):
         data = _consume_oauth_exchange(ser.validated_data["code"])
         if data is None:
             raise InvalidOAuthCode
-        return Response(
-            {
-                "access_token": data["access_token"],
-                "refresh_token": data["refresh_token"],
-                "token_type": "Bearer",
-                "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
-            }
-        )
+        return Response(_token_payload(data["access_token"], data["refresh_token"]))
 
 
 class OAuthConfirmLinkView(AuthPublicView):

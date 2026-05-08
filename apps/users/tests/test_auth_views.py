@@ -169,6 +169,29 @@ class TestRegisterView:
         user = User.objects.get(email="personalnoplan@example.com")
         assert not Subscription.objects.filter(user=user).exists()
 
+    def test_integrity_error_race_returns_409(self, api):
+        """Simulate the rare TOCTOU race where the email uniqueness check
+        passes but a concurrent INSERT from another process fires between the
+        ``email_is_registered`` guard and ``create_user``.
+
+        ``_register_user`` catches the ``IntegrityError`` and re-raises it as
+        ``EmailAlreadyExists`` (409) — the user gets an actionable error rather
+        than an unhandled 500. Lines 147-148 in auth_views.py."""
+        from django.db import IntegrityError
+
+        with patch(
+            "apps.users.auth_views.User.objects.create_user",
+            side_effect=IntegrityError("duplicate key value"),
+        ):
+            resp = api.post(
+                self.URL,
+                {"email": "race@example.com", "password": "securepass1", "full_name": "Racer"},
+                format="json",
+            )
+
+        assert resp.status_code == 409
+        assert resp.data["code"] == "email_exists"
+
 
 # ---------------------------------------------------------------------------
 # LoginView
@@ -441,6 +464,20 @@ class TestForgotPasswordView:
         assert resp.status_code == 200
         mock_delay.assert_called_once()
 
+    @patch("apps.users.tasks.send_password_reset_email_task.delay")
+    def test_forgot_password_case_insensitive_email_lookup(self, mock_delay, api, verified_user):
+        """``email__iexact`` lands on the functional lower-email index.
+
+        The PR switched the lookup from ``email=`` to ``email__iexact`` so a
+        mixed-case variant of the registered address (e.g. sent by a mobile
+        client that auto-capitalises) still triggers the reset email.
+        """
+        # verified_user's email is "verified@example.com" — submit it with
+        # a capital letter to exercise the iexact path.
+        resp = api.post(self.URL, {"email": "Verified@Example.com"}, format="json")
+        assert resp.status_code == 200
+        mock_delay.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # ResendVerificationView
@@ -466,9 +503,7 @@ class TestResendVerificationView:
 
         assert resp.status_code == 200
         mock_delay.assert_called_once()
-        assert (
-            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
-        )
+        assert EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
 
     @patch("apps.users.tasks.send_verification_email_task.delay")
     def test_resend_invalidates_prior_unused_tokens(self, mock_delay, api, db):
@@ -492,9 +527,7 @@ class TestResendVerificationView:
         old_row = EmailVerificationToken.objects.get(token_hash=old_hash)
         assert old_row.used_at is not None
         # exactly one fresh, unused token now exists
-        assert (
-            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
-        )
+        assert EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
 
     @patch("apps.users.tasks.send_verification_email_task.delay")
     def test_resend_double_invocation_only_freshest_works(self, mock_delay, api, db):
@@ -532,14 +565,10 @@ class TestResendVerificationView:
         assert first_row.used_at is not None
         assert second_row.used_at is None
         # Exactly one unused token (the freshest) survives.
-        assert (
-            EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
-        )
+        assert EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
 
     @patch("apps.users.tasks.send_verification_email_task.delay")
-    def test_resend_for_already_verified_user_is_noop(
-        self, mock_delay, api, verified_user
-    ):
+    def test_resend_for_already_verified_user_is_noop(self, mock_delay, api, verified_user):
         resp = api.post(self.URL, {"email": verified_user.email}, format="json")
         assert resp.status_code == 200
         mock_delay.assert_not_called()
@@ -666,9 +695,7 @@ class TestResetPasswordView:
         unverified.refresh_from_db()
         assert unverified.is_verified is True
 
-    def test_reset_password_keeps_verified_flag_for_already_verified(
-        self, api, verified_user
-    ):
+    def test_reset_password_keeps_verified_flag_for_already_verified(self, api, verified_user):
         token = create_password_reset_token(verified_user)
         resp = api.post(
             self.URL,
@@ -679,6 +706,24 @@ class TestResetPasswordView:
 
         verified_user.refresh_from_db()
         assert verified_user.is_verified is True
+
+    def test_reset_password_stamps_password_changed_at(self, api, verified_user):
+        """``password_changed_at`` must be set on a successful reset so that
+        access tokens minted before this moment are rejected by
+        JWTAuthentication's ``pwd_iat`` check.
+        """
+        assert verified_user.password_changed_at is None
+
+        token = create_password_reset_token(verified_user)
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "newpassword1"},
+            format="json",
+        )
+        assert resp.status_code == 200
+
+        verified_user.refresh_from_db()
+        assert verified_user.password_changed_at is not None
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +785,22 @@ class TestChangePasswordView:
         )
         assert resp.status_code == 400
 
+    def test_change_password_stamps_password_changed_at(self, authed_client, verified_user):
+        """``password_changed_at`` must be set on a successful change so that
+        access tokens minted before this moment are rejected by
+        JWTAuthentication's ``pwd_iat`` check.
+        """
+        assert verified_user.password_changed_at is None
+
+        authed_client.post(
+            self.URL,
+            {"current_password": "testpass123", "new_password": "newpassword1"},
+            format="json",
+        )
+
+        verified_user.refresh_from_db()
+        assert verified_user.password_changed_at is not None
+
 
 # ---------------------------------------------------------------------------
 # OAuthAuthorizeView
@@ -762,9 +823,7 @@ class TestOAuthAuthorizeView:
         assert resp.status_code == 302
         # Funneled through the same frontend error page as callback failures
         # — no JSON body in a browser flow.
-        assert resp["Location"] == (
-            "https://localhost:3000/auth/error?error=invalid_provider"
-        )
+        assert resp["Location"] == ("https://localhost:3000/auth/error?error=invalid_provider")
 
     def test_authorize_github_redirects(self, api, settings):
         settings.OAUTH_GITHUB_CLIENT_ID = "gh-client-id"

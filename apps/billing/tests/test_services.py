@@ -125,9 +125,7 @@ class TestOnProductCheckoutCompleted:
         assert CreditBalance.objects.get(org=org).balance == boost_product.credits
         assert not CreditBalance.objects.filter(user=org_member).exists()
 
-    def test_duplicate_session_id_is_noop_for_org_scope(
-        self, org_member, org, boost_product
-    ):
+    def test_duplicate_session_id_is_noop_for_org_scope(self, org_member, org, boost_product):
         """Same idempotency contract as the user-scoped duplicate test, but
         for ``org_id`` purchases: a replayed webhook with the same
         ``stripe_session_id`` must not double-credit the org. The unique
@@ -148,10 +146,7 @@ class TestOnProductCheckoutCompleted:
         # Org balance reflects exactly one grant — duplicate was suppressed.
         assert CreditBalance.objects.get(org=org).balance == boost_product.credits
         # And exactly one CreditTransaction row exists for that session id.
-        assert (
-            CreditTransaction.objects.filter(stripe_session_id="cs_team_dup").count()
-            == 1
-        )
+        assert CreditTransaction.objects.filter(stripe_session_id="cs_team_dup").count() == 1
         # No personal balance was minted as a side-effect.
         assert not CreditBalance.objects.filter(user=org_member).exists()
 
@@ -165,3 +160,55 @@ class TestOnProductCheckoutCompleted:
 
         async_to_sync(on_product_checkout_completed)("cs_x", uuid4(), user.id, None)
         assert not CreditBalance.objects.filter(user=user).exists()
+
+    def test_zero_credits_product_is_skipped(self, user):
+        """A product whose ``credits`` value is 0 (misconfigured or a
+        non-credit one-time product) must not grant any credits and must
+        not raise — the webhook path treats it as a no-op."""
+        from asgiref.sync import async_to_sync
+
+        from apps.billing.models import CreditBalance, Product, ProductType
+        from apps.billing.services import on_product_checkout_completed
+
+        zero_product = Product.objects.create(
+            name="Zero Credits",
+            type=ProductType.ONE_TIME,
+            credits=0,
+            is_active=True,
+        )
+        async_to_sync(on_product_checkout_completed)("cs_zero", zero_product.id, user.id, None)
+        assert not CreditBalance.objects.filter(user=user).exists()
+
+    def test_unknown_org_id_is_skipped(self, user, boost_product):
+        """When the webhook carries an ``org_id`` that no longer exists in
+        the DB (org deleted between checkout and webhook delivery), the
+        handler silently no-ops — no credits granted, no exception raised."""
+        from uuid import uuid4
+
+        from asgiref.sync import async_to_sync
+
+        from apps.billing.models import CreditBalance
+        from apps.billing.services import on_product_checkout_completed
+
+        phantom_org_id = uuid4()
+        async_to_sync(on_product_checkout_completed)(
+            "cs_noorg", boost_product.id, user.id, phantom_org_id
+        )
+        assert not CreditBalance.objects.filter(user=user).exists()
+
+    def test_unknown_user_id_is_skipped(self, boost_product):
+        """When the webhook's ``user_id`` no longer exists (account deleted
+        between checkout and webhook delivery), the handler no-ops."""
+        from uuid import uuid4
+
+        from asgiref.sync import async_to_sync
+
+        from apps.billing.models import CreditBalance
+        from apps.billing.services import on_product_checkout_completed
+
+        phantom_user_id = uuid4()
+        async_to_sync(on_product_checkout_completed)(
+            "cs_nouser", boost_product.id, phantom_user_id, None
+        )
+        # No balance row should be created anywhere.
+        assert CreditBalance.objects.count() == 0

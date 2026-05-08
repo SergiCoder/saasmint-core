@@ -19,12 +19,15 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
     from apps.billing.models import Subscription as SubscriptionModel
 
 import stripe
 from asgiref.sync import sync_to_async
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
+from saasmint_core.exceptions import DomainError
 
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
 from apps.users.models import User
@@ -60,6 +63,9 @@ def generate_unique_slug(name: str) -> str:
     # planner and fell back to a full-table scan. Filter to exact-match or
     # ``-<digits>`` in Python; anything else (e.g. ``foo-bar`` when
     # base=``foo``) is discarded, so the wider candidate set is harmless.
+    # The pattern depends on ``base`` so the ``re`` module's internal LRU
+    # cache can't share compiles across calls — compiling per-call is
+    # intentional, and cheap relative to the DB round-trip.
     _suffix_re = re.compile(rf"^{re.escape(base)}(?:-\d+)?$")
     existing = {
         slug
@@ -263,7 +269,7 @@ async def delete_org_on_subscription_cancel(org_id: UUID) -> None:
     delete_org_on_subscription_cancel_task.delay(str(org_id))
 
 
-class SeatCapReachedAtAcceptError(Exception):
+class SeatCapReachedAtAcceptError(DomainError):
     """Raised by ``accept_invitation`` when the team's seat cap is reached at commit.
 
     Re-raised by the view layer as a 409 Conflict so the invitee gets a
@@ -272,7 +278,7 @@ class SeatCapReachedAtAcceptError(Exception):
     """
 
 
-def _lock_active_team_sub(org: Org) -> SubscriptionModel | None:
+def lock_active_team_sub(org: Org) -> SubscriptionModel | None:
     """Return the org's active team Subscription with a row lock, or ``None``.
 
     Must be called inside an ``atomic()`` block — the ``SELECT FOR UPDATE``
@@ -334,7 +340,7 @@ def accept_invitation(
         # accept / invite create / member add against the same org serialises
         # behind us. Mirrors the lock taken at invite-creation time in
         # ``_validate_seat_limit``.
-        sub = _lock_active_team_sub(org)
+        sub = lock_active_team_sub(org)
         if sub is not None:
             counts = Org.objects.filter(pk=org.pk).aggregate(
                 member_count=Count("members", distinct=True),
@@ -369,6 +375,25 @@ def accept_invitation(
     return user, org
 
 
+def _personal_subs_outer_ref_qs() -> QuerySet[SubscriptionModel]:
+    """Subquery: rows in ``Subscription`` representing an active personal sub for
+    the current outer ``user_id``. Used in the cascade-delete predicates that
+    must preserve users still paying for their own plan. Lazy-imports the
+    billing model to keep ``apps.orgs`` from depending on ``apps.billing`` at
+    module load (see file-level docstring).
+    """
+    from django.db.models import OuterRef
+
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+    from apps.billing.models import Subscription as SubscriptionModel
+
+    return SubscriptionModel.objects.filter(
+        user_id=OuterRef("user_id"),
+        stripe_customer__user_id=OuterRef("user_id"),
+        status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+    )
+
+
 def _delete_org_db_only(org: Org) -> None:
     """Delete an org's DB state (invitations, members, users, the org row).
 
@@ -393,17 +418,10 @@ def _delete_org_db_only(org: Org) -> None:
         # silently nuke a user who's still paying for their own personal plan.
         # The NOT EXISTS subqueries are evaluated in the DB so we don't need
         # to materialize thousands of UUIDs into Python for the IN clause.
-        from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
-        from apps.billing.models import Subscription as SubscriptionModel
-
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id=org_id
         )
-        personal_subs = SubscriptionModel.objects.filter(
-            user_id=OuterRef("user_id"),
-            stripe_customer__user_id=OuterRef("user_id"),
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        )
+        personal_subs = _personal_subs_outer_ref_qs()
         deletable_user_ids = (
             OrgMember.objects.filter(org=org)
             .annotate(
@@ -497,18 +515,14 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
     # mirrors :func:`_delete_org_db_only` — a user is deleted only when they
     # have no membership outside this batch AND no active personal sub.
     with transaction.atomic():
-        Invitation.objects.filter(
-            org_id__in=org_ids, status=InvitationStatus.PENDING
-        ).update(status=InvitationStatus.CANCELLED)
+        Invitation.objects.filter(org_id__in=org_ids, status=InvitationStatus.PENDING).update(
+            status=InvitationStatus.CANCELLED
+        )
 
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id__in=org_ids
         )
-        personal_subs = SubscriptionModel.objects.filter(
-            user_id=OuterRef("user_id"),
-            stripe_customer__user_id=OuterRef("user_id"),
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        )
+        personal_subs = _personal_subs_outer_ref_qs()
         deletable_user_ids = (
             OrgMember.objects.filter(org_id__in=org_ids)
             .annotate(
@@ -550,5 +564,3 @@ def _get_active_stripe_sub(org_id: UUID) -> SubscriptionModel | None:
         .order_by("-created_at")
         .first()
     )
-
-

@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from django.core.validators import URLValidator
 from rest_framework import serializers
 
 from apps.orgs.models import Invitation, Org, OrgMember, OrgRole
 from apps.users.models import User
 
-# Roles that can be assigned via invitation (owner is never invited)
-_INVITABLE_ROLES = [
+# Reject non-HTTPS schemes (``javascript:``, ``data:``, ``http:``) so a stored
+# logo_url cannot be used to redirect the browser into a phishing flow or leak
+# data over plain HTTP when the page renders ``<img src=...>``. Submissions
+# must use HTTPS — covers every reasonable hosted-logo CDN.
+_HTTPS_ONLY = URLValidator(schemes=["https"])
+
+# Roles that can be assigned by admins/owners — owner is set only via the
+# dedicated ownership-transfer endpoint, never via invitation or member PATCH.
+_ASSIGNABLE_ROLES = [
     (OrgRole.ADMIN, "Admin"),
     (OrgRole.MEMBER, "Member"),
 ]
@@ -23,7 +31,7 @@ class OrgSerializer(serializers.ModelSerializer[Org]):
 
 class UpdateOrgSerializer(serializers.Serializer[Org]):
     name = serializers.CharField(max_length=255, required=False)
-    logo_url = serializers.URLField(required=False, allow_null=True)
+    logo_url = serializers.URLField(required=False, allow_null=True, validators=[_HTTPS_ONLY])
 
 
 class _MemberUserSerializer(serializers.ModelSerializer[User]):
@@ -35,6 +43,7 @@ class _MemberUserSerializer(serializers.ModelSerializer[User]):
 
 class OrgMemberSerializer(serializers.ModelSerializer[OrgMember]):
     user = _MemberUserSerializer(read_only=True)
+    org = OrgSerializer(read_only=True)
 
     class Meta:
         model = OrgMember
@@ -43,28 +52,65 @@ class OrgMemberSerializer(serializers.ModelSerializer[OrgMember]):
 
 
 class UpdateMemberSerializer(serializers.Serializer[OrgMember]):
-    role = serializers.ChoiceField(choices=OrgRole.choices, required=False)
+    role = serializers.ChoiceField(choices=_ASSIGNABLE_ROLES, required=False)
     is_billing = serializers.BooleanField(required=False)
 
 
 class _InvitedBySerializer(serializers.ModelSerializer[User]):
+    """Inviter shape for authenticated invitation listings.
+
+    Excludes ``email`` — leaking the inviter's address to invitees (or any
+    party holding the token) is not required by the accept-page UX, and
+    the unauthenticated public detail view reuses this shape.
+    """
+
     class Meta:
         model = User
-        fields = ("id", "email", "full_name")
+        fields = ("id", "full_name")
         read_only_fields = fields
 
 
 class InvitationSerializer(serializers.ModelSerializer[Invitation]):
+    """Authenticated view of an invitation (admin listings, create response).
+
+    The unauthenticated detail view uses :class:`PublicInvitationSerializer`
+    instead, which strips fields that would leak the invitee's email.
+    """
+
     invited_by = _InvitedBySerializer(read_only=True)
-    org_name = serializers.CharField(source="org.name", read_only=True)
+    org = OrgSerializer(read_only=True)
 
     class Meta:
         model = Invitation
         fields = (
             "id",
             "org",
-            "org_name",
             "email",
+            "role",
+            "status",
+            "invited_by",
+            "created_at",
+            "expires_at",
+        )
+        read_only_fields = fields
+
+
+class PublicInvitationSerializer(serializers.ModelSerializer[Invitation]):
+    """Unauthenticated GET /invitations/{token}/ shape — no PII.
+
+    Anyone holding the token can read this. ``email`` (the invitee address)
+    is dropped so a leaked token cannot enumerate addresses; the inviter is
+    reduced to ``full_name`` via :class:`_InvitedBySerializer`.
+    """
+
+    invited_by = _InvitedBySerializer(read_only=True)
+    org = OrgSerializer(read_only=True)
+
+    class Meta:
+        model = Invitation
+        fields = (
+            "id",
+            "org",
             "role",
             "status",
             "invited_by",
@@ -76,7 +122,7 @@ class InvitationSerializer(serializers.ModelSerializer[Invitation]):
 
 class CreateInvitationSerializer(serializers.Serializer[Invitation]):
     email = serializers.EmailField()
-    role = serializers.ChoiceField(choices=_INVITABLE_ROLES, default=OrgRole.MEMBER)
+    role = serializers.ChoiceField(choices=_ASSIGNABLE_ROLES, default=OrgRole.MEMBER)
 
 
 class InvitationAcceptSerializer(serializers.Serializer[Invitation]):

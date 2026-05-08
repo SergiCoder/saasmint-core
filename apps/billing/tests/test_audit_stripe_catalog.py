@@ -145,9 +145,7 @@ class TestAuditStripeCatalogCommand:
             product_id="prod_in_use",
             metadata={"kind": "plan", "local_plan_id": "00000000-0000-0000-0000-000000000002"},
         )
-        mock_price = _make_price(
-            price_id="price_in_use", product_id="prod_in_use", recurring=True
-        )
+        mock_price = _make_price(price_id="price_in_use", product_id="prod_in_use", recurring=True)
         active_sub = MagicMock()
         mock_subs = MagicMock()
         mock_subs.data = [active_sub]
