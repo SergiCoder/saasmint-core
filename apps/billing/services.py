@@ -19,31 +19,6 @@ from apps.users.models import User
 logger = logging.getLogger(__name__)
 
 
-def get_credit_balance(
-    *,
-    user: User | None = None,
-    org: Org | None = None,
-    org_id: UUID | None = None,
-) -> int:
-    """Return the current credit balance for a user or org (0 if none).
-
-    Accepts ``org_id`` as a lightweight alternative to ``org`` so callers that
-    already know the id (e.g. the credits view) don't have to hydrate the full
-    ``Org`` row just to filter by FK.
-    """
-    provided = sum(x is not None for x in (user, org, org_id))
-    if provided != 1:
-        raise ValueError("Exactly one of user, org, or org_id must be provided.")
-    if user is not None:
-        row = CreditBalance.objects.filter(user=user).only("balance").first()
-    elif org is not None:
-        row = CreditBalance.objects.filter(org=org).only("balance").first()
-    else:
-        assert org_id is not None  # noqa: S101  (narrowed by `provided == 1` above)
-        row = CreditBalance.objects.filter(org_id=org_id).only("balance").first()
-    return row.balance if row is not None else 0
-
-
 def grant_credits_for_session(
     *,
     stripe_session_id: str,
