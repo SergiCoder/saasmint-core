@@ -148,9 +148,7 @@ def _resolve_billing_currency(
     requested = query_currency.lower() if query_currency else None
     if requested is not None:
         if requested not in SUPPORTED_CURRENCIES:
-            raise ValidationError(
-                {"currency": [f"Unsupported currency: {query_currency!r}."]}
-            )
+            raise ValidationError({"currency": [f"Unsupported currency: {query_currency!r}."]})
     user_pref: str | None = None
     if user is not None and user.preferred_currency:
         candidate = user.preferred_currency.lower()
@@ -267,9 +265,11 @@ def _localized_for_currency(
         filter_kwargs["plan_price"] = price
     else:
         filter_kwargs["product_price"] = price
-    return LocalizedPrice.objects.filter(**filter_kwargs).only(
-        "stripe_price_id", "amount_minor", "currency"
-    ).first()
+    return (
+        LocalizedPrice.objects.filter(**filter_kwargs)
+        .only("stripe_price_id", "amount_minor", "currency")
+        .first()
+    )
 
 
 def _resolve_stripe_price_id(price: PlanPrice | ProductPrice, currency: str) -> str:
@@ -401,7 +401,6 @@ async def _resolve_billing_customer(
     repos = get_billing_repos()
     effective = context or await _default_subscription_context_async(user)
     if effective == PlanContext.TEAM.value:
-
         if org_id is None:
             membership = (
                 await OrgMember.objects.filter(
@@ -444,9 +443,7 @@ async def _get_customer_and_paid_subscription(
     return customer, sub, sub.stripe_id
 
 
-def _get_active_plan_price(
-    plan_price_id: UUID, *, currency: str | None = None
-) -> PlanPrice:
+def _get_active_plan_price(plan_price_id: UUID, *, currency: str | None = None) -> PlanPrice:
     """Validate a PlanPrice with *plan_price_id* exists and belongs to an active plan.
 
     When *currency* is non-USD, prefetch the matching :class:`LocalizedPrice`
@@ -454,9 +451,7 @@ def _get_active_plan_price(
     ``_resolve_plan_*`` helpers then read it from the cache instead of
     firing a second round-trip per checkout / patch.
     """
-    qs = PlanPrice.objects.select_related("plan").filter(
-        id=plan_price_id, plan__is_active=True
-    )
+    qs = PlanPrice.objects.select_related("plan").filter(id=plan_price_id, plan__is_active=True)
     if currency and currency != "usd":
         qs = qs.prefetch_related(_resolved_localized_prefetch(currency))
     plan_price = qs.first()
@@ -535,9 +530,7 @@ class ProductListView(APIView):
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
-        responses=paginated_response_schema(
-            "ProductListResponse", ProductSerializer(many=True)
-        ),
+        responses=paginated_response_schema("ProductListResponse", ProductSerializer(many=True)),
         description=(
             "List all active one-time products with prices. Emits the DRF paginated envelope"
             " (``count``/``next``/``previous``/``results``) — the catalog is bounded,"
@@ -606,9 +599,7 @@ def _validate_team_checkout(user: User, data: dict[str, Any]) -> None:
     fast-path UX guard.
     """
 
-    already_owns_org = OrgMember.objects.filter(
-        user_id=user.id, role=OrgRole.OWNER
-    ).exists()
+    already_owns_org = OrgMember.objects.filter(user_id=user.id, role=OrgRole.OWNER).exists()
     if already_owns_org:
         raise _OrgAlreadyOwned
 
@@ -616,9 +607,7 @@ def _validate_team_checkout(user: User, data: dict[str, Any]) -> None:
         raise ValidationError({"org_name": ["Required for team plans."]})
 
 
-def _build_checkout_metadata(
-    *, is_team: bool, data: dict[str, Any]
-) -> dict[str, str] | None:
+def _build_checkout_metadata(*, is_team: bool, data: dict[str, Any]) -> dict[str, str] | None:
     """Build the Stripe Checkout Session metadata for plan checkouts.
 
     Returns ``None`` for personal-plan checkouts (no metadata needed).
@@ -629,9 +618,7 @@ def _build_checkout_metadata(
         return None
     return {
         "org_name": data["org_name"],
-        "keep_personal_subscription": "true"
-        if data["keep_personal_subscription"]
-        else "false",
+        "keep_personal_subscription": "true" if data["keep_personal_subscription"] else "false",
     }
 
 
@@ -660,8 +647,9 @@ class CheckoutSessionView(BillingScopedView):
         },
         description=(
             "Create a Stripe Checkout Session. Returns ``201 Created`` with the"
-            " Stripe-hosted checkout URL in the body (``url``) — clients should"
-            " redirect the user there to complete payment."
+            " Stripe-hosted checkout URL in both the body (``url``) and the"
+            " ``Location`` response header — clients should redirect the user"
+            " there to complete payment."
         ),
         tags=["billing"],
     )
@@ -674,9 +662,7 @@ class CheckoutSessionView(BillingScopedView):
         # Resolve currency first so _get_active_plan_price can prefetch the
         # matching LocalizedPrice in the same query — _resolve_stripe_price_id
         # then reads from the prefetched cache.
-        billing_currency, _ = _resolve_billing_currency(
-            request.query_params.get("currency"), user
-        )
+        billing_currency, _ = _resolve_billing_currency(request.query_params.get("currency"), user)
         plan_price = _get_active_plan_price(data["plan_price_id"], currency=billing_currency)
         quantity = _validate_quantity_for_plan(plan_price, data["seat_limit"])
         stripe_price_id = _resolve_stripe_price_id(plan_price, billing_currency)
@@ -728,9 +714,7 @@ class CheckoutSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response(
-            {"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url}
-        )
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 class PortalSessionView(BillingScopedView):
@@ -819,9 +803,7 @@ class PortalSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response(
-            {"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url}
-        )
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 def _resolve_product_purchase_context(user: User, context: str | None) -> UUID | None:
@@ -920,9 +902,7 @@ class ProductCheckoutSessionView(BillingScopedView):
 
         # Currency resolved first so the LocalizedPrice prefetch lands in
         # the same query as _get_active_product_price.
-        billing_currency, _ = _resolve_billing_currency(
-            request.query_params.get("currency"), user
-        )
+        billing_currency, _ = _resolve_billing_currency(request.query_params.get("currency"), user)
         product_price = _get_active_product_price(
             data["product_price_id"], currency=billing_currency
         )
@@ -956,9 +936,7 @@ class ProductCheckoutSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response(
-            {"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url}
-        )
+        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
 
 
 class CreditBalanceView(BillingScopedView):
@@ -1010,9 +988,7 @@ class CreditBalanceView(BillingScopedView):
         predicate = Q(user_id=user.id)
         if org_id is not None and context != PlanContext.PERSONAL.value:
             predicate |= Q(org_id=org_id)
-        rows = list(
-            CreditBalance.objects.filter(predicate).only("balance", "user_id", "org_id")
-        )
+        rows = list(CreditBalance.objects.filter(predicate).only("balance", "user_id", "org_id"))
 
         if context == PlanContext.PERSONAL.value:
             user_balance = next((r.balance for r in rows if r.user_id == user.id), 0)
@@ -1028,9 +1004,7 @@ class CreditBalanceView(BillingScopedView):
                 # Surface leftover personal credits from a pre-upgrade purchase
                 # (rule 16). Only emit when > 0 so we don't spam zero-rows for
                 # org members who never had a personal balance.
-                personal_balance = next(
-                    (r.balance for r in rows if r.user_id == user.id), 0
-                )
+                personal_balance = next((r.balance for r in rows if r.user_id == user.id), 0)
                 if personal_balance > 0:
                     balances.append({"balance": personal_balance, "scope": "user"})
             else:
@@ -1072,14 +1046,13 @@ def _get_active_subscriptions_for_user(
     # ``stripe_customer`` is select_related so ``_refetch_subscription_after_mutation``
     # can discriminate team vs personal subs via ``sub.stripe_customer.org_id``
     # without firing an FK lookup per sub.
-    base = SubscriptionModel.objects.select_related(
-        "plan__price", "scheduled_plan__price", "stripe_customer"
-    ).prefetch_related(
-        *_localized_subscription_prefetches(currency, preferred_currency)
-    ).annotate(
-        org_member_count=Subquery(org_member_count_sq)
-    ).filter(
-        status__in=ACTIVE_SUBSCRIPTION_STATUSES
+    base = (
+        SubscriptionModel.objects.select_related(
+            "plan__price", "scheduled_plan__price", "stripe_customer"
+        )
+        .prefetch_related(*_localized_subscription_prefetches(currency, preferred_currency))
+        .annotate(org_member_count=Subquery(org_member_count_sq))
+        .filter(status__in=ACTIVE_SUBSCRIPTION_STATUSES)
     )
     subs: list[SubscriptionModel] = []
     seen_ids: set[UUID] = set()
@@ -1169,7 +1142,6 @@ def _resolve_mutation_context(request: Request, user: User) -> tuple[str, UUID |
     explicit = _validate_subscription_context(request.query_params.get("context"))
     if explicit is not None:
         return explicit, _require_billing_authority(user, context=explicit)
-
 
     membership = OrgMember.objects.filter(user_id=user.id).only("org_id", "is_billing").first()
     if membership is None:
@@ -1486,9 +1458,7 @@ class ScheduledChangeView(BillingScopedView):
                     " their active org membership."
                 )
             ),
-            404: OpenApiResponse(
-                description="No active subscription in the resolved context."
-            ),
+            404: OpenApiResponse(description="No active subscription in the resolved context."),
         },
         description=(
             "Cancel a pending plan-switch (deferred downgrade) on the active"
