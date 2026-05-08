@@ -170,32 +170,49 @@ def _consume_one_time_token(
     """
     token_hash = _hash_token(raw_token)
     now = datetime.now(UTC)
+    # Fetch with the user FK joined so a successful consume does not need a
+    # second SELECT to materialise ``obj.user``. The state values read here
+    # are still verified by the conditional UPDATE below — the SELECT is
+    # for diagnostics and FK-prefetch, never the source of truth on whether
+    # the token is consumable.
+    obj = model_class.objects.select_related("user").filter(token_hash=token_hash).first()
+    if obj is None:
+        raise AuthenticationFailed({"detail": f"Invalid {label} token.", "code": "invalid_token"})
+    if obj.used_at is not None:
+        raise AuthenticationFailed(
+            {
+                "detail": f"{label.capitalize()} token has already been used.",
+                "code": "token_used",
+            }
+        )
+    if obj.expires_at <= now:
+        raise AuthenticationFailed(
+            {
+                "detail": f"{label.capitalize()} token has expired.",
+                "code": "token_expired",
+            }
+        )
+
+    # Atomic conditional UPDATE — two parallel redeems can never both win
+    # because at most one row matches the predicate. A ``0`` here means the
+    # losing side of a TOCTOU race; surface it as ``token_used``.
     updated = model_class.objects.filter(
         token_hash=token_hash,
         used_at__isnull=True,
         expires_at__gt=now,
     ).update(used_at=now)
     if updated == 0:
-        # The atomic UPDATE matched zero rows. Inspect the row to disambiguate
-        # so callers see ``token_used`` / ``token_expired`` / ``invalid_token``
-        # — the existing API contract clients depend on.
-        existing = model_class.objects.filter(token_hash=token_hash).first()
-        if existing is None:
-            code = "invalid_token"
-            detail = f"Invalid {label} token."
-        elif existing.used_at is not None:
-            code = "token_used"
-            detail = f"{label.capitalize()} token has already been used."
-        else:
-            code = "token_expired"
-            detail = f"{label.capitalize()} token has expired."
-        raise AuthenticationFailed({"detail": detail, "code": code})
-
-    obj = model_class.objects.select_related("user").get(token_hash=token_hash)
+        raise AuthenticationFailed(
+            {
+                "detail": f"{label.capitalize()} token has already been used.",
+                "code": "token_used",
+            }
+        )
 
     if not obj.user.is_active:
         raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
 
+    obj.used_at = now
     return obj
 
 

@@ -88,6 +88,13 @@ class OrgMember(models.Model):
                 name="idx_orgmember_billing_user",
                 condition=models.Q(is_billing=True),
             ),
+            # Plain (user) index covers the membership-existence checks fired
+            # by ``_default_subscription_context``, ``_resolve_mutation_context``,
+            # ``CreditBalanceView``, and ``_get_active_subscriptions_for_user``.
+            # Those queries don't filter on ``is_billing`` so the partial index
+            # above is unusable for them — without this index the planner falls
+            # back to a sequential scan as the table grows.
+            models.Index(fields=["user"], name="idx_orgmember_user"),
         ]
 
     def __str__(self) -> str:
