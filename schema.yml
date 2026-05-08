@@ -450,8 +450,8 @@ paths:
     post:
       operationId: billing_checkout_sessions_create
       description: Create a Stripe Checkout Session. Returns ``201 Created`` with
-        the Stripe-hosted checkout URL in the body (``url``) — clients should redirect
-        the user there to complete payment.
+        the Stripe-hosted checkout URL in both the body (``url``) and the ``Location``
+        response header — clients should redirect the user there to complete payment.
       parameters:
       - in: query
         name: currency
@@ -782,11 +782,10 @@ paths:
     delete:
       operationId: billing_subscriptions_me_destroy
       description: Schedule subscription cancellation at the end of the current billing
-        period. Returns 200 OK with the updated subscription representation in the
-        body — the subscription remains active until the period end timestamp returned
-        in the body. Mirrors the 200-with-body convention used by ``DELETE /subscriptions/me/scheduled-change/``
-        so both DELETEs are consistent. Use ``?context=personal`` to cancel the personal
-        sub when the caller also holds a concurrent team sub.
+        period. Returns 204 No Content; the subscription remains active until the
+        period end timestamp. Clients refresh state via ``GET /subscriptions/me/``.
+        Use ``?context=personal`` to cancel the personal sub when the caller also
+        holds a concurrent team sub.
       parameters:
       - in: query
         name: context
@@ -811,12 +810,9 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Subscription'
-          description: ''
+        '204':
+          description: Cancellation scheduled. Clients should call ``GET /subscriptions/me/``
+            to fetch the updated subscription state.
         '400':
           description: The ``?context=`` query param is set to a value other than
             ``personal``/``team``.
@@ -830,8 +826,8 @@ paths:
     delete:
       operationId: billing_subscriptions_me_scheduled_change_destroy
       description: Cancel a pending plan-switch (deferred downgrade) on the active
-        subscription. Idempotent — returns the unchanged subscription when no schedule
-        exists. Same context-routing and is_billing gate as PATCH/DELETE on ``/me/``.
+        subscription. Idempotent — 204 No Content whether or not a schedule was active.
+        Same context-routing and is_billing gate as PATCH/DELETE on ``/me/``.
       parameters:
       - in: query
         name: context
@@ -845,23 +841,15 @@ paths:
           or ``team``. Defaults to ``team`` for org-member callers and ``personal``
           otherwise. Ignored on GET — that endpoint always returns every active subscription
           the caller can see.
-      - in: query
-        name: currency
-        schema:
-          type: string
-        description: ISO 4217 currency code (e.g. 'eur'). Overrides user preference.
       tags:
       - billing
       security:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Subscription'
-          description: ''
+        '204':
+          description: Pending schedule released (or no-op if none was active). Clients
+            refresh state via ``GET /subscriptions/me/``.
         '400':
           description: The ``?context=`` query param is set to a value other than
             ``personal``/``team``.
@@ -914,7 +902,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Invitation'
+                $ref: '#/components/schemas/PublicInvitation'
           description: ''
   /api/v1/invitations/{token}/accept/:
     post:
@@ -1268,7 +1256,12 @@ paths:
   /api/v1/orgs/{org_id}/members/{member_user_id}/:
     patch:
       operationId: orgs_members_partial_update
-      description: PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/.
+      description: |-
+        PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/.
+
+        DELETE switches to the tighter ``orgs_member_delete`` throttle scope
+        because it hard-deletes the target user account — a compromised admin
+        token shouldn't get the full ``orgs`` budget for cascading deletes.
       parameters:
       - in: path
         name: member_user_id
@@ -1576,17 +1569,19 @@ components:
         * `year` - Yearly
     Invitation:
       type: object
+      description: |-
+        Authenticated view of an invitation (admin listings, create response).
+
+        The unauthenticated detail view uses :class:`PublicInvitationSerializer`
+        instead, which strips fields that would leak the invitee's email.
       properties:
         id:
           type: string
           format: uuid
           readOnly: true
         org:
-          type: string
-          format: uuid
-          readOnly: true
-        org_name:
-          type: string
+          allOf:
+          - $ref: '#/components/schemas/Org'
           readOnly: true
         email:
           type: string
@@ -1598,7 +1593,7 @@ components:
           readOnly: true
         status:
           allOf:
-          - $ref: '#/components/schemas/InvitationStatusEnum'
+          - $ref: '#/components/schemas/Status58bEnum'
           readOnly: true
           default: pending
         invited_by:
@@ -1620,7 +1615,6 @@ components:
       - id
       - invited_by
       - org
-      - org_name
       - role
       - status
     InvitationAcceptRequest:
@@ -1667,20 +1661,6 @@ components:
       - next
       - previous
       - results
-    InvitationStatusEnum:
-      enum:
-      - pending
-      - accepted
-      - expired
-      - cancelled
-      - declined
-      type: string
-      description: |-
-        * `pending` - Pending
-        * `accepted` - Accepted
-        * `expired` - Expired
-        * `cancelled` - Cancelled
-        * `declined` - Declined
     LoginRequest:
       type: object
       properties:
@@ -1811,8 +1791,8 @@ components:
           format: uuid
           readOnly: true
         org:
-          type: string
-          format: uuid
+          allOf:
+          - $ref: '#/components/schemas/Org'
           readOnly: true
         user:
           allOf:
@@ -1820,7 +1800,7 @@ components:
           readOnly: true
         role:
           allOf:
-          - $ref: '#/components/schemas/Role978Enum'
+          - $ref: '#/components/schemas/OrgMemberRoleEnum'
           readOnly: true
         is_billing:
           type: boolean
@@ -1858,11 +1838,21 @@ components:
       - next
       - previous
       - results
+    OrgMemberRoleEnum:
+      enum:
+      - owner
+      - admin
+      - member
+      type: string
+      description: |-
+        * `owner` - Owner
+        * `admin` - Admin
+        * `member` - Member
     PatchedUpdateMemberRequest:
       type: object
       properties:
         role:
-          $ref: '#/components/schemas/Role978Enum'
+          $ref: '#/components/schemas/Role13fEnum'
         is_billing:
           type: boolean
     PatchedUpdateOrgRequest:
@@ -2198,6 +2188,51 @@ components:
       - id
       - local_currency
       - local_display_amount
+    PublicInvitation:
+      type: object
+      description: |-
+        Unauthenticated GET /invitations/{token}/ shape — no PII.
+
+        Anyone holding the token can read this. ``email`` (the invitee address)
+        is dropped so a leaked token cannot enumerate addresses; the inviter is
+        reduced to ``full_name`` via :class:`_InvitedBySerializer`.
+      properties:
+        id:
+          type: string
+          format: uuid
+          readOnly: true
+        org:
+          allOf:
+          - $ref: '#/components/schemas/Org'
+          readOnly: true
+        role:
+          allOf:
+          - $ref: '#/components/schemas/Role13fEnum'
+          readOnly: true
+        status:
+          allOf:
+          - $ref: '#/components/schemas/Status58bEnum'
+          readOnly: true
+        invited_by:
+          allOf:
+          - $ref: '#/components/schemas/_InvitedBy'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        expires_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - expires_at
+      - id
+      - invited_by
+      - org
+      - role
+      - status
     RefreshRequest:
       type: object
       properties:
@@ -2269,16 +2304,6 @@ components:
       description: |-
         * `admin` - Admin
         * `member` - Member
-    Role978Enum:
-      enum:
-      - owner
-      - admin
-      - member
-      type: string
-      description: |-
-        * `owner` - Owner
-        * `admin` - Admin
-        * `member` - Member
     SourceEnum:
       enum:
       - landing-cta
@@ -2287,6 +2312,20 @@ components:
       description: |-
         * `landing-cta` - landing-cta
         * `contact-page` - contact-page
+    Status58bEnum:
+      enum:
+      - pending
+      - accepted
+      - expired
+      - cancelled
+      - declined
+      type: string
+      description: |-
+        * `pending` - Pending
+        * `accepted` - Accepted
+        * `expired` - Expired
+        * `cancelled` - Cancelled
+        * `declined` - Declined
     Subscription:
       type: object
       properties:
@@ -2549,20 +2588,21 @@ components:
       - avatar
     _InvitedBy:
       type: object
+      description: |-
+        Inviter shape for authenticated invitation listings.
+
+        Excludes ``email`` — leaking the inviter's address to invitees (or any
+        party holding the token) is not required by the accept-page UX, and
+        the unauthenticated public detail view reuses this shape.
       properties:
         id:
           type: string
           format: uuid
           readOnly: true
-        email:
-          type: string
-          format: email
-          readOnly: true
         full_name:
           type: string
           readOnly: true
       required:
-      - email
       - full_name
       - id
     _MemberUser:

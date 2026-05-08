@@ -30,6 +30,7 @@ These suppressions are intentional and stem from upstream library limitations or
 - `# noqa: RUF012` — `Meta.constraints` / `Meta.indexes` must be mutable lists; `ClassVar` doesn't apply.
 - `# noqa: ANN401` — `*args`/`**kwargs` forwarded to parent methods; `Any` is appropriate.
 - `# noqa: F403` / `F405` / `E402` — star imports in settings files; standard Django inheritance pattern.
+- `# noqa: S101` — `assert` used as an invariant narrowing hint (e.g. "exactly-one-of" guards, post-branch type narrowing). Always accompanied by an inline comment explaining which invariant is being asserted.
 - `# noqa: S106` / `S107` — hardcoded passwords in test fixtures.
 - `# noqa: F401` — side-effect import to register drf-spectacular auth extension.
 
