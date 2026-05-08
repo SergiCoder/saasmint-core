@@ -106,7 +106,7 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 | `OAUTH_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret (optional) |
 | `OAUTH_MICROSOFT_CLIENT_ID` | Microsoft OAuth app client ID (optional) |
 | `OAUTH_MICROSOFT_CLIENT_SECRET` | Microsoft OAuth app client secret (optional) |
-| `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only) |
+| `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only — production boot fails if this is set) |
 
 ## Project structure
 
