@@ -169,6 +169,29 @@ class TestRegisterView:
         user = User.objects.get(email="personalnoplan@example.com")
         assert not Subscription.objects.filter(user=user).exists()
 
+    def test_integrity_error_race_returns_409(self, api):
+        """Simulate the rare TOCTOU race where the email uniqueness check
+        passes but a concurrent INSERT from another process fires between the
+        ``email_is_registered`` guard and ``create_user``.
+
+        ``_register_user`` catches the ``IntegrityError`` and re-raises it as
+        ``EmailAlreadyExists`` (409) — the user gets an actionable error rather
+        than an unhandled 500. Lines 147-148 in auth_views.py."""
+        from django.db import IntegrityError
+
+        with patch(
+            "apps.users.auth_views.User.objects.create_user",
+            side_effect=IntegrityError("duplicate key value"),
+        ):
+            resp = api.post(
+                self.URL,
+                {"email": "race@example.com", "password": "securepass1", "full_name": "Racer"},
+                format="json",
+            )
+
+        assert resp.status_code == 409
+        assert resp.data["code"] == "email_exists"
+
 
 # ---------------------------------------------------------------------------
 # LoginView

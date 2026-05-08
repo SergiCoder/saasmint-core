@@ -2673,6 +2673,55 @@ class TestCreditBalanceView:
         assert resp.status_code == 200
         assert resp.data == {"balances": [{"balance": 42, "scope": "org"}]}
 
+    def test_explicit_personal_context_returns_user_balance_for_org_member(
+        self, org_member_user, team_org_setup
+    ):
+        """``?context=personal`` for an org member returns only the user-scoped
+        balance — the org scope is bypassed. This exercises the ``context ==
+        PlanContext.PERSONAL.value`` branch (line 1024 in views.py)."""
+        from apps.billing.models import CreditBalance
+
+        org, _, _ = team_org_setup
+        CreditBalance.objects.create(org=org, balance=500)
+        CreditBalance.objects.create(user=org_member_user, balance=33)
+        client = APIClient()
+        client.force_authenticate(user=org_member_user)
+
+        resp = client.get("/api/v1/billing/credits/me/?context=personal")
+        assert resp.status_code == 200
+        assert resp.data == {"balances": [{"balance": 33, "scope": "user"}]}
+
+    def test_team_context_returns_404_when_user_not_in_any_org(self, authed_client, user):
+        """``?context=team`` for a user who is not a member of any org returns
+        404 — exercises the ``org_id is None`` guard (line 1026-1028 in views.py)."""
+        resp = authed_client.get("/api/v1/billing/credits/me/?context=team")
+        assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestTeamQuantityValidation:
+    """``_validate_quantity_for_context`` raises for team plans with 0 seats.
+
+    The ``< MIN_TEAM_SEATS`` branch (line 326 in views.py) is only reachable
+    for team plans — the personal-plan path is already covered by existing
+    tests (quantity > 1 → 400). Sending seat_limit=0 for a team plan must
+    also return 400."""
+
+    def test_team_plan_with_zero_seats_returns_400(self, authed_client, team_plan, team_plan_price):
+        """seat_limit=0 is below MIN_TEAM_SEATS (1) and must be rejected."""
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "seat_limit": 0,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                "org_name": "Zero Seats Org",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+
 
 @pytest.mark.django_db
 class TestPatchSubscriptionDeferredDowngrade:

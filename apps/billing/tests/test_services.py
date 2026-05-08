@@ -165,3 +165,108 @@ class TestOnProductCheckoutCompleted:
 
         async_to_sync(on_product_checkout_completed)("cs_x", uuid4(), user.id, None)
         assert not CreditBalance.objects.filter(user=user).exists()
+
+    def test_zero_credits_product_is_skipped(self, user):
+        """A product whose ``credits`` value is 0 (misconfigured or a
+        non-credit one-time product) must not grant any credits and must
+        not raise — the webhook path treats it as a no-op."""
+        from asgiref.sync import async_to_sync
+
+        from apps.billing.models import CreditBalance, Product, ProductType
+        from apps.billing.services import on_product_checkout_completed
+
+        zero_product = Product.objects.create(
+            name="Zero Credits",
+            type=ProductType.ONE_TIME,
+            credits=0,
+            is_active=True,
+        )
+        async_to_sync(on_product_checkout_completed)("cs_zero", zero_product.id, user.id, None)
+        assert not CreditBalance.objects.filter(user=user).exists()
+
+    def test_unknown_org_id_is_skipped(self, user, boost_product):
+        """When the webhook carries an ``org_id`` that no longer exists in
+        the DB (org deleted between checkout and webhook delivery), the
+        handler silently no-ops — no credits granted, no exception raised."""
+        from uuid import uuid4
+
+        from asgiref.sync import async_to_sync
+
+        from apps.billing.models import CreditBalance
+        from apps.billing.services import on_product_checkout_completed
+
+        phantom_org_id = uuid4()
+        async_to_sync(on_product_checkout_completed)(
+            "cs_noorg", boost_product.id, user.id, phantom_org_id
+        )
+        assert not CreditBalance.objects.filter(user=user).exists()
+
+    def test_unknown_user_id_is_skipped(self, boost_product):
+        """When the webhook's ``user_id`` no longer exists (account deleted
+        between checkout and webhook delivery), the handler no-ops."""
+        from uuid import uuid4
+
+        from asgiref.sync import async_to_sync
+
+        from apps.billing.models import CreditBalance
+        from apps.billing.services import on_product_checkout_completed
+
+        phantom_user_id = uuid4()
+        async_to_sync(on_product_checkout_completed)(
+            "cs_nouser", boost_product.id, phantom_user_id, None
+        )
+        # No balance row should be created anywhere.
+        assert CreditBalance.objects.count() == 0
+
+
+@pytest.mark.django_db
+class TestGetCreditBalance:
+    """Tests for the ``get_credit_balance`` helper covering branches not
+    exercised by the view-layer tests: the ``org=`` Org-object path and the
+    guard that rejects ambiguous / empty call signatures."""
+
+    def test_returns_balance_for_user(self, user):
+        from apps.billing.models import CreditBalance
+        from apps.billing.services import get_credit_balance
+
+        CreditBalance.objects.create(user=user, balance=42)
+        assert get_credit_balance(user=user) == 42
+
+    def test_returns_zero_when_no_user_row(self, user):
+        from apps.billing.services import get_credit_balance
+
+        assert get_credit_balance(user=user) == 0
+
+    def test_returns_balance_via_org_object(self):
+        """Callers that hold a full ``Org`` instance can pass ``org=`` instead
+        of ``org_id=``. This branch (line 40 in services.py) is never hit by
+        the view which always uses ``org_id=``."""
+        from apps.billing.models import CreditBalance
+        from apps.billing.services import get_credit_balance
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="gb-owner@example.com", full_name="GB Owner")
+        org = Org.objects.create(name="GB Org", slug="gb-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+        CreditBalance.objects.create(org=org, balance=99)
+
+        assert get_credit_balance(org=org) == 99
+
+    def test_raises_when_no_args_given(self):
+        from apps.billing.services import get_credit_balance
+
+        with pytest.raises(ValueError, match="Exactly one"):
+            get_credit_balance()
+
+    def test_raises_when_multiple_args_given(self, user):
+        from apps.billing.services import get_credit_balance
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="multi-owner@example.com", full_name="Multi")
+        org = Org.objects.create(name="Multi Org", slug="multi-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+
+        with pytest.raises(ValueError, match="Exactly one"):
+            get_credit_balance(user=user, org=org)
