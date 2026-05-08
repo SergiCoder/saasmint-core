@@ -101,6 +101,7 @@ class TestCheckoutSessionView:
         )
         assert resp.status_code == 201
         assert resp.data["url"] == "https://checkout.stripe.com/session"
+        assert resp["Location"] == "https://checkout.stripe.com/session"
         # The view must resolve the UUID to the underlying Stripe price ID
         # before calling Stripe.
         assert mock_create.call_args.kwargs["price_id"] == plan_price.stripe_price_id
@@ -455,6 +456,7 @@ class TestPortalSessionView:
         )
         assert resp.status_code == 201
         assert resp.data["url"] == "https://billing.stripe.com/portal"
+        assert resp["Location"] == "https://billing.stripe.com/portal"
 
     def test_invalid_return_url_rejected(self, authed_client, settings):
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
@@ -547,9 +549,7 @@ class TestPortalSessionContextRouting:
         from apps.orgs.models import Org, OrgMember, OrgRole
         from apps.users.models import User
 
-        user = User.objects.create_user(
-            email="portal-no-cust@example.com", full_name="No Cust"
-        )
+        user = User.objects.create_user(email="portal-no-cust@example.com", full_name="No Cust")
         org = Org.objects.create(name="NoCustOrg", slug="portal-no-cust", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
         # No StripeCustomer row for this org.
@@ -759,9 +759,7 @@ class TestCancelSubscription:
             "apps.billing.views.cancel_subscription",
             new=AsyncMock(side_effect=stripe_sdk.StripeError("upstream boom")),
         ):
-            resp = authed_client.delete(
-                "/api/v1/billing/subscriptions/me/?context=personal"
-            )
+            resp = authed_client.delete("/api/v1/billing/subscriptions/me/?context=personal")
         # ``domain_exception_handler`` maps StripeError → 502 (default) with
         # the generic envelope; never the upstream message.
         assert resp.status_code == 502
@@ -807,9 +805,7 @@ class TestCancelSubscription:
 
         with (
             patch("stripe.Subscription.retrieve", return_value=sub_with_schedule),
-            patch(
-                "stripe.SubscriptionSchedule.retrieve", return_value=active_schedule
-            ),
+            patch("stripe.SubscriptionSchedule.retrieve", return_value=active_schedule),
             patch("stripe.SubscriptionSchedule.release") as mock_release,
             patch("stripe.Subscription.modify", return_value=modify_response) as mock_modify,
         ):
@@ -1098,21 +1094,13 @@ class TestUpdateSubscription:
         from apps.orgs.models import Org, OrgMember, OrgRole
         from apps.users.models import User
 
-        owner = User.objects.create_user(
-            email="plan-only@example.com", full_name="PlanOnly"
-        )
-        org = Org.objects.create(
-            name="PlanOnlyOrg", slug="plan-only-org", created_by=owner
-        )
-        OrgMember.objects.create(
-            org=org, user=owner, role=OrgRole.OWNER, is_billing=True
-        )
+        owner = User.objects.create_user(email="plan-only@example.com", full_name="PlanOnly")
+        org = Org.objects.create(name="PlanOnlyOrg", slug="plan-only-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
         # Five members total — strictly more than the existing seat_limit=3.
         # If the guard fires erroneously on plan-only requests, it would 400.
         for i in range(4):
-            extra = User.objects.create_user(
-                email=f"po{i}@plan-only.com", full_name=f"PO{i}"
-            )
+            extra = User.objects.create_user(email=f"po{i}@plan-only.com", full_name=f"PO{i}")
             OrgMember.objects.create(org=org, user=extra, role=OrgRole.MEMBER)
         team_customer = StripeCustomer.objects.create(
             stripe_id="cus_plan_only_team", org=org, livemode=False
@@ -1165,19 +1153,11 @@ class TestUpdateSubscription:
         cheaper_price = PlanPrice.objects.create(
             plan=cheaper_plan, stripe_price_id="price_team_low", amount=500
         )
-        owner = User.objects.create_user(
-            email="defer-combo@example.com", full_name="DeferCombo"
-        )
-        org = Org.objects.create(
-            name="DeferComboOrg", slug="defer-combo-org", created_by=owner
-        )
-        OrgMember.objects.create(
-            org=org, user=owner, role=OrgRole.OWNER, is_billing=True
-        )
+        owner = User.objects.create_user(email="defer-combo@example.com", full_name="DeferCombo")
+        org = Org.objects.create(name="DeferComboOrg", slug="defer-combo-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
         for i in range(2):
-            extra = User.objects.create_user(
-                email=f"dc{i}@defer-combo.com", full_name=f"DC{i}"
-            )
+            extra = User.objects.create_user(email=f"dc{i}@defer-combo.com", full_name=f"DC{i}")
             OrgMember.objects.create(org=org, user=extra, role=OrgRole.MEMBER)
         team_customer = StripeCustomer.objects.create(
             stripe_id="cus_defer_combo_team", org=org, livemode=False
@@ -1871,9 +1851,7 @@ class TestConcurrentSubscriptions:
         from apps.billing.models import StripeCustomer, Subscription
         from apps.users.models import User
 
-        user = User.objects.create_user(
-            email="two-personal@example.com", full_name="TwoPersonal"
-        )
+        user = User.objects.create_user(email="two-personal@example.com", full_name="TwoPersonal")
         customer = StripeCustomer.objects.create(
             stripe_id="cus_two_personal", user=user, livemode=False
         )
@@ -2159,9 +2137,7 @@ class TestBillingAuthorityOnMutations:
         assert resp.status_code == 403
 
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
-    def test_user_in_two_orgs_mutation_targets_authorized_org(
-        self, mock_cancel, team_org_setup
-    ):
+    def test_user_in_two_orgs_mutation_targets_authorized_org(self, mock_cancel, team_org_setup):
         """Multi-org caller's DELETE must hit the org they're is_billing in.
 
         Reproduces the cross-org mutation bug: a user with memberships in
@@ -2195,9 +2171,7 @@ class TestBillingAuthorityOnMutations:
         )
 
         # Caller — is_billing only on org_a, member-only on org_b.
-        caller = User.objects.create_user(
-            email="multiorg@example.com", full_name="Multi"
-        )
+        caller = User.objects.create_user(email="multiorg@example.com", full_name="Multi")
         OrgMember.objects.create(org=org_a, user=caller, role=OrgRole.ADMIN, is_billing=True)
         OrgMember.objects.create(org=org_b, user=caller, role=OrgRole.MEMBER, is_billing=False)
 
@@ -2373,6 +2347,7 @@ class TestProductCheckoutPersonal:
         )
         assert resp.status_code == 201
         assert resp.data["url"] == "https://checkout.stripe.com/product"
+        assert resp["Location"] == "https://checkout.stripe.com/product"
         metadata = mock_session.call_args.kwargs["metadata"]
         assert metadata == {"product_id": str(boost_product.id)}
         assert mock_session.call_args.kwargs["price_id"] == "price_boost_50"
@@ -2783,9 +2758,7 @@ class TestScheduledChangeView:
     """``DELETE /billing/subscriptions/me/scheduled-change/`` releases an
     active SubscriptionSchedule so the user keeps their current plan."""
 
-    def test_delete_calls_release_for_personal_context(
-        self, authed_client, subscription
-    ):
+    def test_delete_calls_release_for_personal_context(self, authed_client, subscription):
         """Default routing: a non-org-member user hits the personal path,
         and the view delegates to ``release_pending_schedule_for_customer``."""
         # Patch the bound name in views.py — the view imports it at module
@@ -2794,17 +2767,13 @@ class TestScheduledChangeView:
             "apps.billing.views.release_pending_schedule_for_customer",
             new_callable=AsyncMock,
         ) as mock_release:
-            resp = authed_client.delete(
-                "/api/v1/billing/subscriptions/me/scheduled-change/"
-            )
+            resp = authed_client.delete("/api/v1/billing/subscriptions/me/scheduled-change/")
         assert resp.status_code == 200
         mock_release.assert_called_once()
 
     def test_delete_404_when_no_active_subscription(self, authed_client):
         """No customer / no sub → 404, no Stripe call attempted."""
-        resp = authed_client.delete(
-            "/api/v1/billing/subscriptions/me/scheduled-change/"
-        )
+        resp = authed_client.delete("/api/v1/billing/subscriptions/me/scheduled-change/")
         assert resp.status_code == 404
 
     def test_delete_returns_unchanged_sub_when_no_schedule_attached(
@@ -2822,9 +2791,7 @@ class TestScheduledChangeView:
             patch("stripe.Subscription.retrieve", return_value=sub_no_schedule),
             patch("stripe.SubscriptionSchedule.release") as mock_release,
         ):
-            resp = authed_client.delete(
-                "/api/v1/billing/subscriptions/me/scheduled-change/"
-            )
+            resp = authed_client.delete("/api/v1/billing/subscriptions/me/scheduled-change/")
         assert resp.status_code == 200
         # No release call ever issued — Stripe is left untouched.
         mock_release.assert_not_called()
@@ -2840,16 +2807,10 @@ class TestScheduledChangeView:
         from apps.orgs.models import Org, OrgMember, OrgRole
         from apps.users.models import User
 
-        member = User.objects.create_user(
-            email="member-rel@example.com", full_name="Plain Member"
-        )
+        member = User.objects.create_user(email="member-rel@example.com", full_name="Plain Member")
         org = Org.objects.create(name="RelOrg", slug="rel-org", created_by=member)
-        OrgMember.objects.create(
-            org=org, user=member, role=OrgRole.MEMBER, is_billing=False
-        )
-        customer = StripeCustomer.objects.create(
-            stripe_id="cus_rel_team", org=org, livemode=False
-        )
+        OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
+        customer = StripeCustomer.objects.create(stripe_id="cus_rel_team", org=org, livemode=False)
         Subscription.objects.create(
             stripe_id="sub_rel_team",
             stripe_customer=customer,
@@ -2862,7 +2823,5 @@ class TestScheduledChangeView:
         client = APIClient()
         client.force_authenticate(user=member)
 
-        resp = client.delete(
-            "/api/v1/billing/subscriptions/me/scheduled-change/?context=team"
-        )
+        resp = client.delete("/api/v1/billing/subscriptions/me/scheduled-change/?context=team")
         assert resp.status_code == 403
