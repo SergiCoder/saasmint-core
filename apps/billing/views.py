@@ -54,6 +54,7 @@ from apps.billing.models import (
 )
 from apps.billing.models import Plan as PlanModel
 from apps.billing.models import Product as ProductModel
+from apps.billing.models import StripeCustomer as StripeCustomerModel
 from apps.billing.models import Subscription as SubscriptionModel
 from apps.billing.repositories import get_billing_repos
 from apps.billing.serializers import (
@@ -685,9 +686,8 @@ class CheckoutSessionView(BillingScopedView):
         },
         description=(
             "Create a Stripe Checkout Session. Returns ``201 Created`` with the"
-            " Stripe-hosted checkout URL in both the body (``url``) and the"
-            " ``Location`` response header — clients should redirect the user"
-            " there to complete payment."
+            " Stripe-hosted checkout URL in the body (``url``) — clients should"
+            " redirect the user there to complete payment."
         ),
         tags=["billing"],
     )
@@ -754,7 +754,7 @@ class CheckoutSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
+        return Response({"url": url}, status=status.HTTP_201_CREATED)
 
 
 class PortalSessionView(BillingScopedView):
@@ -843,7 +843,7 @@ class PortalSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
+        return Response({"url": url}, status=status.HTTP_201_CREATED)
 
 
 def _resolve_product_purchase_context(user: User, context: str | None) -> UUID | None:
@@ -977,7 +977,7 @@ class ProductCheckoutSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url})
+        return Response({"url": url}, status=status.HTTP_201_CREATED)
 
 
 class CreditBalanceView(BillingScopedView):
@@ -1122,10 +1122,10 @@ def _get_active_subscriptions_for_user(
     # into a single index union, saving the second round-trip. Pull the
     # customer id directly via the FK so we don't materialise the full
     # StripeCustomer row just to read its primary key.
-    from apps.billing.models import StripeCustomer
-
     customer_id = (
-        StripeCustomer.objects.filter(user_id=user.id).values_list("id", flat=True).first()
+        StripeCustomerModel.objects.filter(user_id=user.id)
+        .values_list("id", flat=True)
+        .first()
     )
     predicate = Q(user_id=user.id)
     if customer_id is not None:

@@ -100,7 +100,6 @@ class TestCheckoutSessionView:
             format="json",
         )
         assert resp.status_code == 201
-        assert resp["Location"] == "https://checkout.stripe.com/session"
         assert resp.data["url"] == "https://checkout.stripe.com/session"
         # The view must resolve the UUID to the underlying Stripe price ID
         # before calling Stripe.
@@ -183,28 +182,6 @@ class TestCheckoutSessionView:
         )
         # trial_period_days should be preserved for personal plans
         assert mock_create.call_args.kwargs["trial_period_days"] == 7
-
-    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_checkout_response_sets_location_header_to_stripe_url(
-        self, mock_get_customer, mock_create, authed_client, plan_price, mock_stripe_customer
-    ):
-        """201 Created carries the Stripe-hosted URL in both the body and
-        the ``Location`` header so HTTP-aware clients can follow it directly."""
-        mock_get_customer.return_value = mock_stripe_customer
-        mock_create.return_value = "https://checkout.stripe.com/session"
-
-        resp = authed_client.post(
-            "/api/v1/billing/checkout-sessions/",
-            {
-                "plan_price_id": str(plan_price.id),
-                "success_url": "https://localhost/success",
-                "cancel_url": "https://localhost/cancel",
-            },
-            format="json",
-        )
-        assert resp.status_code == 201
-        assert resp["Location"] == "https://checkout.stripe.com/session"
 
     def test_unauthenticated_rejected(self):
         client = APIClient()
@@ -477,7 +454,6 @@ class TestPortalSessionView:
             format="json",
         )
         assert resp.status_code == 201
-        assert resp["Location"] == "https://billing.stripe.com/portal"
         assert resp.data["url"] == "https://billing.stripe.com/portal"
 
     def test_invalid_return_url_rejected(self, authed_client, settings):
@@ -489,22 +465,6 @@ class TestPortalSessionView:
             format="json",
         )
         assert resp.status_code == 400
-
-    @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_portal_response_sets_location_header_to_stripe_url(
-        self, mock_get_customer, mock_portal, authed_client, mock_stripe_customer
-    ):
-        mock_get_customer.return_value = mock_stripe_customer
-        mock_portal.return_value = "https://billing.stripe.com/portal"
-
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {"return_url": "https://localhost/dashboard"},
-            format="json",
-        )
-        assert resp.status_code == 201
-        assert resp["Location"] == "https://billing.stripe.com/portal"
 
     def test_missing_body_returns_400(self, authed_client):
         resp = authed_client.post("/api/v1/billing/portal-sessions/", {}, format="json")
@@ -2412,7 +2372,6 @@ class TestProductCheckoutPersonal:
             format="json",
         )
         assert resp.status_code == 201
-        assert resp["Location"] == "https://checkout.stripe.com/product"
         assert resp.data["url"] == "https://checkout.stripe.com/product"
         metadata = mock_session.call_args.kwargs["metadata"]
         assert metadata == {"product_id": str(boost_product.id)}

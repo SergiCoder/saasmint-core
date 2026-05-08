@@ -450,8 +450,8 @@ paths:
     post:
       operationId: billing_checkout_sessions_create
       description: Create a Stripe Checkout Session. Returns ``201 Created`` with
-        the Stripe-hosted checkout URL in both the body (``url``) and the ``Location``
-        response header — clients should redirect the user there to complete payment.
+        the Stripe-hosted checkout URL in the body (``url``) — clients should redirect
+        the user there to complete payment.
       parameters:
       - in: query
         name: currency
