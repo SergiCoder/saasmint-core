@@ -1472,7 +1472,7 @@ components:
       - new_password
     CheckoutRequestRequest:
       type: object
-      description: Re-usable validators for serializers carrying success_url/cancel_url.
+      description: Request body for POST /billing/checkout-sessions/.
       properties:
         plan_price_id:
           type: string
@@ -2104,7 +2104,7 @@ components:
       - type
     ProductCheckoutRequestRequest:
       type: object
-      description: Re-usable validators for serializers carrying success_url/cancel_url.
+      description: Request body for POST /billing/product-checkout-sessions/.
       properties:
         product_price_id:
           type: string

@@ -270,6 +270,8 @@ class _SuccessCancelUrlMixin:
 class CheckoutRequestSerializer(
     _SuccessCancelUrlMixin, serializers.Serializer[object]
 ):
+    """Request body for POST /billing/checkout-sessions/."""
+
     plan_price_id = serializers.UUIDField()
     seat_limit = serializers.IntegerField(default=1, min_value=1, max_value=10000)
     success_url = serializers.URLField()
@@ -291,6 +293,8 @@ class PortalRequestSerializer(serializers.Serializer[object]):
 class ProductCheckoutRequestSerializer(
     _SuccessCancelUrlMixin, serializers.Serializer[object]
 ):
+    """Request body for POST /billing/product-checkout-sessions/."""
+
     product_price_id = serializers.UUIDField()
     success_url = serializers.URLField()
     cancel_url = serializers.URLField()
