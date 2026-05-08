@@ -62,15 +62,60 @@ class Command(BaseCommand):
             return
 
         currencies: list[str] = list(settings.BILLING_CURRENCIES)
+
+        # Hoist a one-time bulk fetch of every lookup_key we might need so
+        # ``_upsert_price`` can do a dict lookup instead of an O(N*C)
+        # per-(plan, currency) ``Price.list`` call. Stripe accepts up to 10
+        # ``lookup_keys`` per ``Price.list`` request — batch accordingly.
+        wanted_keys = self._collect_lookup_keys(currencies)
+        existing_prices = self._bulk_fetch_existing(wanted_keys)
+
         for currency in currencies:
             self.stdout.write(f"— {currency.upper()} —")
-            self._sync_plans(currency)
-            self._sync_products(currency)
+            self._sync_plans(currency, existing_prices)
+            self._sync_products(currency, existing_prices)
         self.stdout.write(self.style.SUCCESS("Stripe catalog sync complete."))
+
+    def _collect_lookup_keys(self, currencies: list[str]) -> list[str]:
+        """Enumerate every Stripe ``lookup_key`` this run could touch.
+
+        One per (active plan or product, billing currency). Computed up front
+        so the bulk fetch can deduplicate and batch by 10 (Stripe's per-call
+        ``lookup_keys`` limit).
+        """
+        keys: list[str] = []
+        for plan in Plan.objects.filter(is_active=True):
+            for currency in currencies:
+                keys.append(_plan_lookup_key(plan, currency))
+        for product in Product.objects.filter(is_active=True):
+            for currency in currencies:
+                keys.append(_product_lookup_key(product, currency))
+        return keys
+
+    @staticmethod
+    def _bulk_fetch_existing(lookup_keys: list[str]) -> dict[str, stripe.Price]:
+        """Resolve ``{lookup_key: stripe.Price}`` in batches of 10.
+
+        Stripe's ``Price.list`` accepts at most 10 ``lookup_keys`` per call.
+        Missing keys are simply absent from the returned dict — callers
+        treat that as "no existing price" and create one.
+        """
+        result: dict[str, stripe.Price] = {}
+        for i in range(0, len(lookup_keys), 10):
+            batch = lookup_keys[i : i + 10]
+            page = stripe.Price.list(
+                lookup_keys=batch, limit=10, expand=["data.product"]
+            )
+            for price in page.data:
+                if price.lookup_key:
+                    result[price.lookup_key] = price
+        return result
 
     # ------------------------------------------------------------------ plans
 
-    def _sync_plans(self, currency: str) -> None:
+    def _sync_plans(
+        self, currency: str, existing_prices: dict[str, stripe.Price]
+    ) -> None:
         plans = Plan.objects.filter(is_active=True).select_related("price")
         for plan in plans:
             price_row: PlanPrice | None = getattr(plan, "price", None)
@@ -93,6 +138,7 @@ class Command(BaseCommand):
                 product_description=plan.description or None,
                 product_metadata={"local_plan_id": str(plan.id), "kind": "plan"},
                 price_metadata={"local_plan_id": str(plan.id)},
+                existing_prices=existing_prices,
             )
             self._write_price_id(
                 price_row, new_price_id, currency=currency, label=f"Plan {plan.name}"
@@ -100,7 +146,9 @@ class Command(BaseCommand):
 
     # --------------------------------------------------------------- products
 
-    def _sync_products(self, currency: str) -> None:
+    def _sync_products(
+        self, currency: str, existing_prices: dict[str, stripe.Price]
+    ) -> None:
         products = Product.objects.filter(is_active=True).select_related("price")
         for product in products:
             price_row: ProductPrice | None = getattr(product, "price", None)
@@ -123,6 +171,7 @@ class Command(BaseCommand):
                 product_description=f"{product.credits} credits",
                 product_metadata={"local_product_id": str(product.id), "kind": "product"},
                 price_metadata={"local_product_id": str(product.id)},
+                existing_prices=existing_prices,
             )
             self._write_price_id(
                 price_row, new_price_id, currency=currency, label=f"Product {product.name}"
@@ -177,12 +226,14 @@ class Command(BaseCommand):
         product_description: str | None,
         product_metadata: dict[str, str],
         price_metadata: dict[str, str],
+        existing_prices: dict[str, stripe.Price],
     ) -> str:
-        existing = stripe.Price.list(lookup_keys=[lookup_key], limit=1, expand=["data.product"])
+        # Pre-fetched bulk lookup table: ``handle()`` calls ``Price.list``
+        # once in batches of 10 lookup_keys instead of per-(plan, currency).
+        current = existing_prices.get(lookup_key)
         product_id: str | None = None
 
-        if existing.data:
-            current = existing.data[0]
+        if current is not None:
             current_product = current.product
             if self._price_matches(current, unit_amount, currency, recurring):
                 self._sync_stripe_product(

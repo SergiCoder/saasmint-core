@@ -9,6 +9,8 @@ from django.db import IntegrityError
 
 from apps.billing.models import (
     ACTIVE_SUBSCRIPTION_STATUSES,
+    CreditBalance,
+    CreditTransaction,
     PlanPrice,
     PlanTier,
     StripeEvent,
@@ -252,3 +254,55 @@ class TestActiveSubscriptionStatuses:
     def test_excludes_canceled(self):
         values = [s.value for s in ACTIVE_SUBSCRIPTION_STATUSES]
         assert "canceled" not in values
+
+
+# ---------------------------------------------------------------------------
+# DB-level CheckConstraint coverage — these complement the StripeCustomer
+# constraint tests above. Each row must satisfy XOR(user, org) and the
+# numeric guards (balance >= 0, amount != 0).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestCreditBalanceConstraints:
+    def test_xor_owner_rejects_both_user_and_org_set(self, user):
+        from apps.orgs.models import Org
+
+        org = Org.objects.create(
+            name="CB Both", slug="cb-both", created_by=user
+        )
+        with pytest.raises(IntegrityError):
+            CreditBalance.objects.create(user=user, org=org, balance=100)
+
+    def test_xor_owner_rejects_neither_user_nor_org(self, db):
+        with pytest.raises(IntegrityError):
+            CreditBalance.objects.create(balance=100)
+
+    def test_balance_non_negative_rejects_negative(self, user):
+        with pytest.raises(IntegrityError):
+            CreditBalance.objects.create(user=user, balance=-1)
+
+
+@pytest.mark.django_db
+class TestCreditTransactionConstraints:
+    def test_xor_owner_rejects_both_user_and_org(self, user):
+        from apps.orgs.models import Org
+
+        org = Org.objects.create(
+            name="CT Both", slug="ct-both", created_by=user
+        )
+        with pytest.raises(IntegrityError):
+            CreditTransaction.objects.create(
+                user=user,
+                org=org,
+                amount=10,
+                reason="test",
+            )
+
+    def test_amount_nonzero_rejects_zero(self, user):
+        with pytest.raises(IntegrityError):
+            CreditTransaction.objects.create(
+                user=user,
+                amount=0,
+                reason="test",
+            )

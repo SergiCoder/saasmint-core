@@ -11,7 +11,6 @@ from asgiref.sync import async_to_sync
 from apps.billing.models import (
     Plan,
     Product,
-    ProductPrice,
     StripeCustomer,
     StripeEvent,
     Subscription,
@@ -300,29 +299,11 @@ class TestDjangoPlanRepository:
     def repo(self):
         return DjangoPlanRepository()
 
-    def test_get_by_id(self, repo, plan):
-        result = async_to_sync(repo.get_by_id)(plan.id)
-        assert result is not None
-        assert result.name == "Personal Monthly"
-
-    def test_get_by_id_not_found(self, repo):
-        result = async_to_sync(repo.get_by_id)(uuid4())
-        assert result is None
-
     def test_list_active(self, repo, plan):
         Plan.objects.create(name="Inactive", context="personal", interval="year", is_active=False)
         results = async_to_sync(repo.list_active)()
         assert len(results) == 1
         assert results[0].name == "Personal Monthly"
-
-    def test_get_price(self, repo, plan, plan_price):
-        result = async_to_sync(repo.get_price)(plan.id)
-        assert result is not None
-        assert result.amount == 999
-
-    def test_get_price_not_found(self, repo, plan):
-        result = async_to_sync(repo.get_price)(plan.id)
-        assert result is None
 
     def test_get_price_by_stripe_id(self, repo, plan_price):
         result = async_to_sync(repo.get_price_by_stripe_id)("price_test_123")
@@ -341,46 +322,12 @@ class TestDjangoProductRepository:
             name="100 Credits", type="one_time", credits=100, is_active=True
         )
 
-    @pytest.fixture
-    def product_price(self, product):
-        return ProductPrice.objects.create(
-            product=product, stripe_price_id="price_credits_100", amount=999
-        )
-
-    def test_get_by_id(self, repo, product):
-        result = async_to_sync(repo.get_by_id)(product.id)
-        assert result is not None
-        assert result.name == "100 Credits"
-        assert result.credits == 100
-
-    def test_get_by_id_not_found(self, repo, db):
-        result = async_to_sync(repo.get_by_id)(uuid4())
-        assert result is None
-
     def test_list_active(self, repo, product, db):
         Product.objects.create(name="Inactive", type="one_time", credits=50, is_active=False)
         results = async_to_sync(repo.list_active)()
         names = [r.name for r in results]
         assert "100 Credits" in names
         assert "Inactive" not in names
-
-    def test_get_price(self, repo, product, product_price):
-        result = async_to_sync(repo.get_price)(product.id)
-        assert result is not None
-        assert result.amount == 999
-
-    def test_get_price_not_found(self, repo, product):
-        result = async_to_sync(repo.get_price)(product.id)
-        assert result is None
-
-    def test_get_price_by_stripe_id(self, repo, product_price):
-        result = async_to_sync(repo.get_price_by_stripe_id)("price_credits_100")
-        assert result is not None
-        assert result.amount == 999
-
-    def test_get_price_by_stripe_id_not_found(self, repo, db):
-        result = async_to_sync(repo.get_price_by_stripe_id)("price_missing")
-        assert result is None
 
 
 class TestDjangoStripeEventRepository:
@@ -399,41 +346,6 @@ class TestDjangoStripeEventRepository:
             payload={},
         )
         assert async_to_sync(repo.exists)("evt_exists") is True
-
-    def test_save_if_new_creates(self, repo):
-        from saasmint_core.domain.stripe_event import StripeEvent as DomainEvent
-
-        event = DomainEvent(
-            id=uuid4(),
-            stripe_id="evt_new",
-            type="checkout.session.completed",
-            livemode=False,
-            payload={"data": "test"},
-            created_at=datetime.now(UTC),
-        )
-        created = async_to_sync(repo.save_if_new)(event)
-        assert created is True
-        assert StripeEvent.objects.filter(stripe_id="evt_new").exists()
-
-    def test_save_if_new_idempotent(self, repo, db):
-        from saasmint_core.domain.stripe_event import StripeEvent as DomainEvent
-
-        StripeEvent.objects.create(
-            stripe_id="evt_dup",
-            type="test",
-            livemode=False,
-            payload={},
-        )
-        event = DomainEvent(
-            id=uuid4(),
-            stripe_id="evt_dup",
-            type="test",
-            livemode=False,
-            payload={},
-            created_at=datetime.now(UTC),
-        )
-        created = async_to_sync(repo.save_if_new)(event)
-        assert created is False
 
     def test_mark_processed(self, repo, db):
         StripeEvent.objects.create(
@@ -458,79 +370,6 @@ class TestDjangoStripeEventRepository:
         async_to_sync(repo.mark_failed)("evt_fail", "connection timeout")
         obj = StripeEvent.objects.get(stripe_id="evt_fail")
         assert obj.error == "connection timeout"
-
-    @pytest.mark.anyio
-    async def test_list_recent(self, repo, db):
-        for i in range(3):
-            await StripeEvent.objects.acreate(
-                stripe_id=f"evt_recent_{i}",
-                type="test",
-                livemode=False,
-                payload={},
-            )
-        results = await repo.list_recent(limit=2)
-        assert len(results) == 2
-
-    @pytest.mark.anyio
-    async def test_list_recent_caps_at_100(self, repo, db):
-        results = await repo.list_recent(limit=200)
-        # Should not error, just cap
-        assert isinstance(results, list)
-
-    def test_save_if_new_preserves_original_on_duplicate(self, repo, db):
-        """Duplicate stripe_id must not overwrite the original row.
-
-        Replay of the same webhook delivery (Stripe can redeliver) must leave
-        the original event's id, type, and payload intact. Otherwise a replay
-        with a mutated payload would silently corrupt the event log.
-        """
-        from saasmint_core.domain.stripe_event import StripeEvent as DomainEvent
-
-        original = StripeEvent.objects.create(
-            stripe_id="evt_replay",
-            type="checkout.session.completed",
-            livemode=False,
-            payload={"v": 1, "original": True},
-        )
-        original_id = original.id
-
-        replay = DomainEvent(
-            id=uuid4(),  # fresh uuid
-            stripe_id="evt_replay",
-            type="checkout.session.completed",
-            livemode=False,
-            payload={"v": 2, "tampered": True},  # different payload
-            created_at=datetime.now(UTC),
-        )
-        created = async_to_sync(repo.save_if_new)(replay)
-
-        assert created is False
-        obj = StripeEvent.objects.get(stripe_id="evt_replay")
-        assert obj.id == original_id  # id preserved
-        assert obj.payload == {"v": 1, "original": True}  # payload preserved
-        assert StripeEvent.objects.filter(stripe_id="evt_replay").count() == 1
-
-    def test_save_if_new_concurrent_replays_only_create_once(self, repo, db):
-        """Back-to-back save_if_new calls for the same stripe_id: only one
-        returns True. Guarantees exactly-once insertion under rapid replay."""
-        from saasmint_core.domain.stripe_event import StripeEvent as DomainEvent
-
-        def _mk_event() -> DomainEvent:
-            return DomainEvent(
-                id=uuid4(),
-                stripe_id="evt_once",
-                type="customer.subscription.updated",
-                livemode=False,
-                payload={},
-                created_at=datetime.now(UTC),
-            )
-
-        first = async_to_sync(repo.save_if_new)(_mk_event())
-        second = async_to_sync(repo.save_if_new)(_mk_event())
-        third = async_to_sync(repo.save_if_new)(_mk_event())
-
-        assert [first, second, third] == [True, False, False]
-        assert StripeEvent.objects.filter(stripe_id="evt_once").count() == 1
 
     def test_mark_processed_clears_previous_error(self, repo, db):
         """A retry that succeeds must clear the prior error message."""

@@ -32,7 +32,7 @@ class UserAdminExtended(UserAdmin):  # type: ignore[type-arg]  # django-stubs ge
         "is_active",
         "created_at",
     )
-    list_filter: ClassVar[tuple[object, ...]] = (
+    list_filter: ClassVar[tuple[str, ...]] = (
         "registration_method",
         "is_active",
         "is_staff",

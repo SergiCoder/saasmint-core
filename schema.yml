@@ -82,7 +82,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '200':
+        '201':
           content:
             application/json:
               schema:
@@ -782,9 +782,11 @@ paths:
     delete:
       operationId: billing_subscriptions_me_destroy
       description: Schedule subscription cancellation at the end of the current billing
-        period. Returns 202 Accepted — the subscription remains active until the period
-        end timestamp returned in the body. Use ``?context=personal`` to cancel the
-        personal sub when the caller also holds a concurrent team sub.
+        period. Returns 200 OK with the updated subscription representation in the
+        body — the subscription remains active until the period end timestamp returned
+        in the body. Mirrors the 200-with-body convention used by ``DELETE /subscriptions/me/scheduled-change/``
+        so both DELETEs are consistent. Use ``?context=personal`` to cancel the personal
+        sub when the caller also holds a concurrent team sub.
       parameters:
       - in: query
         name: context
@@ -809,7 +811,7 @@ paths:
       - JWT: []
       - cookieAuth: []
       responses:
-        '202':
+        '200':
           content:
             application/json:
               schema:
@@ -1463,7 +1465,7 @@ components:
         new_password:
           type: string
           writeOnly: true
-          minLength: 8
+          minLength: 10
           maxLength: 128
       required:
       - current_password
@@ -2008,10 +2010,13 @@ components:
       description: |-
         Shared base for PlanPrice / ProductPrice serializers.
 
-        Declaring the two display-currency fields and their getters once on a
-        ModelSerializer base lets concrete subclasses supply only the Meta.model
-        binding. DRF's metaclass walks `_declared_fields` on base Serializer
-        classes (unlike plain mixins), so the fields flow through inheritance.
+        Declares the four display-currency keys (``display_amount`` / ``currency``
+        + ``local_display_amount`` / ``local_currency``) so drf-spectacular sees
+        them in the OpenAPI schema, but populates all four in a single
+        :meth:`to_representation` pass that computes the display + local tuples
+        once each. Replaces the prior four-``SerializerMethodField`` fan-out
+        (each getter walked ``localized_prices`` once, doubling the iteration
+        work) and the per-instance attribute cache it required.
 
         Not instantiated directly: Meta.model is left unset so subclass Metas can
         inject the concrete model.
@@ -2034,12 +2039,12 @@ components:
         local_display_amount:
           type: number
           format: double
-          nullable: true
           readOnly: true
+          nullable: true
         local_currency:
           type: string
-          nullable: true
           readOnly: true
+          nullable: true
       required:
       - amount
       - currency
@@ -2149,10 +2154,13 @@ components:
       description: |-
         Shared base for PlanPrice / ProductPrice serializers.
 
-        Declaring the two display-currency fields and their getters once on a
-        ModelSerializer base lets concrete subclasses supply only the Meta.model
-        binding. DRF's metaclass walks `_declared_fields` on base Serializer
-        classes (unlike plain mixins), so the fields flow through inheritance.
+        Declares the four display-currency keys (``display_amount`` / ``currency``
+        + ``local_display_amount`` / ``local_currency``) so drf-spectacular sees
+        them in the OpenAPI schema, but populates all four in a single
+        :meth:`to_representation` pass that computes the display + local tuples
+        once each. Replaces the prior four-``SerializerMethodField`` fan-out
+        (each getter walked ``localized_prices`` once, doubling the iteration
+        work) and the per-instance attribute cache it required.
 
         Not instantiated directly: Meta.model is left unset so subclass Metas can
         inject the concrete model.
@@ -2175,12 +2183,12 @@ components:
         local_display_amount:
           type: number
           format: double
-          nullable: true
           readOnly: true
+          nullable: true
         local_currency:
           type: string
-          nullable: true
           readOnly: true
+          nullable: true
       required:
       - amount
       - currency
@@ -2206,7 +2214,7 @@ components:
         password:
           type: string
           writeOnly: true
-          minLength: 8
+          minLength: 10
           maxLength: 128
         full_name:
           type: string
@@ -2246,7 +2254,7 @@ components:
         password:
           type: string
           writeOnly: true
-          minLength: 8
+          minLength: 10
           maxLength: 128
       required:
       - password
@@ -2525,7 +2533,7 @@ components:
         password:
           type: string
           writeOnly: true
-          minLength: 8
+          minLength: 10
           maxLength: 128
       required:
       - token

@@ -337,16 +337,15 @@ class ForgotPasswordView(AuthPublicView):
 
         # Always return 200 to prevent email enumeration. ``email__iexact``
         # uses uniq_users_lower_email so a case-mismatched lookup still
-        # finds the row.
-        try:
-            user = User.objects.get(
-                email__iexact=ser.validated_data["email"],
-                is_active=True,
-            )
+        # finds the row. Match the ``.first()`` pattern used by
+        # ``ResendVerificationView`` instead of try/except.
+        user = User.objects.filter(
+            email__iexact=ser.validated_data["email"],
+            is_active=True,
+        ).first()
+        if user is not None:
             token = create_password_reset_token(user)
             send_password_reset_email_task.delay(user.email, token)
-        except User.DoesNotExist:
-            pass
 
         return Response(
             {
@@ -368,7 +367,10 @@ class ResetPasswordView(AuthPublicView):
 
         user = verify_password_reset_token(ser.validated_data["token"])
         user.set_password(ser.validated_data["password"])
-        update_fields = ["password", "updated_at"]
+        # Stamp ``password_changed_at`` so any access tokens minted before
+        # this moment fail the ``pwd_iat`` check in ``JWTAuthentication``.
+        user.password_changed_at = datetime.now(UTC)
+        update_fields = ["password", "password_changed_at", "updated_at"]
         # Consuming a reset link delivered to the user's email proves mailbox
         # control — equivalent to clicking the verification link.
         if not user.is_verified:
@@ -400,7 +402,10 @@ class ChangePasswordView(AuthScopedView):
             raise InvalidPassword
 
         user.set_password(ser.validated_data["new_password"])
-        user.save(update_fields=["password", "updated_at"])
+        # Stamp ``password_changed_at`` so any access tokens minted before
+        # this moment fail the ``pwd_iat`` check in ``JWTAuthentication``.
+        user.password_changed_at = datetime.now(UTC)
+        user.save(update_fields=["password", "password_changed_at", "updated_at"])
 
         # Revoke all existing refresh tokens — force re-login on other devices
         revoke_all_refresh_tokens(user)
@@ -481,9 +486,18 @@ class OAuthCallbackView(AuthPublicView):
         try:
             redirect_uri = request.build_absolute_uri(f"/api/v1/auth/oauth/{provider}/callback/")
             user_info = async_to_sync(exchange_code)(provider, code, redirect_uri)
-        except (httpx.HTTPError, OAuthError, ValueError, KeyError):
+        except (httpx.HTTPError, OAuthError):
+            # Transient/expected provider errors (network, 5xx, OAuth domain
+            # rejections). Dashboards alert on volume here rather than shape.
             logger.exception("OAuth code exchange failed for %s", provider)
             return _oauth_error_redirect(frontend_url, "exchange_failed")
+        except (ValueError, KeyError) as exc:
+            # The provider returned a payload we couldn't parse (missing field,
+            # wrong type). Split the dashboard signal from transient errors so
+            # a sudden burst is visible against a quiet baseline — provider
+            # API drift is something we want to catch fast.
+            logger.exception("OAuth provider response shape unexpected: %s", exc)
+            return _oauth_error_redirect(frontend_url, "provider_error")
 
         try:
             resolution = resolve_oauth_user(provider, user_info)
@@ -659,15 +673,6 @@ class OAuthConfirmLinkView(AuthPublicView):
                 user.is_verified = True
                 user.save(update_fields=["is_verified", "updated_at"])
 
-        # Mirror the OAuth-exchange envelope (vs. the password-login
-        # ``_token_response``) — confirm-link is semantically an OAuth
-        # success, and the frontend reuses ``setAuthCookies(access,
-        # refresh, expires_in)`` from its existing OAuth path.
-        return Response(
-            {
-                "access_token": create_access_token(user),
-                "refresh_token": create_refresh_token(user),
-                "token_type": "Bearer",
-                "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
-            }
-        )
+        # Reuse the shared token envelope so the confirm-link response stays
+        # bit-identical with login/refresh/register.
+        return _token_response(user, create_refresh_token(user))

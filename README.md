@@ -131,7 +131,7 @@ saasmint-core/
 ├── templates/           # Shared HTML templates (admin overrides, DRF browsable API, topbar)
 ├── scripts/             # CI helper scripts (dependency parser)
 ├── .github/             # CI workflows and PR template
-├── helpers.py           # Shared Django helpers (aget_or_none, get_user)
+├── helpers.py           # Shared Django helpers (get_user, aget_or_none, aget_latest_or_none)
 └── manage.py
 ```
 

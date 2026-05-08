@@ -572,12 +572,14 @@ class TestOAuthCallbackExchangeFailures:
         assert resp.status_code == 302
         assert "exchange_failed" in resp["Location"]
 
-    def test_value_error_redirects_exchange_failed(self, client, _oauth_state):
-        # e.g. Provider(provider) raising on an enum-coerce edge case.
+    def test_value_error_redirects_provider_error(self, client, _oauth_state):
+        # Provider returned a payload we couldn't parse (missing/wrong-typed field).
+        # Split from `exchange_failed` so dashboards can alert on shape drift
+        # against a quiet baseline.
         with _patch_exchange(side_effect=ValueError("bad")):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
             )
         assert resp.status_code == 302
-        assert "exchange_failed" in resp["Location"]
+        assert "provider_error" in resp["Location"]
