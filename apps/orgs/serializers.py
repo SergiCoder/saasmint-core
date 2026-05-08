@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from django.core.validators import URLValidator
 from rest_framework import serializers
 
 from apps.orgs.models import Invitation, Org, OrgMember, OrgRole
 from apps.users.models import User
+
+# Reject non-HTTPS schemes (``javascript:``, ``data:``, ``http:``) so a stored
+# logo_url cannot be used to redirect the browser into a phishing flow or leak
+# data over plain HTTP when the page renders ``<img src=...>``. Submissions
+# must use HTTPS — covers every reasonable hosted-logo CDN.
+_HTTPS_ONLY = URLValidator(schemes=["https"])
 
 # Roles that can be assigned via invitation (owner is never invited)
 _INVITABLE_ROLES = [
@@ -23,7 +30,9 @@ class OrgSerializer(serializers.ModelSerializer[Org]):
 
 class UpdateOrgSerializer(serializers.Serializer[Org]):
     name = serializers.CharField(max_length=255, required=False)
-    logo_url = serializers.URLField(required=False, allow_null=True)
+    logo_url = serializers.URLField(
+        required=False, allow_null=True, validators=[_HTTPS_ONLY]
+    )
 
 
 class _MemberUserSerializer(serializers.ModelSerializer[User]):

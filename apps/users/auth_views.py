@@ -107,6 +107,16 @@ class InvalidOAuthCode(APIException):
     default_code = "invalid_code"
 
 
+def _token_payload(access_token: str, refresh_token: str) -> dict[str, str | int]:
+    """The wire shape of an authenticated token-pair response."""
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "Bearer",
+        "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
+    }
+
+
 def _token_response(
     user: User,
     refresh_token: str,
@@ -115,12 +125,7 @@ def _token_response(
     headers: dict[str, str] | None = None,
 ) -> Response:
     return Response(
-        {
-            "access_token": create_access_token(user),
-            "refresh_token": refresh_token,
-            "token_type": "Bearer",
-            "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
-        },
+        _token_payload(create_access_token(user), refresh_token),
         status=http_status,
         headers=headers,
     )
@@ -419,6 +424,15 @@ class ChangePasswordView(AuthScopedView):
 # ---------------------------------------------------------------------------
 
 
+# Allowlist of error codes the OAuth callback is allowed to forward into the
+# ``?error=`` redirect param. The provider can return arbitrary strings, and a
+# direct GET to the callback URL can plant any value in the query — pinning to
+# a known set prevents reflected-XSS-via-error-text and audit-log spoofing.
+_FORWARDABLE_OAUTH_ERRORS = frozenset(
+    {"access_denied", "server_error", "temporarily_unavailable", "invalid_request"}
+)
+
+
 def _oauth_error_redirect(frontend_url: str, code: str) -> HttpResponseRedirect:
     """Send the browser back to the frontend's OAuth error page."""
     return HttpResponseRedirect(f"{frontend_url}/auth/error?{urlencode({'error': code})}")
@@ -474,7 +488,8 @@ class OAuthCallbackView(AuthPublicView):
         error = request.query_params.get("error")
 
         if error:
-            return _oauth_error_redirect(frontend_url, error)
+            forwarded = error if error in _FORWARDABLE_OAUTH_ERRORS else "exchange_failed"
+            return _oauth_error_redirect(frontend_url, forwarded)
 
         expected_state = request.session.pop("oauth_state", None)
         if not state or state != expected_state:
@@ -605,14 +620,7 @@ class OAuthExchangeView(AuthPublicView):
         data = _consume_oauth_exchange(ser.validated_data["code"])
         if data is None:
             raise InvalidOAuthCode
-        return Response(
-            {
-                "access_token": data["access_token"],
-                "refresh_token": data["refresh_token"],
-                "token_type": "Bearer",
-                "expires_in": int(ACCESS_TOKEN_LIFETIME.total_seconds()),
-            }
-        )
+        return Response(_token_payload(data["access_token"], data["refresh_token"]))
 
 
 class OAuthConfirmLinkView(AuthPublicView):
