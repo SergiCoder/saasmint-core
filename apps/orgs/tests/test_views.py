@@ -835,8 +835,13 @@ class TestInvitationDetailView:
         client = APIClient()  # unauthenticated
         resp = client.get("/api/v1/invitations/detail-token/")
         assert resp.status_code == 200
-        assert resp.data["email"] == "detail@example.com"
-        assert resp.data["org_name"] == org.name
+        # Public response: invitee email is NOT exposed (anti-enumeration);
+        # the org is nested with name/slug so the accept page can render.
+        assert "email" not in resp.data
+        assert resp.data["org"]["name"] == org.name
+        # Inviter only carries ``id``/``full_name`` — never email.
+        assert resp.data["invited_by"]["full_name"] == user.full_name
+        assert "email" not in resp.data["invited_by"]
 
     def test_nonexistent_token_returns_404(self):
         client = APIClient()

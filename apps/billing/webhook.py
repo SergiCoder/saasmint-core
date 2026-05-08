@@ -73,7 +73,9 @@ def stripe_webhook(request: HttpRequest) -> HttpResponse:
     # Reject events whose livemode doesn't match the current Stripe key.
     # Prevents a replayed test event from being processed against the prod key
     # (and vice versa). Drop silently with 202 — the mismatch is permanent.
-    key_is_live = settings.STRIPE_SECRET_KEY.startswith("sk_live_")
+    # Accept both standard and restricted-key prefixes so a deployment using
+    # an ``rk_live_`` restricted key is still recognised as live mode.
+    key_is_live = settings.STRIPE_SECRET_KEY.startswith(("sk_live_", "rk_live_"))
     if livemode != key_is_live:
         logger.error(
             "Stripe webhook livemode mismatch for event %s (livemode=%s, key_is_live=%s) — drop.",

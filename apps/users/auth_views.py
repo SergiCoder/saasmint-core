@@ -487,11 +487,18 @@ class OAuthCallbackView(AuthPublicView):
         state = request.query_params.get("state")
         error = request.query_params.get("error")
 
+        # Pop the state token unconditionally — any hit on the callback URL
+        # (success OR provider-error) consumes it. Otherwise an attacker who
+        # triggers the error branch via ``?error=access_denied`` would leave
+        # ``oauth_state`` in the session, and a follow-up navigation back to
+        # the legitimate callback would still find a "valid" state, opening
+        # a replay window.
+        expected_state = request.session.pop("oauth_state", None)
+
         if error:
             forwarded = error if error in _FORWARDABLE_OAUTH_ERRORS else "exchange_failed"
             return _oauth_error_redirect(frontend_url, forwarded)
 
-        expected_state = request.session.pop("oauth_state", None)
         if not state or state != expected_state:
             return _oauth_error_redirect(frontend_url, "invalid_state")
 

@@ -9,7 +9,6 @@ from typing import ClassVar
 from uuid import UUID
 
 from django.db import transaction
-from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils import timezone
@@ -26,6 +25,7 @@ from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import BaseThrottle
 from saasmint_core.domain.org import OrgRole as CoreOrgRole
 from saasmint_core.exceptions import InsufficientPermissionError, OrgNotFoundError
 from saasmint_core.services.orgs import check_can_manage_member
@@ -38,6 +38,7 @@ from apps.orgs.serializers import (
     InvitationSerializer,
     OrgMemberSerializer,
     OrgSerializer,
+    PublicInvitationSerializer,
     TransferOwnershipSerializer,
     UpdateMemberSerializer,
     UpdateOrgSerializer,
@@ -225,7 +226,17 @@ class OrgMemberListView(OrgsScopedView):
 
 
 class OrgMemberDetailView(OrgsScopedView):
-    """PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/."""
+    """PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/.
+
+    DELETE switches to the tighter ``orgs_member_delete`` throttle scope
+    because it hard-deletes the target user account — a compromised admin
+    token shouldn't get the full ``orgs`` budget for cascading deletes.
+    """
+
+    def get_throttles(self) -> list[BaseThrottle]:
+        if self.request.method == "DELETE":
+            self.throttle_scope = "orgs_member_delete"
+        return super().get_throttles()
 
     @extend_schema(request=UpdateMemberSerializer, responses=OrgMemberSerializer, tags=["orgs"])
     def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
@@ -469,18 +480,14 @@ def _validate_seat_limit(org: Org) -> None:
     if sub is None:
         return  # No active subscription — can't validate seats
 
-    # Count active members and pending invites in a single round-trip. Each
-    # COUNT lands on its own partial/standard index (org_members.org_id,
-    # idx_invitation_pending_org) so the joined plan stays index-only.
-    counts = Org.objects.filter(pk=org.pk).aggregate(
-        member_count=Count("members", distinct=True),
-        pending_count=Count(
-            "invitations",
-            filter=Q(invitations__status=InvitationStatus.PENDING),
-            distinct=True,
-        ),
-    )
-    if counts["member_count"] + counts["pending_count"] >= sub.seat_limit:
+    # Two index-direct counts. Each lands on its own index (org_members.org_id,
+    # idx_invitation_pending_org) without the join+GROUP BY needed by a single
+    # aggregate over the org-and-reverse relations.
+    member_count = OrgMember.objects.filter(org=org).count()
+    pending_count = Invitation.objects.filter(
+        org=org, status=InvitationStatus.PENDING
+    ).count()
+    if member_count + pending_count >= sub.seat_limit:
         raise _SeatLimitReached
 
 
@@ -515,14 +522,14 @@ class InvitationDetailView(OrgsScopedView):
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
     throttle_scope = "auth"
 
-    @extend_schema(responses={200: InvitationSerializer}, tags=["orgs"])
+    @extend_schema(responses={200: PublicInvitationSerializer}, tags=["orgs"])
     def get(self, request: Request, token: str) -> Response:
         invitation = get_object_or_404(
             Invitation.objects.select_related("org", "invited_by"),
             token=token,
             status=InvitationStatus.PENDING,
         )
-        return Response(InvitationSerializer(invitation).data)
+        return Response(PublicInvitationSerializer(invitation).data)
 
 
 class InvitationAcceptView(OrgsScopedView):
