@@ -551,18 +551,6 @@ class ProductListView(APIView):
         return Response(_catalog_envelope(list(data)))
 
 
-def _currency_lists() -> tuple[list[str], list[str]]:
-    """Compute (billable, display_only) from current settings.
-
-    Reads ``settings.BILLING_CURRENCIES`` on every call so test overrides
-    via ``override_settings`` are honoured. The set arithmetic is trivial
-    (~5 elements) — caching is not worth breaking test isolation for.
-    """
-    billable = sorted(settings.BILLING_CURRENCIES)
-    display_only = sorted(SUPPORTED_CURRENCIES - set(billable))
-    return billable, display_only
-
-
 class BillingCurrenciesView(APIView):
     """GET /api/v1/billing/currencies — list billable + display-only currencies."""
 
@@ -585,7 +573,8 @@ class BillingCurrenciesView(APIView):
         auth=[],
     )
     def get(self, request: Request) -> Response:
-        billable, display_only = _currency_lists()
+        billable = sorted(settings.BILLING_CURRENCIES)
+        display_only = sorted(SUPPORTED_CURRENCIES - set(billable))
         return Response({"billable": billable, "display_only": display_only})
 
 
@@ -1364,7 +1353,12 @@ class SubscriptionView(BillingScopedView):
         parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
         request=None,
         responses={
-            200: SubscriptionSerializer,
+            204: OpenApiResponse(
+                description=(
+                    "Cancellation scheduled. Clients should call ``GET /subscriptions/me/``"
+                    " to fetch the updated subscription state."
+                )
+            ),
             400: OpenApiResponse(
                 description=(
                     "The ``?context=`` query param is set to a value other than"
@@ -1384,12 +1378,10 @@ class SubscriptionView(BillingScopedView):
         },
         description=(
             "Schedule subscription cancellation at the end of the current billing period."
-            " Returns 200 OK with the updated subscription representation in the body —"
-            " the subscription remains active until the period end timestamp returned in"
-            " the body. Mirrors the 200-with-body convention used by"
-            " ``DELETE /subscriptions/me/scheduled-change/`` so both DELETEs are"
-            " consistent. Use ``?context=personal`` to cancel the personal sub when"
-            " the caller also holds a concurrent team sub."
+            " Returns 204 No Content; the subscription remains active until the period"
+            " end timestamp. Clients refresh state via ``GET /subscriptions/me/``."
+            " Use ``?context=personal`` to cancel the personal sub when the caller also"
+            " holds a concurrent team sub."
         ),
         tags=["billing"],
     )
@@ -1408,25 +1400,22 @@ class SubscriptionView(BillingScopedView):
             )
 
         async_to_sync(_do)()
-        ctx = _currency_context(request)
-        sub = _refetch_subscription_after_mutation(
-            user,
-            context=context,
-            currency=ctx["currency"],
-            preferred_currency=ctx.get("preferred_currency"),
-        )
         recipients = _billing_notice_recipients(user, org_id)
         if recipients:
+            ctx = _currency_context(request)
+            sub = _refetch_subscription_after_mutation(
+                user,
+                context=context,
+                currency=ctx["currency"],
+                preferred_currency=ctx.get("preferred_currency"),
+            )
             plan_name = sub.plan.name
             transaction.on_commit(
                 lambda: send_subscription_cancel_notice_task.delay(
                     recipients, plan_name, "scheduled"
                 )
             )
-        return Response(
-            SubscriptionSerializer(sub, context=cast("dict[str, Any]", ctx)).data,
-            status=status.HTTP_200_OK,
-        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ScheduledChangeView(BillingScopedView):
@@ -1434,18 +1423,22 @@ class ScheduledChangeView(BillingScopedView):
 
     Idempotent. Releases any active Stripe ``SubscriptionSchedule`` attached
     to the caller's active sub in the resolved context, restoring "no
-    pending change" state. Safe to call when no schedule exists — returns
-    the current sub unchanged. The corresponding
-    ``subscription_schedule.released`` webhook also clears the local mirror;
-    the view writes the cleared state up front so the immediate refetch
-    reflects it without webhook lag.
+    pending change" state. Safe to call when no schedule exists. The
+    corresponding ``subscription_schedule.released`` webhook also clears
+    the local mirror; the view writes the cleared state up front so a
+    follow-up ``GET /subscriptions/me/`` reflects it without webhook lag.
     """
 
     @extend_schema(
-        parameters=[_CURRENCY_PARAM, _SUBSCRIPTION_CONTEXT_PARAM],
+        parameters=[_SUBSCRIPTION_CONTEXT_PARAM],
         request=None,
         responses={
-            200: SubscriptionSerializer,
+            204: OpenApiResponse(
+                description=(
+                    "Pending schedule released (or no-op if none was active)."
+                    " Clients refresh state via ``GET /subscriptions/me/``."
+                )
+            ),
             400: OpenApiResponse(
                 description=(
                     "The ``?context=`` query param is set to a value other than"
@@ -1462,9 +1455,9 @@ class ScheduledChangeView(BillingScopedView):
         },
         description=(
             "Cancel a pending plan-switch (deferred downgrade) on the active"
-            " subscription. Idempotent — returns the unchanged subscription"
-            " when no schedule exists. Same context-routing and is_billing"
-            " gate as PATCH/DELETE on ``/me/``."
+            " subscription. Idempotent — 204 No Content whether or not a"
+            " schedule was active. Same context-routing and is_billing gate as"
+            " PATCH/DELETE on ``/me/``."
         ),
         tags=["billing"],
     )
@@ -1482,14 +1475,7 @@ class ScheduledChangeView(BillingScopedView):
             )
 
         async_to_sync(_do)()
-        ctx = _currency_context(request)
-        sub = _refetch_subscription_after_mutation(
-            user,
-            context=context,
-            currency=ctx["currency"],
-            preferred_currency=ctx.get("preferred_currency"),
-        )
-        return Response(SubscriptionSerializer(sub, context=cast("dict[str, Any]", ctx)).data)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 def _refetch_subscription_after_mutation(

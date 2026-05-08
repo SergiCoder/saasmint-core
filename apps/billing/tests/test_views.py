@@ -730,9 +730,9 @@ class TestCancelSubscription:
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
     def test_cancels_subscription(self, mock_cancel, _mock_task, authed_client, subscription):
         resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
-        # Cancellation takes effect at period end, so the response is 200 OK
-        # with the still-active subscription echoed back.
-        assert resp.status_code == 200
+        # Cancellation takes effect at period end. The DELETE responds 204
+        # No Content (RFC 9110); clients refresh state via GET /me/.
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
         assert mock_cancel.call_args.kwargs["at_period_end"] is True
 
@@ -811,7 +811,7 @@ class TestCancelSubscription:
         ):
             resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
 
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         # Schedule released first (so Stripe accepts the cancel modify).
         mock_release.assert_called_once_with("sub_sched_active")
         # Cancel modify call lands with cancel_at="min_period_end".
@@ -1704,7 +1704,7 @@ class TestConcurrentSubscriptions:
         client.force_authenticate(user=user)
 
         resp = client.delete("/api/v1/billing/subscriptions/me/?context=personal")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
         passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
         assert passed_customer_id == personal_sub.stripe_customer_id
@@ -1721,7 +1721,7 @@ class TestConcurrentSubscriptions:
         client.force_authenticate(user=user)
 
         resp = client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
         passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
         assert passed_customer_id == team_sub.stripe_customer_id
@@ -1771,7 +1771,7 @@ class TestConcurrentSubscriptions:
         client.force_authenticate(user=user)
 
         resp = client.delete("/api/v1/billing/subscriptions/me/?context=")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
         passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
         assert passed_customer_id == team_sub.stripe_customer_id
@@ -1838,7 +1838,7 @@ class TestConcurrentSubscriptions:
             patch("apps.billing.views.send_subscription_cancel_notice_task"),
         ):
             resp_personal = client.delete("/api/v1/billing/subscriptions/me/?context=personal")
-        assert resp_personal.status_code == 200
+        assert resp_personal.status_code == 204
 
     def test_two_distinct_personal_subs_picks_latest(self, plan, plan_price):
         """Defensive: two ACTIVE personal subscriptions for the same user
@@ -2068,7 +2068,7 @@ class TestBillingAuthorityOnMutations:
         self, mock_cancel, _mock_task, org_member_client, team_org_setup
     ):
         resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
 
     def test_non_billing_member_delete_returns_403(self, team_org_setup):
@@ -2179,7 +2179,7 @@ class TestBillingAuthorityOnMutations:
         client.force_authenticate(user=caller)
 
         resp = client.delete("/api/v1/billing/subscriptions/me/?context=team")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
 
         # The Stripe call MUST target org_a's customer, never org_b's.
         called_customer = mock_cancel.call_args.kwargs["stripe_customer_id"]
@@ -2199,7 +2199,7 @@ class TestCancelNoticeEmail:
         # rolled-back test transaction.
         with TestCase.captureOnCommitCallbacks(execute=True):
             resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_task.delay.assert_called_once()
         recipients, label, action = mock_task.delay.call_args.args
         assert recipients == ["billing@example.com"]
@@ -2269,7 +2269,7 @@ class TestCancelNoticeEmail:
 
         with TestCase.captureOnCommitCallbacks(execute=True):
             resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         recipients = mock_task.delay.call_args.args[0]
         assert set(recipients) == {"orgowner@example.com", "finance@example.com"}
 
@@ -2768,7 +2768,7 @@ class TestScheduledChangeView:
             new_callable=AsyncMock,
         ) as mock_release:
             resp = authed_client.delete("/api/v1/billing/subscriptions/me/scheduled-change/")
-        assert resp.status_code == 200
+        assert resp.status_code == 204
         mock_release.assert_called_once()
 
     def test_delete_404_when_no_active_subscription(self, authed_client):
@@ -2792,13 +2792,16 @@ class TestScheduledChangeView:
             patch("stripe.SubscriptionSchedule.release") as mock_release,
         ):
             resp = authed_client.delete("/api/v1/billing/subscriptions/me/scheduled-change/")
-        assert resp.status_code == 200
+        # Idempotent — 204 No Content whether or not a schedule existed.
+        assert resp.status_code == 204
         # No release call ever issued — Stripe is left untouched.
         mock_release.assert_not_called()
-        # Response surfaces the (unchanged) sub.
-        assert resp.data["id"] == str(subscription.id)
-        assert resp.data["scheduled_plan"] is None
-        assert resp.data["scheduled_change_at"] is None
+        # Local mirror unchanged: a follow-up GET still sees no scheduled change.
+        from apps.billing.models import Subscription
+
+        sub_after = Subscription.objects.get(id=subscription.id)
+        assert sub_after.scheduled_plan is None
+        assert sub_after.scheduled_change_at is None
 
     def test_delete_team_context_403_for_non_billing_member(self, team_plan_price):
         """Same is_billing gate as the other team-context mutations: a
