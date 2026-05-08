@@ -441,6 +441,20 @@ class TestForgotPasswordView:
         assert resp.status_code == 200
         mock_delay.assert_called_once()
 
+    @patch("apps.users.tasks.send_password_reset_email_task.delay")
+    def test_forgot_password_case_insensitive_email_lookup(self, mock_delay, api, verified_user):
+        """``email__iexact`` lands on the functional lower-email index.
+
+        The PR switched the lookup from ``email=`` to ``email__iexact`` so a
+        mixed-case variant of the registered address (e.g. sent by a mobile
+        client that auto-capitalises) still triggers the reset email.
+        """
+        # verified_user's email is "verified@example.com" — submit it with
+        # a capital letter to exercise the iexact path.
+        resp = api.post(self.URL, {"email": "Verified@Example.com"}, format="json")
+        assert resp.status_code == 200
+        mock_delay.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # ResendVerificationView
@@ -680,6 +694,24 @@ class TestResetPasswordView:
         verified_user.refresh_from_db()
         assert verified_user.is_verified is True
 
+    def test_reset_password_stamps_password_changed_at(self, api, verified_user):
+        """``password_changed_at`` must be set on a successful reset so that
+        access tokens minted before this moment are rejected by
+        JWTAuthentication's ``pwd_iat`` check.
+        """
+        assert verified_user.password_changed_at is None
+
+        token = create_password_reset_token(verified_user)
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "newpassword1"},
+            format="json",
+        )
+        assert resp.status_code == 200
+
+        verified_user.refresh_from_db()
+        assert verified_user.password_changed_at is not None
+
 
 # ---------------------------------------------------------------------------
 # ChangePasswordView
@@ -739,6 +771,22 @@ class TestChangePasswordView:
             format="json",
         )
         assert resp.status_code == 400
+
+    def test_change_password_stamps_password_changed_at(self, authed_client, verified_user):
+        """``password_changed_at`` must be set on a successful change so that
+        access tokens minted before this moment are rejected by
+        JWTAuthentication's ``pwd_iat`` check.
+        """
+        assert verified_user.password_changed_at is None
+
+        authed_client.post(
+            self.URL,
+            {"current_password": "testpass123", "new_password": "newpassword1"},
+            format="json",
+        )
+
+        verified_user.refresh_from_db()
+        assert verified_user.password_changed_at is not None
 
 
 # ---------------------------------------------------------------------------

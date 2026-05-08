@@ -393,3 +393,85 @@ class TestSocialLinkToken:
         with pytest.raises(AuthenticationFailed) as excinfo:
             verify_social_link_token(raw)
         assert excinfo.value.detail.get("code") == "user_not_found"  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# JWTAuthentication — password_changed_at / pwd_iat token revocation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestJWTAuthenticationPwdIat:
+    """The ``pwd_iat`` claim in the JWT is compared against
+    ``User.password_changed_at`` on every request. A token minted before the
+    last password change must be rejected with ``token_revoked``; tokens
+    minted after (or when ``password_changed_at`` is NULL) must pass.
+    """
+
+    auth = JWTAuthentication()
+
+    def _make_access_token(self, user: User) -> str:
+        """Issue a real access token so ``pwd_iat`` is stamped correctly."""
+        from apps.users.authentication import create_access_token
+
+        return create_access_token(user)
+
+    def test_token_minted_before_password_change_is_rejected(self):
+        user = User.objects.create_user(
+            email="pwd-revoke@example.com",
+            full_name="Pwd Revoke",
+            is_active=True,
+        )
+        # Mint token before the password-change timestamp.
+        token = self._make_access_token(user)
+
+        # Simulate a password change that happened 1 second later.
+        user.password_changed_at = datetime.now(UTC) + timedelta(seconds=1)
+        user.save(update_fields=["password_changed_at"])
+
+        request = _make_request(token)
+        with pytest.raises(AuthenticationFailed) as exc_info:
+            self.auth.authenticate(request)
+        assert exc_info.value.detail["code"] == "token_revoked"
+
+    def test_token_minted_after_password_change_passes(self):
+        user = User.objects.create_user(
+            email="pwd-pass@example.com",
+            full_name="Pwd Pass",
+            is_active=True,
+        )
+        # Stamp a past password-change timestamp first.
+        user.password_changed_at = datetime.now(UTC) - timedelta(minutes=5)
+        user.save(update_fields=["password_changed_at"])
+
+        # Mint a token *after* the past change — should pass.
+        token = self._make_access_token(user)
+
+        request = _make_request(token)
+        result_user, _ = self.auth.authenticate(request)
+        assert result_user.pk == user.pk
+
+    def test_token_without_pwd_iat_passes_when_password_changed_at_is_null(self):
+        """Legacy tokens (issued before the pwd_iat column existed) carry no
+        ``pwd_iat`` or carry ``pwd_iat=0``. They must not log users out when
+        ``password_changed_at`` is NULL (the rollout-safe path)."""
+        user = User.objects.create_user(
+            email="legacy-jwt@example.com",
+            full_name="Legacy JWT",
+            is_active=True,
+        )
+        assert user.password_changed_at is None
+
+        # Craft a token without ``pwd_iat`` to simulate the pre-column era.
+        payload = {
+            "sub": str(user.id),
+            "email": user.email,
+            "type": "access",
+            "iat": datetime.now(UTC),
+            "exp": datetime.now(UTC) + timedelta(hours=1),
+            # Deliberately no ``pwd_iat`` key.
+        }
+        token = jwt.encode(payload, settings.JWT_SIGNING_KEY, algorithm="HS256")
+        request = _make_request(token)
+        result_user, _ = self.auth.authenticate(request)
+        assert result_user.pk == user.pk

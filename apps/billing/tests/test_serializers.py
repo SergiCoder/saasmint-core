@@ -385,6 +385,48 @@ class TestPlanPriceSerializerCurrency:
         data = PlanPriceSerializer(plan_price, context={"currency": "eur"}).data
         assert data["display_amount"] == 9.99
 
+    def test_local_display_amount_populated_for_preferred_currency(self, plan_price):
+        """When ``preferred_currency`` is in the context (display-only currency
+        whose charge falls back to USD), the serializer populates
+        ``local_display_amount`` and ``local_currency`` from the matching
+        ``LocalizedPrice`` row so the FE can show a dual-currency card.
+        """
+        LocalizedPrice.objects.create(
+            plan_price=plan_price, currency="eur", amount_minor=899, synced_at=datetime.now(UTC)
+        )
+        # The view passes ``currency="usd"`` (billable) and
+        # ``preferred_currency="eur"`` (display-only) at the same time.
+        data = PlanPriceSerializer(
+            plan_price,
+            context={"currency": "usd", "preferred_currency": "eur"},
+        ).data
+        assert data["display_amount"] == 9.99  # USD billable charge
+        assert data["currency"] == "usd"
+        assert data["local_display_amount"] == 8.99  # EUR display approximation
+        assert data["local_currency"] == "eur"
+
+    def test_local_display_amount_is_none_when_preferred_currency_not_in_context(
+        self, plan_price
+    ):
+        """No ``preferred_currency`` key in context → both local fields are None.
+        This is the normal single-currency path (billable preferred currency).
+        """
+        data = PlanPriceSerializer(plan_price, context={"currency": "usd"}).data
+        assert data["local_display_amount"] is None
+        assert data["local_currency"] is None
+
+    def test_local_display_amount_is_none_when_localized_row_missing(self, plan_price):
+        """``_local_display`` does NOT fall back to USD — if the row is missing
+        the primary ``display_amount`` already covers the actual charge and no
+        local approximation is shown to the user."""
+        # No LocalizedPrice row for "eur".
+        data = PlanPriceSerializer(
+            plan_price,
+            context={"currency": "usd", "preferred_currency": "eur"},
+        ).data
+        assert data["local_display_amount"] is None
+        assert data["local_currency"] is None
+
 
 @pytest.mark.django_db
 class TestProductPriceSerializer:
