@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from typing import Any, ClassVar, TypedDict, cast
 from uuid import UUID
@@ -43,7 +44,7 @@ from saasmint_core.services.subscriptions import (
     update_seat_count,
 )
 
-from apps.base_views import BillingScopedView
+from apps.base_views import BillingScopedView, paginated_response_schema
 from apps.billing.models import (
     ACTIVE_SUBSCRIPTION_STATUSES,
     CreditBalance,
@@ -67,7 +68,6 @@ from apps.billing.serializers import (
     SubscriptionSerializer,
     UpdateSubscriptionSerializer,
 )
-from apps.billing.services import get_credit_balance
 from apps.billing.tasks import send_subscription_cancel_notice_task
 from apps.orgs.models import OrgMember, OrgRole
 from apps.users.models import User
@@ -362,23 +362,6 @@ def _validate_subscription_context(value: str | None) -> str | None:
     return value
 
 
-def _user_is_org_member(user: User) -> bool:
-    """Return True if *user* belongs to any org.
-
-    The source of truth for "is this caller an org member" — replaces the
-    old ``user.account_type == ORG_MEMBER`` denormalized flag. A user is
-    an org member iff an ``OrgMember`` row exists for them.
-    """
-
-    return OrgMember.objects.filter(user_id=user.id).exists()
-
-
-async def _user_is_org_member_async(user: User) -> bool:
-    """Async variant of :func:`_user_is_org_member`."""
-
-    return await OrgMember.objects.filter(user_id=user.id).aexists()
-
-
 def _default_subscription_context(user: User) -> str:
     """Resolve the default ``?context=`` for PATCH/DELETE on /me/.
 
@@ -386,18 +369,14 @@ def _default_subscription_context(user: User) -> str:
     keeps single-sub callers working unchanged. Concurrent users (rule 5b)
     pass an explicit ``?context=personal`` to manage their personal sub.
     """
-    return (
-        PlanContext.TEAM.value if _user_is_org_member(user) else PlanContext.PERSONAL.value
-    )
+    is_member = OrgMember.objects.filter(user_id=user.id).exists()
+    return PlanContext.TEAM.value if is_member else PlanContext.PERSONAL.value
 
 
 async def _default_subscription_context_async(user: User) -> str:
     """Async variant of :func:`_default_subscription_context`."""
-    return (
-        PlanContext.TEAM.value
-        if await _user_is_org_member_async(user)
-        else PlanContext.PERSONAL.value
-    )
+    is_member = await OrgMember.objects.filter(user_id=user.id).aexists()
+    return PlanContext.TEAM.value if is_member else PlanContext.PERSONAL.value
 
 
 async def _resolve_billing_customer(
@@ -527,15 +506,7 @@ class PlanListView(APIView):
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
-        responses=inline_serializer(
-            "PlanListResponse",
-            {
-                "count": drf_serializers.IntegerField(),
-                "next": drf_serializers.URLField(allow_null=True),
-                "previous": drf_serializers.URLField(allow_null=True),
-                "results": PlanSerializer(many=True),
-            },
-        ),
+        responses=paginated_response_schema("PlanListResponse", PlanSerializer(many=True)),
         description=(
             "List all active plans with prices. Emits the DRF paginated envelope"
             " (``count``/``next``/``previous``/``results``) — the catalog is bounded,"
@@ -566,14 +537,8 @@ class ProductListView(APIView):
 
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
-        responses=inline_serializer(
-            "ProductListResponse",
-            {
-                "count": drf_serializers.IntegerField(),
-                "next": drf_serializers.URLField(allow_null=True),
-                "previous": drf_serializers.URLField(allow_null=True),
-                "results": ProductSerializer(many=True),
-            },
+        responses=paginated_response_schema(
+            "ProductListResponse", ProductSerializer(many=True)
         ),
         description=(
             "List all active one-time products with prices. Emits the DRF paginated envelope"
@@ -593,6 +558,19 @@ class ProductListView(APIView):
         )
         data = ProductSerializer(products, many=True, context=cast("dict[str, Any]", ctx)).data
         return Response(_catalog_envelope(list(data)))
+
+
+@functools.cache
+def _currency_lists() -> tuple[list[str], list[str]]:
+    """Compute (billable, display_only) once per process.
+
+    ``BILLING_CURRENCIES`` and ``SUPPORTED_CURRENCIES`` are both fixed at
+    import time, so the lists never change between deploys — caching at
+    module level avoids repeating the set-arithmetic on every request.
+    """
+    billable = sorted(settings.BILLING_CURRENCIES)
+    display_only = sorted(SUPPORTED_CURRENCIES - set(billable))
+    return billable, display_only
 
 
 class BillingCurrenciesView(APIView):
@@ -617,8 +595,7 @@ class BillingCurrenciesView(APIView):
         auth=[],
     )
     def get(self, request: Request) -> Response:
-        billable = sorted(settings.BILLING_CURRENCIES)
-        display_only = sorted(SUPPORTED_CURRENCIES - set(billable))
+        billable, display_only = _currency_lists()
         return Response({"billable": billable, "display_only": display_only})
 
 
@@ -1020,31 +997,31 @@ class CreditBalanceView(BillingScopedView):
             .first()
         )
 
+        # Single SELECT pulls both balances (when applicable) in one round-trip,
+        # then we discriminate the org/user rows in Python. The predicate pins
+        # ``user_id=user.id`` and ``org_id`` to the caller's org (when present)
+        # so we never over-fetch other users' or other orgs' rows. Re-using the
+        # same one-query path for explicit-context calls avoids a second DB
+        # round-trip via ``get_credit_balance``.
+        if context == PlanContext.TEAM.value and org_id is None:
+            raise NotFound("Caller is not a member of any organization.")
+        predicate = Q(user_id=user.id)
+        if org_id is not None and context != PlanContext.PERSONAL.value:
+            predicate |= Q(org_id=org_id)
+        rows = list(
+            CreditBalance.objects.filter(predicate).only("balance", "user_id", "org_id")
+        )
+
         if context == PlanContext.PERSONAL.value:
-            balances.append({"balance": get_credit_balance(user=user), "scope": "user"})
+            user_balance = next((r.balance for r in rows if r.user_id == user.id), 0)
+            balances.append({"balance": user_balance, "scope": "user"})
         elif context == PlanContext.TEAM.value:
-            if org_id is None:
-                raise NotFound("Caller is not a member of any organization.")
-            balances.append({"balance": get_credit_balance(org_id=org_id), "scope": "org"})
+            org_balance = next((r.balance for r in rows if r.org_id == org_id), 0)
+            balances.append({"balance": org_balance, "scope": "org"})
         else:
             # Default routing: org member → both rows when applicable, non-member → user.
-            # Single SELECT pulls both balances in one round-trip, then we
-            # discriminate the org/user rows in Python. The predicate
-            # explicitly pins ``user_id=user.id`` and ``org_id`` to the
-            # caller's org (when present) so we never over-fetch other
-            # users' or other orgs' rows.
-            predicate = Q(user_id=user.id)
             if org_id is not None:
-                predicate |= Q(org_id=org_id)
-            rows = list(
-                CreditBalance.objects.filter(predicate).only(
-                    "balance", "user_id", "org_id"
-                )
-            )
-            if org_id is not None:
-                org_balance = next(
-                    (r.balance for r in rows if r.org_id == org_id), 0
-                )
+                org_balance = next((r.balance for r in rows if r.org_id == org_id), 0)
                 balances.append({"balance": org_balance, "scope": "org"})
                 # Surface leftover personal credits from a pre-upgrade purchase
                 # (rule 16). Only emit when > 0 so we don't spam zero-rows for
@@ -1055,9 +1032,7 @@ class CreditBalanceView(BillingScopedView):
                 if personal_balance > 0:
                     balances.append({"balance": personal_balance, "scope": "user"})
             else:
-                user_balance = next(
-                    (r.balance for r in rows if r.user_id == user.id), 0
-                )
+                user_balance = next((r.balance for r in rows if r.user_id == user.id), 0)
                 balances.append({"balance": user_balance, "scope": "user"})
 
         return Response(CreditBalanceSerializer({"balances": balances}).data)
@@ -1149,8 +1124,6 @@ def _require_billing_authority(user: User, *, context: str) -> UUID | None:
     """
     if context == PlanContext.PERSONAL.value:
         return None
-
-
     billing_member = (
         OrgMember.objects.filter(
             user_id=user.id,
@@ -1201,8 +1174,6 @@ def _billing_notice_recipients(user: User, org_id: UUID | None) -> list[str]:
     """
     if org_id is None:
         return [str(user.email)]
-
-
     return list(
         OrgMember.objects.filter(
             org_id=org_id,
@@ -1286,14 +1257,8 @@ class SubscriptionView(BillingScopedView):
     @extend_schema(
         parameters=[_CURRENCY_PARAM],
         responses={
-            200: inline_serializer(
-                "SubscriptionListResponse",
-                {
-                    "count": drf_serializers.IntegerField(),
-                    "next": drf_serializers.URLField(allow_null=True),
-                    "previous": drf_serializers.URLField(allow_null=True),
-                    "results": SubscriptionSerializer(many=True),
-                },
+            200: paginated_response_schema(
+                "SubscriptionListResponse", SubscriptionSerializer(many=True)
             ),
         },
         description=(
