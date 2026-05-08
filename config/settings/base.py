@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 
+from django.core.exceptions import ImproperlyConfigured
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 
 # Repo root: base.py → settings/ → config/ → repo
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -277,9 +279,6 @@ STRIPE_SECRET_KEY = env.stripe_secret_key
 STRIPE_WEBHOOK_SECRET = env.stripe_webhook_secret
 
 # Multi-currency billing
-from django.core.exceptions import ImproperlyConfigured  # noqa: E402
-from saasmint_core.services.currency import SUPPORTED_CURRENCIES  # noqa: E402
-
 BILLING_CURRENCIES: list[str] = [c.lower() for c in env.billing_currencies]
 _unsupported = [c for c in BILLING_CURRENCIES if c not in SUPPORTED_CURRENCIES]
 if _unsupported:

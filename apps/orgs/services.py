@@ -25,6 +25,7 @@ import stripe
 from asgiref.sync import sync_to_async
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
+from saasmint_core.exceptions import DomainError
 
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
 from apps.users.models import User
@@ -263,7 +264,7 @@ async def delete_org_on_subscription_cancel(org_id: UUID) -> None:
     delete_org_on_subscription_cancel_task.delay(str(org_id))
 
 
-class SeatCapReachedAtAcceptError(Exception):
+class SeatCapReachedAtAcceptError(DomainError):
     """Raised by ``accept_invitation`` when the team's seat cap is reached at commit.
 
     Re-raised by the view layer as a 409 Conflict so the invitee gets a
