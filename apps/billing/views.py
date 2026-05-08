@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import logging
 from typing import Any, ClassVar, TypedDict, cast
 from uuid import UUID
@@ -55,7 +54,6 @@ from apps.billing.models import (
 )
 from apps.billing.models import Plan as PlanModel
 from apps.billing.models import Product as ProductModel
-from apps.billing.models import StripeCustomer as StripeCustomerModel
 from apps.billing.models import Subscription as SubscriptionModel
 from apps.billing.repositories import get_billing_repos
 from apps.billing.serializers import (
@@ -560,13 +558,12 @@ class ProductListView(APIView):
         return Response(_catalog_envelope(list(data)))
 
 
-@functools.cache
 def _currency_lists() -> tuple[list[str], list[str]]:
-    """Compute (billable, display_only) once per process.
+    """Compute (billable, display_only) from current settings.
 
-    ``BILLING_CURRENCIES`` and ``SUPPORTED_CURRENCIES`` are both fixed at
-    import time, so the lists never change between deploys — caching at
-    module level avoids repeating the set-arithmetic on every request.
+    Reads ``settings.BILLING_CURRENCIES`` on every call so test overrides
+    via ``override_settings`` are honoured. The set arithmetic is trivial
+    (~5 elements) — caching is not worth breaking test isolation for.
     """
     billable = sorted(settings.BILLING_CURRENCIES)
     display_only = sorted(SUPPORTED_CURRENCIES - set(billable))
@@ -731,7 +728,9 @@ class CheckoutSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED)
+        return Response(
+            {"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url}
+        )
 
 
 class PortalSessionView(BillingScopedView):
@@ -791,7 +790,7 @@ class PortalSessionView(BillingScopedView):
                 # cancel-from-Stripe — not read-only). Pass the authorised
                 # ``org_id`` through so a multi-org caller can't open a portal
                 # session against an org they're not is_billing in.
-                authorized_org_id = await sync_to_async(_require_billing_authority)(
+                authorized_org_id = await _require_billing_authority_async(
                     user, context=PlanContext.TEAM.value
                 )
                 customer = await _resolve_billing_customer(
@@ -820,7 +819,9 @@ class PortalSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED)
+        return Response(
+            {"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url}
+        )
 
 
 def _resolve_product_purchase_context(user: User, context: str | None) -> UUID | None:
@@ -839,16 +840,17 @@ def _resolve_product_purchase_context(user: User, context: str | None) -> UUID |
     (no org to buy for) and get 400.
     """
 
-    effective = context or _default_subscription_context(user)
+    # One membership lookup powers both the default-context derivation and
+    # the owner-only gate for team purchases — the prior code fired an extra
+    # ``.exists()`` via ``_default_subscription_context`` before this query.
+    membership = OrgMember.objects.filter(user_id=user.id).only("org_id", "role").first()
+    effective = context or (
+        PlanContext.TEAM.value if membership is not None else PlanContext.PERSONAL.value
+    )
 
     if effective == PlanContext.PERSONAL.value:
         return None
 
-    # effective == "team" — fetch any membership (regardless of role) in a
-    # single query, then discriminate the three outcomes (owner / non-owner /
-    # not-a-member) in Python. Selecting ``role`` lets us collapse the prior
-    # two-query error path (owner-only filter → exists() fallback) into one.
-    membership = OrgMember.objects.filter(user_id=user.id).only("org_id", "role").first()
     if membership is None:
         # Not an org member at all (400 — bad request, no team scope).
         raise ValidationError(
@@ -954,7 +956,9 @@ class ProductCheckoutSessionView(BillingScopedView):
             )
 
         url = async_to_sync(_do)()
-        return Response({"url": url}, status=status.HTTP_201_CREATED)
+        return Response(
+            {"url": url}, status=status.HTTP_201_CREATED, headers={"Location": url}
+        )
 
 
 class CreditBalanceView(BillingScopedView):
@@ -1000,9 +1004,7 @@ class CreditBalanceView(BillingScopedView):
         # Single SELECT pulls both balances (when applicable) in one round-trip,
         # then we discriminate the org/user rows in Python. The predicate pins
         # ``user_id=user.id`` and ``org_id`` to the caller's org (when present)
-        # so we never over-fetch other users' or other orgs' rows. Re-using the
-        # same one-query path for explicit-context calls avoids a second DB
-        # round-trip via ``get_credit_balance``.
+        # so we never over-fetch other users' or other orgs' rows.
         if context == PlanContext.TEAM.value and org_id is None:
             raise NotFound("Caller is not a member of any organization.")
         predicate = Q(user_id=user.id)
@@ -1091,20 +1093,12 @@ def _get_active_subscriptions_for_user(
             subs.append(team_sub)
             seen_ids.add(team_sub.id)
 
-    # Personal sub — picked up via either ``Subscription.user_id`` or
-    # ``stripe_customer.user_id``. One OR'd query lets Postgres BitmapOr the
-    # two partial indexes (idx_sub_user_status / idx_sub_customer_status)
-    # into a single index union, saving the second round-trip. Pull the
-    # customer id directly via the FK so we don't materialise the full
-    # StripeCustomer row just to read its primary key.
-    customer_id = (
-        StripeCustomerModel.objects.filter(user_id=user.id)
-        .values_list("id", flat=True)
-        .first()
-    )
-    predicate = Q(user_id=user.id)
-    if customer_id is not None:
-        predicate |= Q(stripe_customer_id=customer_id)
+    # Personal sub — picked up via either ``Subscription.user_id`` or the
+    # FK traversal ``stripe_customer.user_id``. One OR'd query lets Postgres
+    # BitmapOr the two partial indexes (idx_sub_user_status /
+    # idx_sub_customer_status) into a single index union; the FK traversal
+    # avoids the prior round-trip to materialise the customer id first.
+    predicate = Q(user_id=user.id) | Q(stripe_customer__user_id=user.id)
     latest_personal = base.filter(predicate).order_by("-created_at").first()
     if latest_personal is not None and latest_personal.id not in seen_ids:
         subs.append(latest_personal)
@@ -1131,6 +1125,28 @@ def _require_billing_authority(user: User, *, context: str) -> UUID | None:
         )
         .only("org_id")
         .first()
+    )
+    if billing_member is None:
+        raise PermissionDenied("Only billing members can modify the team subscription.")
+    return billing_member.org_id
+
+
+async def _require_billing_authority_async(user: User, *, context: str) -> UUID | None:
+    """Async variant of :func:`_require_billing_authority`.
+
+    Used inside async closures (e.g. ``PortalSessionView`` ``_do``) where
+    wrapping the sync helper in ``sync_to_async`` would burn a thread-pool
+    slot for a single ORM ``.first()``.
+    """
+    if context == PlanContext.PERSONAL.value:
+        return None
+    billing_member = (
+        await OrgMember.objects.filter(
+            user_id=user.id,
+            is_billing=True,
+        )
+        .only("org_id")
+        .afirst()
     )
     if billing_member is None:
         raise PermissionDenied("Only billing members can modify the team subscription.")
