@@ -275,7 +275,7 @@ class SeatCapReachedAtAcceptError(DomainError):
     """
 
 
-def _lock_active_team_sub(org: Org) -> SubscriptionModel | None:
+def lock_active_team_sub(org: Org) -> SubscriptionModel | None:
     """Return the org's active team Subscription with a row lock, or ``None``.
 
     Must be called inside an ``atomic()`` block — the ``SELECT FOR UPDATE``
@@ -337,7 +337,7 @@ def accept_invitation(
         # accept / invite create / member add against the same org serialises
         # behind us. Mirrors the lock taken at invite-creation time in
         # ``_validate_seat_limit``.
-        sub = _lock_active_team_sub(org)
+        sub = lock_active_team_sub(org)
         if sub is not None:
             counts = Org.objects.filter(pk=org.pk).aggregate(
                 member_count=Count("members", distinct=True),
@@ -512,9 +512,9 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
     # mirrors :func:`_delete_org_db_only` — a user is deleted only when they
     # have no membership outside this batch AND no active personal sub.
     with transaction.atomic():
-        Invitation.objects.filter(
-            org_id__in=org_ids, status=InvitationStatus.PENDING
-        ).update(status=InvitationStatus.CANCELLED)
+        Invitation.objects.filter(org_id__in=org_ids, status=InvitationStatus.PENDING).update(
+            status=InvitationStatus.CANCELLED
+        )
 
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id__in=org_ids
@@ -561,5 +561,3 @@ def _get_active_stripe_sub(org_id: UUID) -> SubscriptionModel | None:
         .order_by("-created_at")
         .first()
     )
-
-

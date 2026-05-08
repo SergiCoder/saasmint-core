@@ -42,7 +42,7 @@ from apps.orgs.serializers import (
     UpdateMemberSerializer,
     UpdateOrgSerializer,
 )
-from apps.orgs.services import _lock_active_team_sub
+from apps.orgs.services import lock_active_team_sub
 from apps.users.services import email_is_registered
 from helpers import get_user
 
@@ -101,8 +101,6 @@ def _default_paginator() -> LimitOffsetPagination:
     paginator.default_limit = _DEFAULT_PAGE_SIZE
     paginator.max_limit = _MAX_PAGE_SIZE
     return paginator
-
-
 
 
 def _get_org_and_member(
@@ -467,7 +465,7 @@ def _validate_seat_limit(org: Org) -> None:
     """
     # Lock the active team sub row. Shared with ``accept_invitation`` so the
     # invite-create and invite-accept paths serialise on the same row.
-    sub = _lock_active_team_sub(org)
+    sub = lock_active_team_sub(org)
     if sub is None:
         return  # No active subscription — can't validate seats
 
