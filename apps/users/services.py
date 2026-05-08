@@ -5,7 +5,8 @@ from __future__ import annotations
 import io
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, BinaryIO, Literal
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -36,12 +37,14 @@ if TYPE_CHECKING:
 # silently auto-link onto an existing local account — the user proves
 # mailbox control via the email-confirm flow (see ``OAuthConfirmLinkView``).
 #
-# Derived from the canonical ``Provider`` enum so adding a new provider
-# there automatically extends the trust list. If a future provider only
-# qualifies for fresh signups but NOT auto-link (e.g. an unverified-by-
-# default OAuth source), drop the derivation back to a literal set and
-# document the divergence.
-TRUSTED_FOR_AUTO_LINK: frozenset[str] = frozenset(p.value for p in Provider)
+# Explicit set rather than ``frozenset(p.value for p in Provider)`` so adding
+# a new provider to the enum is NOT enough to grant auto-link trust — that
+# decision needs to live next to evidence that the provider's email-verified
+# claim is signed by the user's own act (mailbox click), not an admin-mutable
+# attribute. New entries go here only after review.
+TRUSTED_FOR_AUTO_LINK: frozenset[str] = frozenset(
+    {Provider.GOOGLE.value, Provider.GITHUB.value, Provider.MICROSOFT.value}
+)
 
 
 @dataclass(frozen=True)
@@ -168,8 +171,6 @@ def _delete_local_avatar(avatar_url: str | None) -> None:
     """
     if not avatar_url:
         return
-    from urllib.parse import urlparse
-
     path = urlparse(avatar_url).path
     if path.startswith(settings.MEDIA_URL):
         old_path = path.removeprefix(settings.MEDIA_URL)
@@ -177,7 +178,7 @@ def _delete_local_avatar(avatar_url: str | None) -> None:
             default_storage.delete(old_path)
 
 
-def process_and_save_avatar(file: object, user: User, request: Request) -> str:
+def process_and_save_avatar(file: BinaryIO, user: User, request: Request) -> str:
     """Decode, normalise, encode, store and persist a user's avatar.
 
     Pillow round-trip strips metadata and re-encodes as a 128x128 WebP, so
@@ -186,9 +187,9 @@ def process_and_save_avatar(file: object, user: User, request: Request) -> str:
     unsupported formats or undecodable input — callers (the view) propagate
     those as 400 responses with the field-shaped error envelope.
     """
-    file.seek(0)  # type: ignore[attr-defined]
+    file.seek(0)
     try:
-        with Image.open(file) as opened:  # type: ignore[arg-type]
+        with Image.open(file) as opened:
             fmt = (opened.format or "").upper()
             if fmt not in _ALLOWED_AVATAR_INPUT_FORMATS:
                 raise drf_serializers.ValidationError(

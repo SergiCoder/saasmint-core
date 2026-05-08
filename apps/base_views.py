@@ -2,11 +2,32 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
+from drf_spectacular.utils import inline_serializer
+from rest_framework import serializers as drf_serializers
 from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+
+
+def paginated_response_schema(
+    name: str, child: drf_serializers.BaseSerializer[Any]
+) -> drf_serializers.Serializer[object]:
+    """Build an inline serializer for the DRF paginated envelope.
+
+    Document the real wire shape of ``LimitOffsetPagination`` responses —
+    a bare ``child(many=True)`` hides ``count``/``next``/``previous``.
+    """
+    return inline_serializer(
+        name,
+        {
+            "count": drf_serializers.IntegerField(),
+            "next": drf_serializers.URLField(allow_null=True),
+            "previous": drf_serializers.URLField(allow_null=True),
+            "results": child,
+        },
+    )
 
 
 class AuthScopedView(APIView):

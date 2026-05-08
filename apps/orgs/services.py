@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
     from apps.billing.models import Subscription as SubscriptionModel
 
 import stripe
@@ -370,6 +372,25 @@ def accept_invitation(
     return user, org
 
 
+def _personal_subs_outer_ref_qs() -> QuerySet[SubscriptionModel]:
+    """Subquery: rows in ``Subscription`` representing an active personal sub for
+    the current outer ``user_id``. Used in the cascade-delete predicates that
+    must preserve users still paying for their own plan. Lazy-imports the
+    billing model to keep ``apps.orgs`` from depending on ``apps.billing`` at
+    module load (see file-level docstring).
+    """
+    from django.db.models import OuterRef
+
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+    from apps.billing.models import Subscription as SubscriptionModel
+
+    return SubscriptionModel.objects.filter(
+        user_id=OuterRef("user_id"),
+        stripe_customer__user_id=OuterRef("user_id"),
+        status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+    )
+
+
 def _delete_org_db_only(org: Org) -> None:
     """Delete an org's DB state (invitations, members, users, the org row).
 
@@ -394,17 +415,10 @@ def _delete_org_db_only(org: Org) -> None:
         # silently nuke a user who's still paying for their own personal plan.
         # The NOT EXISTS subqueries are evaluated in the DB so we don't need
         # to materialize thousands of UUIDs into Python for the IN clause.
-        from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
-        from apps.billing.models import Subscription as SubscriptionModel
-
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id=org_id
         )
-        personal_subs = SubscriptionModel.objects.filter(
-            user_id=OuterRef("user_id"),
-            stripe_customer__user_id=OuterRef("user_id"),
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        )
+        personal_subs = _personal_subs_outer_ref_qs()
         deletable_user_ids = (
             OrgMember.objects.filter(org=org)
             .annotate(
@@ -505,11 +519,7 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id__in=org_ids
         )
-        personal_subs = SubscriptionModel.objects.filter(
-            user_id=OuterRef("user_id"),
-            stripe_customer__user_id=OuterRef("user_id"),
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        )
+        personal_subs = _personal_subs_outer_ref_qs()
         deletable_user_ids = (
             OrgMember.objects.filter(org_id__in=org_ids)
             .annotate(

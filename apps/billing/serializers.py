@@ -257,7 +257,19 @@ class SubscriptionSerializer(serializers.ModelSerializer[Subscription]):
         return annotated
 
 
-class CheckoutRequestSerializer(serializers.Serializer[object]):
+class _SuccessCancelUrlMixin:
+    """Re-usable validators for serializers carrying success_url/cancel_url."""
+
+    def validate_success_url(self, value: str) -> str:
+        return _validate_redirect_url(value)
+
+    def validate_cancel_url(self, value: str) -> str:
+        return _validate_redirect_url(value)
+
+
+class CheckoutRequestSerializer(
+    _SuccessCancelUrlMixin, serializers.Serializer[object]
+):
     plan_price_id = serializers.UUIDField()
     seat_limit = serializers.IntegerField(default=1, min_value=1, max_value=10000)
     success_url = serializers.URLField()
@@ -268,12 +280,6 @@ class CheckoutRequestSerializer(serializers.Serializer[object]):
     org_name = serializers.CharField(max_length=255, required=False)
     keep_personal_subscription = serializers.BooleanField(default=False)
 
-    def validate_success_url(self, value: str) -> str:
-        return _validate_redirect_url(value)
-
-    def validate_cancel_url(self, value: str) -> str:
-        return _validate_redirect_url(value)
-
 
 class PortalRequestSerializer(serializers.Serializer[object]):
     return_url = serializers.URLField()
@@ -282,16 +288,12 @@ class PortalRequestSerializer(serializers.Serializer[object]):
         return _validate_redirect_url(value)
 
 
-class ProductCheckoutRequestSerializer(serializers.Serializer[object]):
+class ProductCheckoutRequestSerializer(
+    _SuccessCancelUrlMixin, serializers.Serializer[object]
+):
     product_price_id = serializers.UUIDField()
     success_url = serializers.URLField()
     cancel_url = serializers.URLField()
-
-    def validate_success_url(self, value: str) -> str:
-        return _validate_redirect_url(value)
-
-    def validate_cancel_url(self, value: str) -> str:
-        return _validate_redirect_url(value)
 
 
 class CreditBalanceEntrySerializer(serializers.Serializer[object]):

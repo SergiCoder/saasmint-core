@@ -5,13 +5,13 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any
 from uuid import UUID
 
 import httpx
 import stripe
 from asgiref.sync import async_to_sync
 from django.db import transaction
+from django.db.models import QuerySet
 from django.db.utils import OperationalError
 
 from apps.billing.repositories import get_webhook_repos
@@ -190,7 +190,11 @@ def sync_localized_prices() -> int:
         changed = 0
 
         sources: list[
-            tuple[Any, str, dict[UUID, dict[str, LocalizedPrice]]]
+            tuple[
+                QuerySet[PlanPrice] | QuerySet[ProductPrice],
+                str,
+                dict[UUID, dict[str, LocalizedPrice]],
+            ]
         ] = [
             (PlanPrice.objects.all().only("id", "amount"), "plan_price_id", plan_buckets),
             (

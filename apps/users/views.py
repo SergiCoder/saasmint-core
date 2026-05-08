@@ -6,6 +6,7 @@ import uuid
 from typing import TYPE_CHECKING, ClassVar
 
 from asgiref.sync import async_to_sync, sync_to_async
+from django.core.files.uploadedfile import UploadedFile
 from drf_spectacular.utils import extend_schema, inline_serializer
 from rest_framework import serializers, status
 from rest_framework.parsers import MultiPartParser
@@ -21,7 +22,7 @@ from apps.billing.repositories import get_billing_repos
 from apps.users.models import User
 from apps.users.repositories import DjangoUserRepository
 from apps.users.serializers import UpdateUserSerializer, UserSerializer
-from apps.users.services import process_and_save_avatar
+from apps.users.services import _delete_local_avatar, process_and_save_avatar
 from helpers import get_user
 
 if TYPE_CHECKING:
@@ -143,7 +144,7 @@ _MAX_AVATAR_SIZE = 5 * 1024 * 1024  # 5 MB upload cap
 class _AvatarUploadSerializer(serializers.Serializer["_AvatarUploadSerializer"]):
     avatar = serializers.ImageField(max_length=255)
 
-    def validate_avatar(self, value: object) -> object:
+    def validate_avatar(self, value: UploadedFile) -> UploadedFile:
         size = getattr(value, "size", None)
         if size is not None and size > _MAX_AVATAR_SIZE:
             raise serializers.ValidationError("File too large (max 5 MB).")
@@ -187,10 +188,6 @@ class AvatarView(AccountScopedView):
     @extend_schema(responses={204: None}, tags=["account"])
     def delete(self, request: Request) -> Response:
         """Delete avatar."""
-        # Local import keeps the helper colocated with the upload service
-        # without forcing a circular import at module load time.
-        from apps.users.services import _delete_local_avatar
-
         user = get_user(request)
 
         _delete_local_avatar(user.avatar_url)
