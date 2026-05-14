@@ -110,6 +110,12 @@ async def create_checkout_session(
     USD only — for other currencies the Price is already correct and the flag
     would be redundant; ``automatic_tax`` is always on so VAT/GST is collected
     once the merchant configures tax registrations in the dashboard.
+
+    ``customer_update[address]='auto'`` is required for ``automatic_tax``:
+    customers are minted without an address, so Stripe needs to save the one
+    collected during Checkout back onto the Customer — otherwise the session
+    is rejected with "Automatic tax calculation in Checkout requires a valid
+    address on the Customer".
     """
     subscription_data: dict[str, object] = {}
     if trial_period_days is not None:
@@ -126,6 +132,7 @@ async def create_checkout_session(
         "allow_promotion_codes": True,
         "adaptive_pricing": {"enabled": billing_currency == "usd"},
         "automatic_tax": {"enabled": True},
+        "customer_update": {"address": "auto"},
     }
 
     # Session-level metadata carries org fields for checkout.session.completed
@@ -169,6 +176,7 @@ async def create_product_checkout_session(
         "allow_promotion_codes": True,
         "adaptive_pricing": {"enabled": billing_currency == "usd"},
         "automatic_tax": {"enabled": True},
+        "customer_update": {"address": "auto"},
     }
     if metadata is not None:
         params["metadata"] = metadata

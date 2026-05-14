@@ -302,6 +302,13 @@ class TestCheckoutSessionParams:
         mock_create = _run_create_checkout("eur")
         assert mock_create.call_args.kwargs["automatic_tax"] == {"enabled": True}
 
+    def test_customer_update_address_auto(self):
+        # Required alongside automatic_tax: customers are minted without an
+        # address, so Stripe needs the address collected during Checkout to be
+        # saved back onto the Customer or the session is rejected.
+        mock_create = _run_create_checkout("eur")
+        assert mock_create.call_args.kwargs["customer_update"] == {"address": "auto"}
+
     def test_adaptive_pricing_disabled_for_non_usd(self):
         mock_create = _run_create_checkout("eur")
         assert mock_create.call_args.kwargs["adaptive_pricing"] == {"enabled": False}
