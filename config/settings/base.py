@@ -35,6 +35,8 @@ class _Env(BaseSettings):
     jwt_signing_key: str = ""  # if empty, falls back to django_secret_key
     stripe_secret_key: str
     stripe_webhook_secret: str
+    recaptcha_secret_key: str = ""  # empty ⇒ captcha verification is a no-op (feature off)
+    recaptcha_min_score: float = 0.5  # reCAPTCHA v3 score below this ⇒ rejected
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://localhost:5432/saasmint"
     environment: str = "local"  # local | dev | prod — surfaced in admin banner + logs
@@ -282,6 +284,11 @@ CELERY_BEAT_SCHEDULE = {
 # Stripe
 STRIPE_SECRET_KEY = env.stripe_secret_key
 STRIPE_WEBHOOK_SECRET = env.stripe_webhook_secret
+
+# reCAPTCHA (v3) — bot protection on register / forgot-password / resend-verification.
+# Empty secret ⇒ token verification is skipped, so local dev and tests run keyless.
+RECAPTCHA_SECRET_KEY = env.recaptcha_secret_key
+RECAPTCHA_MIN_SCORE = env.recaptcha_min_score
 
 # Multi-currency billing
 BILLING_CURRENCIES: list[str] = [c.lower() for c in env.billing_currencies]
