@@ -5,8 +5,9 @@ forgot-password, reset-password, change-password, and OAuth authorize views.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 from rest_framework.test import APIClient
 
@@ -1225,3 +1226,166 @@ class TestOAuthExchangeView:
         assert {r1.status_code, r2.status_code} == {200, 400}
         loser = r1 if r1.status_code == 400 else r2
         assert loser.data["code"] == "invalid_code"
+
+
+# ---------------------------------------------------------------------------
+# reCAPTCHA v3 verification (CaptchaProtectedSerializer / verify_recaptcha)
+# ---------------------------------------------------------------------------
+
+
+# Stand-in v3 token. A variable (not an inline literal) so the keyword-arg
+# hardcoded-secret heuristic (S106) stays quiet without a per-call noqa.
+_GOOD_CAPTCHA = "tok"
+
+
+def _siteverify_ok(*, success: bool = True, action: str = "register", score: float = 0.9) -> Mock:
+    """Stand-in for the httpx.Response returned by Google's siteverify."""
+    resp = Mock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"success": success, "action": action, "score": score}
+    return resp
+
+
+@pytest.mark.django_db
+class TestRegisterCaptcha:
+    URL = "/api/v1/auth/register/"
+
+    def _body(self, **over: object) -> dict[str, object]:
+        body: dict[str, object] = {
+            "email": "captcha@example.com",
+            "password": "securepass1",
+            "full_name": "Captcha User",
+        }
+        body.update(over)
+        return body
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_disabled_secret_allows_request_without_token(self, _email, api, settings):
+        """Empty RECAPTCHA_SECRET_KEY ⇒ verification is a no-op; register works
+        with no captcha_token (guards existing-suite compatibility)."""
+        settings.RECAPTCHA_SECRET_KEY = ""
+        resp = api.post(self.URL, self._body(), format="json")
+        assert resp.status_code == 201
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_valid_token_passes(self, mock_post, _email, api, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        settings.RECAPTCHA_MIN_SCORE = 0.5
+        mock_post.return_value = _siteverify_ok(action="register", score=0.9)
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 201
+        # The submitted token is forwarded to Google's siteverify.
+        assert mock_post.call_args.kwargs["data"]["response"] == "tok"
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_low_score_rejected(self, mock_post, api, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        settings.RECAPTCHA_MIN_SCORE = 0.5
+        mock_post.return_value = _siteverify_ok(score=0.1)
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+        assert not User.objects.filter(email="captcha@example.com").exists()
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_success_false_rejected(self, mock_post, api, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.return_value = _siteverify_ok(success=False, score=0.0)
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_action_mismatch_rejected(self, mock_post, api, settings):
+        """A token minted for a different v3 action (e.g. a replayed login
+        token) must not satisfy the register endpoint."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.return_value = _siteverify_ok(action="login", score=0.9)
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_missing_token_rejected_when_enabled(self, mock_post, api, settings):
+        """A missing token routes through verification (required=False) and is
+        rejected before any network call."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+
+        resp = api.post(self.URL, self._body(), format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+        mock_post.assert_not_called()
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_fail_open_on_network_error(self, mock_post, _email, api, settings):
+        """Google unreachable (timeout/connection error) ⇒ allow the request."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.side_effect = httpx.ConnectError("boom")
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 201
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_fail_open_on_5xx(self, mock_post, _email, api, settings):
+        """A 5xx is surfaced via raise_for_status and fails open — the plan's
+        original spec only caught httpx errors from the call itself, which would
+        have 500'd here instead."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        resp_mock = Mock()
+        resp_mock.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "503", request=Mock(), response=Mock()
+        )
+        mock_post.return_value = resp_mock
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 201
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_fail_open_on_malformed_json(self, mock_post, _email, api, settings):
+        """A non-JSON body (e.g. an HTML error page with 200) fails open rather
+        than 500."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        resp_mock = Mock()
+        resp_mock.raise_for_status.return_value = None
+        resp_mock.json.side_effect = ValueError("not json")
+        mock_post.return_value = resp_mock
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 201
+
+
+@pytest.mark.django_db
+class TestForgotPasswordCaptcha:
+    """Proves the mixin is wired onto a second endpoint with its own action."""
+
+    URL = "/api/v1/auth/forgot-password/"
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_low_score_rejected(self, mock_post, api, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.return_value = _siteverify_ok(action="forgot_password", score=0.1)
+
+        resp = api.post(
+            self.URL, {"email": "x@example.com", "captcha_token": _GOOD_CAPTCHA}, format="json"
+        )
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+
+    @patch("apps.users.tasks.send_password_reset_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_valid_action_passes(self, mock_post, _delay, api, verified_user, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.return_value = _siteverify_ok(action="forgot_password", score=0.9)
+
+        resp = api.post(
+            self.URL, {"email": verified_user.email, "captcha_token": _GOOD_CAPTCHA}, format="json"
+        )
+        assert resp.status_code == 200
