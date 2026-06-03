@@ -1552,7 +1552,13 @@ components:
       - scope
     ForgotPasswordRequest:
       type: object
+      description: Request body for requesting a password-reset email.
       properties:
+        captcha_token:
+          type: string
+          writeOnly: true
+          minLength: 1
+          default: ''
         email:
           type: string
           format: email
@@ -2243,7 +2249,13 @@ components:
       - refresh_token
     RegisterRequest:
       type: object
+      description: Request body for creating a new account.
       properties:
+        captcha_token:
+          type: string
+          writeOnly: true
+          minLength: 1
+          default: ''
         email:
           type: string
           format: email
@@ -2275,7 +2287,13 @@ components:
         * `microsoft` - Microsoft
     ResendVerificationRequest:
       type: object
+      description: Request body for re-sending the email-verification message.
       properties:
+        captcha_token:
+          type: string
+          writeOnly: true
+          minLength: 1
+          default: ''
         email:
           type: string
           format: email
