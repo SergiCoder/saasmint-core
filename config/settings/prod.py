@@ -16,10 +16,20 @@ DEBUG = False
 # secret silently invalidates every issued JWT. Require the explicit env
 # var here so a missing JWT_SIGNING_KEY in prod fails loudly at boot
 # instead of silently taking the SECRET_KEY shortcut.
-if not os.environ.get("JWT_SIGNING_KEY"):
+_jwt_signing_key = os.environ.get("JWT_SIGNING_KEY", "")
+if not _jwt_signing_key:
     raise ImproperlyConfigured(
         "JWT_SIGNING_KEY must be set in production (independent rotation"
         " lifecycle from SECRET_KEY)."
+    )
+# HS256 signs every access/refresh JWT with this key. A key shorter than the
+# 32-byte SHA-256 output weakens the signature (RFC 7518 §3.2) and makes PyJWT
+# (>=2.13) emit InsecureKeyLengthWarning at runtime. Fail loudly at boot rather
+# than ship a weak key — generate one with `secrets.token_urlsafe(48)`.
+if len(_jwt_signing_key.encode()) < 32:
+    raise ImproperlyConfigured(
+        "JWT_SIGNING_KEY must be at least 32 bytes for HS256 (RFC 7518 §3.2). "
+        'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(48))"'
     )
 
 # Session-based DRF auth is a dev-only convenience for the browsable API;
