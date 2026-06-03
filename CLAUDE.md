@@ -76,6 +76,7 @@ After modifying any endpoint, run `make schema` to regenerate `schema.yml`.
 - **`201 Created` responses must include `Location: <url>`** alongside the URL in the body. The header serves HTTP intermediaries / observability tooling; the body serves the SPA. Don't drop one when refactoring the other — applies to all Stripe-session creators (`/billing/checkout-sessions/`, `/billing/portal-sessions/`, `/billing/product-checkout-sessions/`) and any new 201 endpoint.
 - **`@functools.cache` on a function that reads `settings` (or any module-level mutable) must take the relevant value as a parameter** so the cache key varies under `override_settings`. Zero-arg cached helpers reading `settings.X` freeze on first call and silently ignore test overrides — see `_host_matchers` in `apps/billing/serializers.py` for the correct pattern (settings value passed in).
 - **Removing the only production caller of a helper means deleting the helper.** Don't leave functions kept alive only by their tests — the tests give false confidence about a code path that no longer runs in production.
+- **`CaptchaProtectedSerializer.validate()` raises `CaptchaFailedError(APIException)`, not `ValidationError`.** This is intentional: the error must surface as a top-level envelope error with `code="captcha_failed"` (HTTP 400), not as a field-level validation message. Don't change it to `ValidationError` when refactoring — the distinction matters to frontend error handling.
 
 ## Bug investigation
 
@@ -98,6 +99,7 @@ For bugs touching infra, proxy, OAuth, or deploy:
 - Never set `ALLOWED_HOSTS=["*"]` when `USE_X_FORWARDED_HOST=True`.
 - Separate env vars for secrets with different rotation lifecycles (`JWT_SIGNING_KEY` vs `SECRET_KEY`).
 - CSP applied only to HTML responses. `/api/docs/` + `/api/redoc/` get the docs bucket; everything else (`/admin/`, `/hijack/`, `/dashboard/`, DRF browsable API) shares moderate `default-src 'self'` + `script-src 'self'` + `style-src 'self' 'unsafe-inline'` + `frame-ancestors 'self'`.
+- `RECAPTCHA_SECRET_KEY` empty (the default) disables reCAPTCHA verification entirely — local dev and tests run keyless. `RECAPTCHA_MIN_SCORE` (default 0.5, range 0.0–1.0) is the rejection threshold; tune it from production logs. Both settings live in `apps/users/captcha.py` and are used on the register / forgot-password / resend-verification endpoints.
 
 ## CI/CD
 
