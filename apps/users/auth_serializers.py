@@ -31,10 +31,17 @@ class CaptchaProtectedSerializer(serializers.Serializer[User]):
     """
 
     captcha_action: ClassVar[str]
-    captcha_token = serializers.CharField(write_only=True, required=False, default="")
+    captcha_token = serializers.CharField(
+        write_only=True, required=False, default="", allow_blank=True
+    )
 
     def validate(self, attrs: dict[str, object]) -> dict[str, object]:
-        verify_recaptcha(str(attrs.get("captcha_token", "")), action=self.captcha_action)
+        if not hasattr(self, "captcha_action"):
+            raise NotImplementedError(
+                f"{type(self).__name__} must define a 'captcha_action' class attribute."
+            )
+        attrs = super().validate(attrs)
+        verify_recaptcha(str(attrs["captcha_token"]), action=self.captcha_action)
         return attrs
 
 

@@ -146,7 +146,11 @@ paths:
   /api/v1/auth/forgot-password/:
     post:
       operationId: auth_forgot_password_create
-      description: POST /api/v1/auth/forgot-password — send reset email (always 200).
+      description: |-
+        POST /api/v1/auth/forgot-password — send reset email.
+
+        Always 200 when captcha passes (anti-enumeration — same response whether
+        or not the address exists). Returns 400 if captcha verification fails.
       tags:
       - auth
       requestBody:
@@ -167,6 +171,12 @@ paths:
       - {}
       responses:
         '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+          description: ''
+        '400':
           content:
             application/json:
               schema:
@@ -350,6 +360,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
           description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+          description: ''
   /api/v1/auth/resend-verification/:
     post:
       operationId: auth_resend_verification_create
@@ -375,6 +391,12 @@ paths:
       - {}
       responses:
         '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+          description: ''
+        '400':
           content:
             application/json:
               schema:
@@ -1557,7 +1579,6 @@ components:
         captcha_token:
           type: string
           writeOnly: true
-          minLength: 1
           default: ''
         email:
           type: string
@@ -2254,7 +2275,6 @@ components:
         captcha_token:
           type: string
           writeOnly: true
-          minLength: 1
           default: ''
         email:
           type: string
@@ -2292,7 +2312,6 @@ components:
         captcha_token:
           type: string
           writeOnly: true
-          minLength: 1
           default: ''
         email:
           type: string

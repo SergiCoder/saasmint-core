@@ -58,7 +58,10 @@ def verify_recaptcha(token: str, *, action: str, remote_ip: str | None = None) -
         data = resp.json()
     except (httpx.HTTPError, ValueError):
         # Network error, 5xx, or non-JSON body — fail open (see docstring).
-        logger.warning("reCAPTCHA siteverify unreachable; allowing request (fail-open)")
+        logger.warning(
+            "reCAPTCHA siteverify unreachable; allowing request (fail-open)",
+            exc_info=True,
+        )
         return
 
     if (
