@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
+from apps.users.captcha import verify_recaptcha
 from apps.users.models import FULL_NAME_MIN_LENGTH, User
 
 
@@ -17,7 +20,36 @@ def _run_password_validators(password: str, user: User | None = None) -> str:
     return password
 
 
-class RegisterSerializer(serializers.Serializer[User]):
+class CaptchaProtectedSerializer(serializers.Serializer[User]):
+    """Mixin adding a ``captcha_token`` field + reCAPTCHA v3 verification.
+
+    Subclasses set ``captcha_action`` to the expected v3 action name. The token
+    is ``required=False`` so a *missing* token still routes through
+    ``verify_recaptcha`` and surfaces as ``code="captcha_failed"`` rather than a
+    DRF "field required" error. Verification is a no-op when
+    ``RECAPTCHA_SECRET_KEY`` is unset, so dev/tests run without keys.
+    """
+
+    captcha_action: ClassVar[str]
+    captcha_token = serializers.CharField(
+        write_only=True, required=False, default="", allow_blank=True
+    )
+
+    def validate(self, attrs: dict[str, object]) -> dict[str, object]:
+        if not hasattr(self, "captcha_action"):
+            raise NotImplementedError(
+                f"{type(self).__name__} must define a 'captcha_action' class attribute."
+            )
+        attrs = super().validate(attrs)
+        verify_recaptcha(str(attrs["captcha_token"]), action=self.captcha_action)
+        return attrs
+
+
+class RegisterSerializer(CaptchaProtectedSerializer):
+    """Request body for creating a new account."""
+
+    captcha_action = "register"
+
     email = serializers.EmailField()
     password = serializers.CharField(min_length=10, max_length=128, write_only=True)
     full_name = serializers.CharField(min_length=FULL_NAME_MIN_LENGTH, max_length=255)
@@ -56,11 +88,19 @@ class VerifyEmailSerializer(serializers.Serializer[User]):
         return _run_password_validators(value)
 
 
-class ForgotPasswordSerializer(serializers.Serializer[User]):
+class ForgotPasswordSerializer(CaptchaProtectedSerializer):
+    """Request body for requesting a password-reset email."""
+
+    captcha_action = "forgot_password"
+
     email = serializers.EmailField()
 
 
-class ResendVerificationSerializer(serializers.Serializer[User]):
+class ResendVerificationSerializer(CaptchaProtectedSerializer):
+    """Request body for re-sending the email-verification message."""
+
+    captcha_action = "resend_verification"
+
     email = serializers.EmailField()
 
 

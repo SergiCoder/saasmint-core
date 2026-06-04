@@ -169,7 +169,7 @@ class RegisterView(AuthRegisterView):
 
     @extend_schema(
         request=RegisterSerializer,
-        responses={201: TokenResponseSerializer},
+        responses={201: TokenResponseSerializer, 400: MessageResponseSerializer},
         tags=["auth"],
     )
     def post(self, request: Request) -> Response:
@@ -234,7 +234,7 @@ class ResendVerificationView(AuthPublicView):
 
     @extend_schema(
         request=ResendVerificationSerializer,
-        responses={200: MessageResponseSerializer},
+        responses={200: MessageResponseSerializer, 400: MessageResponseSerializer},
         tags=["auth"],
     )
     def post(self, request: Request) -> Response:
@@ -329,11 +329,15 @@ class LogoutView(AuthScopedView):
 
 
 class ForgotPasswordView(AuthPublicView):
-    """POST /api/v1/auth/forgot-password — send reset email (always 200)."""
+    """POST /api/v1/auth/forgot-password — send reset email.
+
+    Always 200 when captcha passes (anti-enumeration — same response whether
+    or not the address exists). Returns 400 if captcha verification fails.
+    """
 
     @extend_schema(
         request=ForgotPasswordSerializer,
-        responses={200: MessageResponseSerializer},
+        responses={200: MessageResponseSerializer, 400: MessageResponseSerializer},
         tags=["auth"],
     )
     def post(self, request: Request) -> Response:
