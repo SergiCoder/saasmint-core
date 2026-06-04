@@ -2,6 +2,7 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env.dev}
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env.dev}
@@ -16,6 +17,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -26,6 +28,7 @@ services:
     build:
       context: ..
       dockerfile: infra/Dockerfile
+    restart: unless-stopped
     entrypoint: ["/app/infra/entrypoint.sh"]
     ports:
       - "127.0.0.1:8001:8001"
@@ -44,6 +47,7 @@ services:
     build:
       context: ..
       dockerfile: infra/Dockerfile
+    restart: unless-stopped
     command: uv run celery -A config.celery worker -B --loglevel=info
     env_file:
       - /opt/saasmint/.env.dev
