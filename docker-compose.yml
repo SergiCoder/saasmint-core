@@ -29,6 +29,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Pass an explicit config file so Redis stops warning "no config file
+    # specified"; see infra/redis.conf for the dev-tuned settings.
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./infra/redis.conf:/usr/local/etc/redis/redis.conf:ro
     ports:
       - "6379:6379"
     healthcheck:

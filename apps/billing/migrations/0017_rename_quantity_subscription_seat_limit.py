@@ -4,15 +4,14 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('billing', '0016_subscription_scheduled_change'),
+        ("billing", "0016_subscription_scheduled_change"),
     ]
 
     operations = [
         migrations.RenameField(
-            model_name='subscription',
-            old_name='quantity',
-            new_name='seat_limit',
+            model_name="subscription",
+            old_name="quantity",
+            new_name="seat_limit",
         ),
     ]

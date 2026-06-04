@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 from django.test import Client
 
@@ -75,10 +73,8 @@ class TestOrgAdminDeleteAction:
         assert b"TestOrg" in resp.content
         assert b"permanently delete" in resp.content
 
-    @patch("apps.orgs.services._cancel_team_subscription")
     def test_confirm_deletes_org_and_hard_deletes_members(
         self,
-        mock_cancel_sub,
         admin_client_django,
         org,
         owner_membership,
@@ -105,3 +101,50 @@ class TestOrgAdminDeleteAction:
         """The detail-page Delete button should be blocked (403)."""
         resp = admin_client_django.post(f"/admin/orgs/org/{org.id}/delete/", {"post": "yes"})
         assert resp.status_code == 403
+
+
+@pytest.mark.django_db
+class TestDeleteOrgView:
+    """Per-row admin button at ``/admin/orgs/org/<pk>/delete-org/``."""
+
+    def test_delete_org_view_get_shows_single_org_confirmation(
+        self, admin_client_django, org, owner_membership
+    ):
+        resp = admin_client_django.get(f"/admin/orgs/org/{org.id}/delete-org/")
+        assert resp.status_code == 200
+        assert resp.context["single_org"] is True
+        assert b"TestOrg" in resp.content
+
+    def test_delete_org_view_post_deletes_and_redirects(
+        self, admin_client_django, org, owner_membership
+    ):
+        org_id = org.id
+        resp = admin_client_django.post(
+            f"/admin/orgs/org/{org_id}/delete-org/",
+            {"confirm": "on"},
+        )
+        assert resp.status_code == 302
+        assert "/admin/orgs/org/" in resp["Location"]
+        assert not Org.objects.filter(id=org_id).exists()
+
+    def test_delete_org_view_404_for_unknown_pk(self, admin_client_django):
+        import uuid
+
+        resp = admin_client_django.get(f"/admin/orgs/org/{uuid.uuid4()}/delete-org/")
+        assert resp.status_code == 404
+
+    def test_delete_org_view_requires_staff(self, db, org, owner_membership):
+        # Anonymous → admin login redirect.
+        anon = Client()
+        resp = anon.get(f"/admin/orgs/org/{org.id}/delete-org/")
+        assert resp.status_code == 302
+        assert "/admin/login/" in resp["Location"]
+
+        # Authenticated non-staff user → admin login redirect (admin_view
+        # treats non-staff identically to anonymous).
+        user = User.objects.create_user(email="nonstaff@example.com", full_name="Non Staff")
+        client = Client()
+        client.force_login(user)
+        resp = client.get(f"/admin/orgs/org/{org.id}/delete-org/")
+        assert resp.status_code == 302
+        assert "/admin/login/" in resp["Location"]

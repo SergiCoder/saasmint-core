@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 from urllib.parse import urlparse
 
+from django.core.exceptions import ImproperlyConfigured
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from saasmint_core.services.currency import SUPPORTED_CURRENCIES
 
 # Repo root: base.py → settings/ → config/ → repo
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -33,6 +35,8 @@ class _Env(BaseSettings):
     jwt_signing_key: str = ""  # if empty, falls back to django_secret_key
     stripe_secret_key: str
     stripe_webhook_secret: str
+    recaptcha_secret_key: str = ""  # empty ⇒ captcha verification is a no-op (feature off)
+    recaptcha_min_score: float = 0.5  # reCAPTCHA v3 score below this ⇒ rejected
     redis_url: str = "redis://localhost:6379/0"
     database_url: str = "postgresql://localhost:5432/saasmint"
     environment: str = "local"  # local | dev | prod — surfaced in admin banner + logs
@@ -52,6 +56,10 @@ class _Env(BaseSettings):
     oauth_microsoft_client_secret: str = ""
     marketing_inquiries_to: str = ""  # admin inbox for landing-CTA / Contact-form submissions
     enable_session_auth: bool = False  # dev-only: allows browsable API via Django session
+    # Currencies the catalog actually charges in (real Stripe Prices minted per entry).
+    # Other entries in SUPPORTED_CURRENCIES stay display-only; their Stripe Prices are
+    # never minted and Checkout falls back to USD for them.
+    billing_currencies: list[str] = ["usd", "eur", "gbp", "jpy", "cny"]
 
 
 env = _Env()  # type: ignore[call-arg]  # pydantic-settings reads fields from env vars at construction; mypy sees no positional args but none are needed
@@ -76,6 +84,7 @@ def _parse_db_url(url: str) -> dict[str, object]:
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 SECRET_KEY = env.django_secret_key
+DEBUG = False
 JWT_SIGNING_KEY = env.jwt_signing_key or env.django_secret_key
 ENVIRONMENT = env.environment
 SCHEMA_PUBLIC = env.schema_public
@@ -102,8 +111,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    "django.middleware.security.SecurityMiddleware",
     "corsheaders.middleware.CorsMiddleware",
+    "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -199,6 +208,11 @@ REST_FRAMEWORK = {
         "account": "120/hour",
         "account_export": "3/hour",
         "orgs": "60/hour",
+        # Tighter scope for destructive admin actions on member accounts —
+        # an admin removing members hard-deletes user accounts, so a
+        # compromised admin token shouldn't get to spend the entire
+        # ``orgs`` budget on cascading deletes before throttling kicks in.
+        "orgs_member_delete": "5/hour",
         "references": "120/hour",
     },
     "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
@@ -245,12 +259,24 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
 CELERY_BEAT_SCHEDULE = {
-    "sync-exchange-rates": {
-        "task": "apps.billing.tasks.sync_exchange_rates",
+    "sync-localized-prices": {
+        "task": "apps.billing.tasks.sync_localized_prices",
         "schedule": 86400,  # once per day
     },
     "cleanup-expired-refresh-tokens": {
         "task": "apps.users.tasks.cleanup_expired_refresh_tokens",
+        "schedule": 86400,  # once per day
+    },
+    "cleanup-expired-social-link-requests": {
+        "task": "apps.users.tasks.cleanup_expired_social_link_requests",
+        "schedule": 86400,  # once per day
+    },
+    "cleanup-expired-email-verification-tokens": {
+        "task": "apps.users.tasks.cleanup_expired_email_verification_tokens",
+        "schedule": 86400,  # once per day
+    },
+    "cleanup-expired-password-reset-tokens": {
+        "task": "apps.users.tasks.cleanup_expired_password_reset_tokens",
         "schedule": 86400,  # once per day
     },
 }
@@ -258,6 +284,24 @@ CELERY_BEAT_SCHEDULE = {
 # Stripe
 STRIPE_SECRET_KEY = env.stripe_secret_key
 STRIPE_WEBHOOK_SECRET = env.stripe_webhook_secret
+
+# reCAPTCHA (v3) — bot protection on register / forgot-password / resend-verification.
+# Empty secret ⇒ token verification is skipped, so local dev and tests run keyless.
+RECAPTCHA_SECRET_KEY = env.recaptcha_secret_key
+RECAPTCHA_MIN_SCORE = env.recaptcha_min_score
+
+# Multi-currency billing
+BILLING_CURRENCIES: list[str] = [c.lower() for c in env.billing_currencies]
+_unsupported = [c for c in BILLING_CURRENCIES if c not in SUPPORTED_CURRENCIES]
+if _unsupported:
+    raise ImproperlyConfigured(
+        f"BILLING_CURRENCIES contains unsupported codes: {_unsupported}. "
+        f"Add them to SUPPORTED_CURRENCIES first."
+    )
+if "usd" not in BILLING_CURRENCIES:
+    raise ImproperlyConfigured(
+        "BILLING_CURRENCIES must include 'usd' (the source-of-truth fallback)."
+    )
 
 # Email (Resend)
 RESEND_API_KEY = env.resend_api_key

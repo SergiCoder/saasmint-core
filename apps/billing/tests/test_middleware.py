@@ -39,13 +39,6 @@ class TestDomainExceptionHandler:
         assert resp is not None
         assert resp.status_code == 404
 
-    def test_subscription_already_active_returns_409(self, context):
-        from saasmint_core.exceptions import SubscriptionAlreadyActiveError
-
-        resp = domain_exception_handler(SubscriptionAlreadyActiveError("active"), context)
-        assert resp is not None
-        assert resp.status_code == 409
-
     def test_insufficient_permission_returns_403(self, context):
         from saasmint_core.exceptions import InsufficientPermissionError
 
@@ -76,30 +69,6 @@ class TestDomainExceptionHandler:
         assert resp is not None
         assert resp.status_code == 502
 
-    def test_no_active_subscription_returns_409(self, context):
-        from saasmint_core.exceptions import NoActiveSubscriptionError
-
-        resp = domain_exception_handler(NoActiveSubscriptionError("none"), context)
-        assert resp is not None
-        assert resp.status_code == 409
-        assert resp.data["code"] == "no_active_subscription"
-
-    def test_already_on_plan_returns_409(self, context):
-        from saasmint_core.exceptions import AlreadyOnPlanError
-
-        resp = domain_exception_handler(AlreadyOnPlanError("same plan"), context)
-        assert resp is not None
-        assert resp.status_code == 409
-        assert resp.data["code"] == "already_on_plan"
-
-    def test_plan_context_mismatch_returns_400(self, context):
-        from saasmint_core.exceptions import PlanContextMismatchError
-
-        resp = domain_exception_handler(PlanContextMismatchError("mismatch"), context)
-        assert resp is not None
-        assert resp.status_code == 400
-        assert resp.data["code"] == "plan_context_mismatch"
-
     def test_seats_below_member_count_returns_400(self, context):
         from saasmint_core.exceptions import SeatsBelowMemberCountError
 
@@ -111,6 +80,28 @@ class TestDomainExceptionHandler:
     def test_non_domain_exception_falls_through(self, context):
         result = domain_exception_handler(ValueError("unexpected"), context)
         assert result is None
+
+    def test_field_validation_dict_not_overwritten_with_code(self, context):
+        """``domain_exception_handler`` only attaches a ``code`` key to
+        single-key ``{"detail": ...}`` envelopes. Multi-key payloads (DRF
+        field-validation errors, custom dict-as-detail raises) are left
+        untouched — the comment in middleware/exceptions.py spells this
+        out explicitly. Pins the contract so a future regression that
+        unconditionally stamps ``code`` doesn't quietly clobber a
+        ``code`` key emitted by the view's own dict payload."""
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+
+        # DRF field-validation error → multi-key dict (one key per field).
+        exc = DRFValidationError({"email": ["Required."], "password": ["Too short."]})
+        resp = domain_exception_handler(exc, context)
+        assert resp is not None
+        assert resp.status_code == 400
+        assert "email" in resp.data
+        assert "password" in resp.data
+        # The handler must NOT inject a ``code`` key — that would change the
+        # response shape from ``{field: [errors]}`` to a hybrid envelope and
+        # could even shadow a field literally named ``code``.
+        assert "code" not in resp.data
 
 
 class TestSecurityHeadersMiddleware:

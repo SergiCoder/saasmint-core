@@ -33,18 +33,12 @@ class InMemoryUserRepository:
     async def get_by_id(self, user_id: UUID) -> User | None:
         return self._store.get(user_id)
 
-    async def get_by_email(self, email: str) -> User | None:
-        return next((u for u in self._store.values() if u.email == email), None)
-
     async def save(self, user: User) -> User:
         self._store[user.id] = user
         return user
 
     async def hard_delete(self, user_id: UUID) -> None:
         self._store.pop(user_id, None)
-
-    async def list_by_org(self, org_id: UUID) -> list[User]:
-        return list(self._store.values())
 
 
 class InMemoryStripeCustomerRepository:
@@ -75,9 +69,6 @@ class InMemorySubscriptionRepository:
     def __init__(self) -> None:
         self._store: dict[UUID, Subscription] = {}
 
-    async def get_by_id(self, subscription_id: UUID) -> Subscription | None:
-        return self._store.get(subscription_id)
-
     async def get_by_stripe_id(self, stripe_id: str) -> Subscription | None:
         return next((s for s in self._store.values() if s.stripe_id == stripe_id), None)
 
@@ -107,9 +98,6 @@ class InMemorySubscriptionRepository:
         self._store[subscription.id] = subscription
         return subscription
 
-    async def delete(self, subscription_id: UUID) -> None:
-        self._store.pop(subscription_id, None)
-
 
 class InMemoryStripeEventRepository:
     def __init__(self) -> None:
@@ -118,12 +106,6 @@ class InMemoryStripeEventRepository:
     async def save(self, event: StripeEvent) -> StripeEvent:
         self._store[event.stripe_id] = event
         return event
-
-    async def save_if_new(self, event: StripeEvent) -> bool:
-        if event.stripe_id in self._store:
-            return False
-        self._store[event.stripe_id] = event
-        return True
 
     async def mark_processed(self, stripe_id: str) -> None:
         if stripe_id in self._store:
@@ -135,26 +117,14 @@ class InMemoryStripeEventRepository:
             event = self._store[stripe_id]
             self._store[stripe_id] = event.model_copy(update={"error": error})
 
-    async def list_recent(self, limit: int = 50) -> list[StripeEvent]:
-        return list(self._store.values())[:limit]
-
 
 class InMemoryPlanRepository:
     def __init__(self) -> None:
         self._plans: dict[UUID, Plan] = {}
         self._prices: dict[UUID, PlanPrice] = {}
 
-    async def get_by_id(self, plan_id: UUID) -> Plan | None:
-        return self._plans.get(plan_id)
-
     async def list_active(self) -> list[Plan]:
         return [p for p in self._plans.values() if p.is_active]
-
-    async def get_price(self, plan_id: UUID) -> PlanPrice | None:
-        return next(
-            (p for p in self._prices.values() if p.plan_id == plan_id),
-            None,
-        )
 
     async def get_price_by_stripe_id(self, stripe_price_id: str) -> PlanPrice | None:
         return next(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -50,10 +50,27 @@ def _mock_exchange(
     )
 
 
+_PATCH_TARGET = "apps.users.auth_views.exchange_code"
+
+
+def _patch_exchange(
+    *,
+    return_value: OAuthUserInfo | None = None,
+    side_effect: BaseException | type[BaseException] | None = None,
+):
+    """Patch the now-async exchange_code with an AsyncMock."""
+    kwargs: dict[str, object] = {"new_callable": AsyncMock}
+    if return_value is not None:
+        kwargs["return_value"] = return_value
+    if side_effect is not None:
+        kwargs["side_effect"] = side_effect
+    return patch(_PATCH_TARGET, **kwargs)
+
+
 @pytest.mark.django_db
 class TestOAuthCallbackNewUser:
     def test_creates_user_and_social_account(self, client, _oauth_state):
-        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
+        with _patch_exchange(return_value=_mock_exchange()):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -78,7 +95,7 @@ class TestOAuthCallbackNewUser:
             provider_user_id="ms-oid-1",
             email_verified=True,
         )
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with _patch_exchange(return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/microsoft/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -105,7 +122,7 @@ class TestOAuthCallbackNewUser:
             provider_user_id="ms-1",
             email_verified=False,
         )
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with _patch_exchange(return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/microsoft/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -119,7 +136,7 @@ class TestOAuthCallbackNewUser:
         Subscription is a pure Stripe mirror after this refactor."""
         from apps.billing.models import Subscription
 
-        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
+        with _patch_exchange(return_value=_mock_exchange()):
             client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -137,7 +154,7 @@ class TestOAuthCallbackExistingEmailUser:
             full_name="Existing User",
         )
         info = _mock_exchange(email="existing@example.com", provider_user_id="g-99")
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with _patch_exchange(return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -166,7 +183,7 @@ class TestOAuthCallbackExistingEmailUser:
             provider_user_id="ms-99",
             email_verified=True,
         )
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with _patch_exchange(return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/microsoft/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -193,7 +210,7 @@ class TestOAuthCallbackReturningSocialUser:
         SocialAccount.objects.create(user=user, provider="github", provider_user_id="gh-42")
 
         info = _mock_exchange(email="returning@example.com", provider_user_id="gh-42")
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with _patch_exchange(return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/github/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -224,7 +241,7 @@ class TestOAuthCallbackReturningSocialUser:
             provider_user_id="ms-ret",
             email_verified=False,
         )
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with _patch_exchange(return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/microsoft/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -238,7 +255,7 @@ class TestOAuthCallbackReturningSocialUser:
 @pytest.mark.django_db
 class TestOAuthCallbackCodeInFragment:
     def test_code_is_placed_in_url_fragment(self, client, _oauth_state):
-        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
+        with _patch_exchange(return_value=_mock_exchange()):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -261,7 +278,7 @@ class TestOAuthExchange:
         session = client.session
         session["oauth_state"] = "test-state"
         session.save()
-        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
+        with _patch_exchange(return_value=_mock_exchange()):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -311,7 +328,7 @@ class TestOAuthExchange:
 class TestOAuthCallbackUnverifiedEmail:
     def test_unverified_email_blocks_new_user(self, client, _oauth_state):
         info = _mock_exchange(email="unverified@example.com", email_verified=False)
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with _patch_exchange(return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/microsoft/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -320,12 +337,13 @@ class TestOAuthCallbackUnverifiedEmail:
         assert "email_not_verified" in resp["Location"]
         assert not User.objects.filter(email="unverified@example.com").exists()
 
-    def test_unverified_email_blocks_linking_to_existing_account(self, client, _oauth_state):
-        """Unverified email + existing local account → ``oauth_email_unverified_collision``
-        (NOT generic ``email_not_verified``). Frontend uses the collision
-        code to guide the user to log in with their password and link
-        the provider explicitly."""
-        User.objects.create_user(
+    def test_unverified_email_collision_sends_link_email(self, client, _oauth_state):
+        """Unverified provider + existing local account → mint a SocialLinkRequest,
+        queue the confirmation email, redirect to /auth/link-email-sent. The
+        SocialAccount is NOT created until the user clicks the email link."""
+        from apps.users.models import SocialLinkRequest
+
+        existing = User.objects.create_user(
             email="victim@example.com",
             password="testpass123",  # noqa: S106
             full_name="Victim",
@@ -335,16 +353,95 @@ class TestOAuthCallbackUnverifiedEmail:
             provider_user_id="ms-attacker",
             email_verified=False,
         )
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with (
+            _patch_exchange(return_value=info),
+            patch("apps.users.auth_views.send_social_link_email_task.delay") as mock_send,
+        ):
             resp = client.get(
                 "/api/v1/auth/oauth/microsoft/callback/",
                 {"code": "auth-code", "state": "test-state"},
             )
         assert resp.status_code == 302
-        assert "oauth_email_unverified_collision" in resp["Location"]
+        assert resp["Location"].endswith("/auth/link-email-sent")
         assert not SocialAccount.objects.filter(
             provider="microsoft", provider_user_id="ms-attacker"
         ).exists()
+
+        link_request = SocialLinkRequest.objects.get(
+            user=existing, provider="microsoft", provider_user_id="ms-attacker"
+        )
+        assert link_request.used_at is None
+        mock_send.assert_called_once()
+        called_email, _called_token, called_provider = mock_send.call_args.args
+        assert called_email == "victim@example.com"
+        assert called_provider == "microsoft"
+
+    def test_unverified_email_collision_inactive_user_silently_drops(self, client, _oauth_state):
+        """Inactive existing user → same redirect as active, but NO email
+        queued and NO SocialLinkRequest minted. Anti-enumeration: an
+        attacker cannot probe whether a deactivated account exists."""
+        from apps.users.models import SocialLinkRequest
+
+        User.objects.create_user(
+            email="dormant@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Dormant",
+            is_active=False,
+        )
+        info = _mock_exchange(
+            email="dormant@example.com",
+            provider_user_id="ms-x",
+            email_verified=False,
+        )
+        with (
+            _patch_exchange(return_value=info),
+            patch("apps.users.auth_views.send_social_link_email_task.delay") as mock_send,
+        ):
+            resp = client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert resp["Location"].endswith("/auth/link-email-sent")
+        mock_send.assert_not_called()
+        assert not SocialLinkRequest.objects.filter(provider="microsoft").exists()
+
+    def test_collision_invalidates_prior_pending_requests(self, client, _oauth_state):
+        """Re-initiating the OAuth flow invalidates any older pending link
+        requests so only the freshest emailed link works."""
+        from datetime import UTC, datetime, timedelta
+
+        from apps.users.models import SocialLinkRequest
+
+        user = User.objects.create_user(
+            email="mailbox@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Mailbox",
+        )
+        # Stale prior request
+        stale = SocialLinkRequest.objects.create(
+            user=user,
+            token_hash="x" * 64,
+            expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            provider="microsoft",
+            provider_user_id="old-id",
+            full_name="",
+        )
+        info = _mock_exchange(
+            email="mailbox@example.com",
+            provider_user_id="new-id",
+            email_verified=False,
+        )
+        with (
+            _patch_exchange(return_value=info),
+            patch("apps.users.auth_views.send_social_link_email_task.delay"),
+        ):
+            client.get(
+                "/api/v1/auth/oauth/microsoft/callback/",
+                {"code": "auth-code", "state": "test-state"},
+            )
+        stale.refresh_from_db()
+        assert stale.used_at is not None
 
 
 @pytest.mark.django_db
@@ -359,7 +456,7 @@ class TestOAuthCallbackDeactivatedUser:
         SocialAccount.objects.create(user=user, provider="google", provider_user_id="g-deact")
 
         info = _mock_exchange(email="deact@example.com", provider_user_id="g-deact")
-        with patch("apps.users.auth_views.exchange_code", return_value=info):
+        with _patch_exchange(return_value=info):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -371,7 +468,7 @@ class TestOAuthCallbackDeactivatedUser:
 @pytest.mark.django_db
 class TestOAuthCallbackStateValidation:
     def test_missing_state_param_redirects_invalid_state(self, client, _oauth_state):
-        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+        with _patch_exchange() as mock_exchange:
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code"},
@@ -381,7 +478,7 @@ class TestOAuthCallbackStateValidation:
         mock_exchange.assert_not_called()
 
     def test_mismatched_state_redirects_invalid_state(self, client, _oauth_state):
-        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+        with _patch_exchange() as mock_exchange:
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "attacker-forged"},
@@ -392,7 +489,7 @@ class TestOAuthCallbackStateValidation:
 
     def test_missing_session_state_redirects_invalid_state(self, client):
         # No `_oauth_state` fixture — session has no expected state.
-        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+        with _patch_exchange() as mock_exchange:
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -402,7 +499,7 @@ class TestOAuthCallbackStateValidation:
         mock_exchange.assert_not_called()
 
     def test_state_is_popped_after_callback(self, client, _oauth_state):
-        with patch("apps.users.auth_views.exchange_code", return_value=_mock_exchange()):
+        with _patch_exchange(return_value=_mock_exchange()):
             client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -412,15 +509,19 @@ class TestOAuthCallbackStateValidation:
 
 @pytest.mark.django_db
 class TestOAuthCallbackParamValidation:
-    def test_unsupported_provider_returns_400(self, client, _oauth_state):
+    def test_unsupported_provider_redirects_to_frontend_error(self, client, _oauth_state, settings):
+        # Funneled through the same frontend error page as other callback
+        # failures — no JSON body in a browser flow.
+        settings.FRONTEND_URL = "https://localhost:3000"
         resp = client.get(
             "/api/v1/auth/oauth/facebook/callback/",
             {"code": "auth-code", "state": "test-state"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 302
+        assert resp["Location"] == ("https://localhost:3000/auth/error?error=invalid_provider")
 
     def test_missing_code_redirects_missing_code(self, client, _oauth_state):
-        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+        with _patch_exchange() as mock_exchange:
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"state": "test-state"},
@@ -431,13 +532,28 @@ class TestOAuthCallbackParamValidation:
 
     def test_provider_error_param_short_circuits(self, client, _oauth_state):
         # Provider may redirect back with ?error=access_denied without `code`.
-        with patch("apps.users.auth_views.exchange_code") as mock_exchange:
+        with _patch_exchange() as mock_exchange:
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"error": "access_denied", "state": "test-state"},
             )
         assert resp.status_code == 302
         assert "access_denied" in resp["Location"]
+        mock_exchange.assert_not_called()
+
+    def test_unknown_oauth_error_is_sanitized_to_exchange_failed(self, client, _oauth_state):
+        # Provider-specific or arbitrary error codes outside
+        # ``_FORWARDABLE_OAUTH_ERRORS`` must be replaced with
+        # ``exchange_failed`` so a hostile provider can't reflect arbitrary
+        # strings into the redirect URL.
+        with _patch_exchange() as mock_exchange:
+            resp = client.get(
+                "/api/v1/auth/oauth/google/callback/",
+                {"error": "some_proprietary_error_code", "state": "test-state"},
+            )
+        assert resp.status_code == 302
+        assert "exchange_failed" in resp["Location"]
+        assert "some_proprietary_error_code" not in resp["Location"]
         mock_exchange.assert_not_called()
 
 
@@ -447,7 +563,7 @@ class TestOAuthCallbackExchangeFailures:
         req = httpx.Request("POST", "https://oauth2.googleapis.com/token")
         resp_obj = httpx.Response(400, request=req)
         err = httpx.HTTPStatusError("bad", request=req, response=resp_obj)
-        with patch("apps.users.auth_views.exchange_code", side_effect=err):
+        with _patch_exchange(side_effect=err):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -457,10 +573,7 @@ class TestOAuthCallbackExchangeFailures:
         assert not User.objects.filter(email="oauth@example.com").exists()
 
     def test_oauth_error_redirects_exchange_failed(self, client, _oauth_state):
-        with patch(
-            "apps.users.auth_views.exchange_code",
-            side_effect=OAuthError("missing access_token"),
-        ):
+        with _patch_exchange(side_effect=OAuthError("missing access_token")):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
@@ -468,12 +581,14 @@ class TestOAuthCallbackExchangeFailures:
         assert resp.status_code == 302
         assert "exchange_failed" in resp["Location"]
 
-    def test_value_error_redirects_exchange_failed(self, client, _oauth_state):
-        # e.g. Provider(provider) raising on an enum-coerce edge case.
-        with patch("apps.users.auth_views.exchange_code", side_effect=ValueError("bad")):
+    def test_value_error_redirects_provider_error(self, client, _oauth_state):
+        # Provider returned a payload we couldn't parse (missing/wrong-typed field).
+        # Split from `exchange_failed` so dashboards can alert on shape drift
+        # against a quiet baseline.
+        with _patch_exchange(side_effect=ValueError("bad")):
             resp = client.get(
                 "/api/v1/auth/oauth/google/callback/",
                 {"code": "auth-code", "state": "test-state"},
             )
         assert resp.status_code == 302
-        assert "exchange_failed" in resp["Location"]
+        assert "provider_error" in resp["Location"]

@@ -6,7 +6,7 @@ import functools
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, TypedDict, assert_never
+from typing import Any, TypedDict, assert_never, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -16,7 +16,15 @@ from jwt import PyJWKClient
 
 logger = logging.getLogger(__name__)
 
-_OAUTH_TIMEOUT = httpx.Timeout(10.0)
+# OAuth providers (Google/GitHub/Microsoft) reliably respond within 1-2s; 5s
+# leaves headroom without blocking the worker thread for an unbounded retry
+# from a degraded provider. The shared httpx.AsyncClient reuses TCP
+# connections across the token-exchange, userinfo, and (GitHub)
+# /user/emails requests fired back-to-back inside one callback, and lets
+# the awaiting view yield the worker thread for the duration of each
+# provider round-trip.
+_OAUTH_TIMEOUT = httpx.Timeout(5.0)
+_oauth_client = httpx.AsyncClient(timeout=_OAUTH_TIMEOUT)
 
 # Microsoft OIDC: keys served at the v2.0 multi-tenant endpoint cover both
 # work/school and consumer (MSA) tokens. Issuer format is per-tenant
@@ -87,17 +95,6 @@ class OAuthEmailNotVerifiedError(Exception):
     """Raised when the OAuth provider did not confirm email ownership."""
 
 
-class OAuthEmailUnverifiedCollisionError(Exception):
-    """Raised when an OAuth-provided email matches an existing local account
-    but the provider is not trusted for auto-link (either ``email_verified``
-    is false/absent, or the provider is not on
-    ``apps.users.services.TRUSTED_FOR_AUTO_LINK``).
-
-    The user must sign in with their password and link the provider
-    explicitly — auto-linking on an unverified or untrusted source would
-    enable account takeover."""
-
-
 @dataclass(frozen=True)
 class OAuthUserInfo:
     email: str
@@ -107,8 +104,11 @@ class OAuthUserInfo:
     email_verified: bool = False
 
 
-@functools.cache
 def _get_config(provider: Provider) -> _ProviderConfig:
+    # Reads ``settings.OAUTH_*`` on every call so test ``override_settings``
+    # is honoured. Not cached — building a six-key TypedDict is trivial and
+    # caching here would freeze the first-seen credentials per process,
+    # silently bypassing test overrides (CLAUDE.md refactoring guardrail).
     match provider:
         case Provider.GOOGLE:
             return _ProviderConfig(
@@ -140,10 +140,12 @@ def _get_config(provider: Provider) -> _ProviderConfig:
 
 
 @functools.cache
-def _ms_jwks_client() -> PyJWKClient:
-    # PyJWKClient caches keys in-process for the lifetime of the worker.
-    # Lazy-initialised so import-time has no network dependency.
-    return PyJWKClient(_MS_JWKS_URI)
+def _ms_jwks_client(jwks_uri: str = _MS_JWKS_URI) -> PyJWKClient:
+    # Cache key is the URI, not module-internal state — ``override_settings``
+    # or a test-specific URI yield a fresh client. PyJWKClient itself caches
+    # the JWKS keys for the lifetime of the worker; lazy-initialised so
+    # import has no network dependency.
+    return PyJWKClient(jwks_uri)
 
 
 def _verify_microsoft_id_token(id_token: str) -> dict[str, Any] | None:
@@ -192,12 +194,12 @@ def get_authorization_url(provider: str, redirect_uri: str, state: str) -> str:
     return f"{cfg['authorize_url']}?{urlencode(params)}"
 
 
-def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
+async def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
     """Exchange an authorization code for user info."""
     prov = Provider(provider)
     cfg = _get_config(prov)
 
-    token_resp = httpx.post(
+    token_resp = await _oauth_client.post(
         cfg["token_url"],
         data={
             "client_id": cfg["client_id"],
@@ -207,7 +209,6 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
             "grant_type": "authorization_code",
         },
         headers={"Accept": "application/json"},
-        timeout=_OAUTH_TIMEOUT,
     )
     token_resp.raise_for_status()
     token_data: _TokenResponse = token_resp.json()
@@ -215,32 +216,43 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
     if not access_token:
         raise OAuthError("OAuth token response missing access_token")
 
-    userinfo_resp = httpx.get(
+    userinfo_resp = await _oauth_client.get(
         cfg["userinfo_url"],
         headers={"Authorization": f"Bearer {access_token}"},
-        timeout=_OAUTH_TIMEOUT,
     )
     userinfo_resp.raise_for_status()
     info = userinfo_resp.json()
+    # The TypedDict casts below are static-only; Pillow-thin runtime guard
+    # protects against a provider that returned a JSON list/scalar instead
+    # of an object (would surface as opaque ``KeyError``/``AttributeError``
+    # in the per-provider branches otherwise).
+    if not isinstance(info, dict):
+        raise OAuthError("Provider returned non-dict userinfo response")
 
     match prov:
         case Provider.GOOGLE:
-            google: _GoogleUserInfo = info
+            google = cast(_GoogleUserInfo, info)
             email = google.get("email")
             if not email:
                 raise OAuthError("Google OAuth response missing email")
+            # Strict ``is True`` — ``bool("false")`` is ``True`` for any
+            # non-empty string, so a malformed/proxied response that returned
+            # the verified flag as the JSON string ``"false"`` would have
+            # been auto-linked. Only an honest, JSON-typed boolean ``true``
+            # passes the gate now.
+            verified = google.get("verified_email") is True or google.get("email_verified") is True
             return OAuthUserInfo(
                 email=email,
                 full_name=google.get("name") or email.split("@")[0],
                 provider_user_id=str(google["id"]),
                 avatar_url=google.get("picture"),
-                email_verified=bool(google.get("verified_email") or google.get("email_verified")),
+                email_verified=verified,
             )
         case Provider.GITHUB:
-            github: _GitHubUserInfo = info
+            github = cast(_GitHubUserInfo, info)
             # Always use /user/emails as the authoritative source — the public
             # email on /user is not guaranteed verified.
-            email = _fetch_github_primary_email(access_token)
+            email = await _fetch_github_primary_email(access_token)
             return OAuthUserInfo(
                 email=email,
                 full_name=github.get("name") or github.get("login") or email.split("@")[0],
@@ -249,7 +261,7 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
                 email_verified=True,
             )
         case Provider.MICROSOFT:
-            ms: _MicrosoftUserInfo = info
+            ms = cast(_MicrosoftUserInfo, info)
             # Trust the email iff Microsoft's OIDC id_token is signature-valid
             # AND carries `xms_edov: true` — the claim Microsoft sets only when
             # it has verified the email's domain belongs to the user's tenant.
@@ -288,12 +300,11 @@ def exchange_code(provider: str, code: str, redirect_uri: str) -> OAuthUserInfo:
             assert_never(unreachable)
 
 
-def _fetch_github_primary_email(access_token: str) -> str:
+async def _fetch_github_primary_email(access_token: str) -> str:
     """GitHub may not include email in user profile — fetch from /user/emails."""
-    resp = httpx.get(
+    resp = await _oauth_client.get(
         "https://api.github.com/user/emails",
         headers={"Authorization": f"Bearer {access_token}"},
-        timeout=_OAUTH_TIMEOUT,
     )
     resp.raise_for_status()
     entries: list[_GitHubEmailEntry] = resp.json()

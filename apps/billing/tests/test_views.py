@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from django.test import TestCase
 from rest_framework.test import APIClient
 from saasmint_core.domain.stripe_customer import StripeCustomer as DomainStripeCustomer
 
-from apps.billing.models import ExchangeRate, Plan, PlanPrice, Product, ProductPrice
+from apps.billing.models import LocalizedPrice, Plan, PlanPrice, Product, ProductPrice
 
 
 @pytest.fixture
@@ -98,8 +99,9 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert resp.data["url"] == "https://checkout.stripe.com/session"
+        assert resp["Location"] == "https://checkout.stripe.com/session"
         # The view must resolve the UUID to the underlying Stripe price ID
         # before calling Stripe.
         assert mock_create.call_args.kwargs["price_id"] == plan_price.stripe_price_id
@@ -182,26 +184,6 @@ class TestCheckoutSessionView:
         # trial_period_days should be preserved for personal plans
         assert mock_create.call_args.kwargs["trial_period_days"] == 7
 
-    @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_checkout_response_has_no_location_header(
-        self, mock_get_customer, mock_create, authed_client, plan_price, mock_stripe_customer
-    ):
-        """The Stripe URL is not a local resource, so Location must not be set."""
-        mock_get_customer.return_value = mock_stripe_customer
-        mock_create.return_value = "https://checkout.stripe.com/session"
-
-        resp = authed_client.post(
-            "/api/v1/billing/checkout-sessions/",
-            {
-                "plan_price_id": str(plan_price.id),
-                "success_url": "https://localhost/success",
-                "cancel_url": "https://localhost/cancel",
-            },
-            format="json",
-        )
-        assert "Location" not in resp
-
     def test_unauthenticated_rejected(self):
         client = APIClient()
         resp = client.post("/api/v1/billing/checkout-sessions/", {}, format="json")
@@ -235,7 +217,7 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert mock_create.call_args.kwargs["stripe_customer_id"] == "cus_team_personal_upgrade"
 
     def test_user_owning_org_cannot_create_second_org(
@@ -295,7 +277,7 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert resp.data["url"] == "https://checkout.stripe.com/personal-from-org-member"
         # Personal-plan checkout must resolve to the caller's user-scoped
         # customer, not the org's — even when the caller is an org owner.
@@ -419,7 +401,7 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert resp.data["url"] == "https://checkout.stripe.com/session-dup"
         mock_create.assert_called_once()
 
@@ -434,10 +416,11 @@ class TestCheckoutSessionView:
         the pricing page cannot cause us to quote the user in a currency
         we don't actually charge in.
         """
-        ExchangeRate.objects.create(
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="eur",
-            rate="0.90",
-            fetched_at=datetime.now(UTC),
+            amount_minor=899,
+            synced_at=datetime.now(UTC),
         )
         mock_get_customer.return_value = mock_stripe_customer
         mock_create.return_value = "https://checkout.stripe.com/session"
@@ -451,7 +434,7 @@ class TestCheckoutSessionView:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         # price_id forwarded verbatim — no currency-converted variant.
         assert mock_create.call_args.kwargs["price_id"] == plan_price.stripe_price_id
 
@@ -471,8 +454,9 @@ class TestPortalSessionView:
             {"return_url": "https://localhost/dashboard"},
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert resp.data["url"] == "https://billing.stripe.com/portal"
+        assert resp["Location"] == "https://billing.stripe.com/portal"
 
     def test_invalid_return_url_rejected(self, authed_client, settings):
         settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
@@ -483,21 +467,6 @@ class TestPortalSessionView:
             format="json",
         )
         assert resp.status_code == 400
-
-    @patch("apps.billing.views.create_billing_portal_session", new_callable=AsyncMock)
-    @patch("apps.billing.views.get_or_create_customer", new_callable=AsyncMock)
-    def test_portal_response_has_no_location_header(
-        self, mock_get_customer, mock_portal, authed_client, mock_stripe_customer
-    ):
-        mock_get_customer.return_value = mock_stripe_customer
-        mock_portal.return_value = "https://billing.stripe.com/portal"
-
-        resp = authed_client.post(
-            "/api/v1/billing/portal-sessions/",
-            {"return_url": "https://localhost/dashboard"},
-            format="json",
-        )
-        assert "Location" not in resp
 
     def test_missing_body_returns_400(self, authed_client):
         resp = authed_client.post("/api/v1/billing/portal-sessions/", {}, format="json")
@@ -552,7 +521,7 @@ class TestPortalSessionContextRouting:
             {"return_url": "https://localhost/dashboard"},
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert resp.data["url"] == "https://billing.stripe.com/team-portal"
         assert mock_portal.call_args.kwargs["stripe_customer_id"] == team_customer.stripe_id
 
@@ -580,9 +549,7 @@ class TestPortalSessionContextRouting:
         from apps.orgs.models import Org, OrgMember, OrgRole
         from apps.users.models import User
 
-        user = User.objects.create_user(
-            email="portal-no-cust@example.com", full_name="No Cust"
-        )
+        user = User.objects.create_user(email="portal-no-cust@example.com", full_name="No Cust")
         org = Org.objects.create(name="NoCustOrg", slug="portal-no-cust", created_by=user)
         OrgMember.objects.create(org=org, user=user, role=OrgRole.OWNER, is_billing=True)
         # No StripeCustomer row for this org.
@@ -619,7 +586,7 @@ class TestPortalSessionContextRouting:
             {"return_url": "https://localhost/dashboard"},
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert resp.data["url"] == "https://billing.stripe.com/personal-portal"
         # get_or_create_customer was called with user_id (personal scope),
         # not org_id — confirms no scope mixing.
@@ -641,7 +608,7 @@ class TestPortalSessionContextRouting:
             {"return_url": "https://localhost/dashboard"},
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert mock_portal.call_args.kwargs["stripe_customer_id"] == team_customer.stripe_id
 
     def test_invalid_context_value_returns_400(self, authed_client):
@@ -763,9 +730,9 @@ class TestCancelSubscription:
     @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
     def test_cancels_subscription(self, mock_cancel, _mock_task, authed_client, subscription):
         resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
-        # Cancellation takes effect at period end, so the response is 202 Accepted
-        # with the still-active subscription echoed back.
-        assert resp.status_code == 202
+        # Cancellation takes effect at period end. The DELETE responds 204
+        # No Content (RFC 9110); clients refresh state via GET /me/.
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
         assert mock_cancel.call_args.kwargs["at_period_end"] is True
 
@@ -776,6 +743,81 @@ class TestCancelSubscription:
     def test_no_active_subscription_returns_404(self, authed_client, stripe_customer):
         resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
         assert resp.status_code == 404
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    def test_personal_cancel_propagates_stripe_errors(
+        self, _mock_task, authed_client, subscription
+    ):
+        """A ``stripe.StripeError`` from the underlying cancel call must
+        bubble up through the middleware error envelope as a 502 (the
+        default for ``StripeError`` with no ``http_status``). Pins the
+        contract that the FE can rely on a 5xx for upstream Stripe failures
+        rather than getting an opaque 500."""
+        import stripe as stripe_sdk
+
+        with patch(
+            "apps.billing.views.cancel_subscription",
+            new=AsyncMock(side_effect=stripe_sdk.StripeError("upstream boom")),
+        ):
+            resp = authed_client.delete("/api/v1/billing/subscriptions/me/?context=personal")
+        # ``domain_exception_handler`` maps StripeError → 502 (default) with
+        # the generic envelope; never the upstream message.
+        assert resp.status_code == 502
+        assert resp.data["code"] == "payment_provider_error"
+        assert "upstream boom" not in resp.data["detail"]
+
+    @patch("apps.billing.views.send_subscription_cancel_notice_task")
+    def test_delete_cancels_subscription_with_pending_schedule(
+        self, _mock_task, authed_client, subscription, team_plan
+    ):
+        """End-to-end: a DELETE on a sub with a Stripe SubscriptionSchedule
+        attached must release the schedule first (Stripe rejects modify/cancel
+        on a schedule-pinned sub), then cancel. Mocks the lower-level Stripe
+        SDK calls to verify both happened in order."""
+        from apps.billing.models import Subscription
+
+        # Mark the local mirror so cancel_subscription's fast-path takes the
+        # release branch (skips the retrieve when scheduled_plan_id is None).
+        Subscription.objects.filter(id=subscription.id).update(
+            scheduled_plan=team_plan,
+            scheduled_change_at=datetime(2026, 6, 1, tzinfo=UTC),
+        )
+
+        import stripe as stripe_sdk
+
+        sub_with_schedule = MagicMock()
+        sub_with_schedule.schedule = "sub_sched_active"
+        active_schedule = MagicMock()
+        active_schedule.id = "sub_sched_active"
+        active_schedule.status = "active"
+        # Use a real ``stripe.Subscription`` object so the cancel-mirror logic
+        # in ``_mirror_cancel_state_from_stripe`` can read ``.cancel_at`` etc.
+        # via attribute access (the SDK echoes back StripeObject, not dict).
+        modify_response = stripe_sdk.Subscription.construct_from(
+            {
+                "id": subscription.stripe_id,
+                "status": "active",
+                "cancel_at": 1_780_000_000,
+                "canceled_at": None,
+            },
+            "sk_test",
+        )
+
+        with (
+            patch("stripe.Subscription.retrieve", return_value=sub_with_schedule),
+            patch("stripe.SubscriptionSchedule.retrieve", return_value=active_schedule),
+            patch("stripe.SubscriptionSchedule.release") as mock_release,
+            patch("stripe.Subscription.modify", return_value=modify_response) as mock_modify,
+        ):
+            resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
+
+        assert resp.status_code == 204
+        # Schedule released first (so Stripe accepts the cancel modify).
+        mock_release.assert_called_once_with("sub_sched_active")
+        # Cancel modify call lands with cancel_at="min_period_end".
+        mock_modify.assert_called_once()
+        assert mock_modify.call_args.args == (subscription.stripe_id,)
+        assert mock_modify.call_args.kwargs == {"cancel_at": "min_period_end"}
 
     def test_unauthenticated_rejected(self):
         client = APIClient()
@@ -1040,6 +1082,113 @@ class TestUpdateSubscription:
         mock_change.assert_not_called()
 
     @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_plan_change_only_skips_member_count_check(
+        self, mock_change, team_plan, team_plan_price
+    ):
+        """A plan-only PATCH (no ``seat_limit`` field) must NOT enforce the
+        seat-vs-member-count guard. Switching plans without touching the seat
+        cap is always safe — no seat is being removed, so the head-count
+        comparison is irrelevant. Pins this behavior so the guard isn't
+        accidentally widened to all team-context PATCH calls."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        owner = User.objects.create_user(email="plan-only@example.com", full_name="PlanOnly")
+        org = Org.objects.create(name="PlanOnlyOrg", slug="plan-only-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+        # Five members total — strictly more than the existing seat_limit=3.
+        # If the guard fires erroneously on plan-only requests, it would 400.
+        for i in range(4):
+            extra = User.objects.create_user(email=f"po{i}@plan-only.com", full_name=f"PO{i}")
+            OrgMember.objects.create(org=org, user=extra, role=OrgRole.MEMBER)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_plan_only_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_plan_only_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,
+            seat_limit=3,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        # Plan-only PATCH (no seat_limit). 5 members > 3 seats but the guard
+        # must not trip — change_plan still gets called.
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=team",
+            {"plan_price_id": str(team_plan_price.id)},
+            format="json",
+        )
+        assert resp.status_code == 200
+        mock_change.assert_called_once()
+        # And quantity stays None on a plan-only patch — the seat-update path
+        # is not piggybacked on.
+        assert mock_change.call_args.kwargs["quantity"] is None
+
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
+    def test_patch_combined_downgrade_plan_and_seat_below_member_count_rejected_before_deferral(
+        self, mock_change, team_plan, team_plan_price
+    ):
+        """A combined plan+seat PATCH that targets a *cheaper* plan (would
+        normally route to a deferred SubscriptionSchedule) AND drops seats
+        below member count must 400 with ``seats_below_member_count`` BEFORE
+        the Stripe schedule call. The seat guard runs inside ``_apply_plan_change``
+        prior to ``change_plan``, so a future regression that reorders the
+        guard after the Stripe call would expose us to a half-applied state
+        (Stripe schedule created, seat error returned)."""
+        from apps.billing.models import Plan, PlanPrice, StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        # Cheaper team plan on a different Plan row (PlanPrice is OneToOne with
+        # Plan). The PATCH targets this cheaper price; the existing sub stays
+        # on the seeded team_plan_price (amount=1500).
+        cheaper_plan = Plan.objects.create(
+            name="Team Cheaper", context="team", tier=3, interval="month", is_active=True
+        )
+        cheaper_price = PlanPrice.objects.create(
+            plan=cheaper_plan, stripe_price_id="price_team_low", amount=500
+        )
+        owner = User.objects.create_user(email="defer-combo@example.com", full_name="DeferCombo")
+        org = Org.objects.create(name="DeferComboOrg", slug="defer-combo-org", created_by=owner)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
+        for i in range(2):
+            extra = User.objects.create_user(email=f"dc{i}@defer-combo.com", full_name=f"DC{i}")
+            OrgMember.objects.create(org=org, user=extra, role=OrgRole.MEMBER)
+        team_customer = StripeCustomer.objects.create(
+            stripe_id="cus_defer_combo_team", org=org, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_defer_combo_team",
+            stripe_customer=team_customer,
+            status="active",
+            plan=team_plan,  # current plan, amount 1500 via team_plan_price
+            seat_limit=5,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        # Confirm the move is a downgrade by amount.
+        assert cheaper_price.amount < team_plan_price.amount
+
+        client = APIClient()
+        client.force_authenticate(user=owner)
+        # 3 members; downgrade plan + drop seats to 2 → reject.
+        resp = client.patch(
+            "/api/v1/billing/subscriptions/me/?context=team",
+            {"plan_price_id": str(cheaper_price.id), "seat_limit": 2},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert resp.data["code"] == "seats_below_member_count"
+        # Most importantly: change_plan never got called — Stripe never saw
+        # the schedule create request.
+        mock_change.assert_not_called()
+
+    @patch("apps.billing.views.change_plan", new_callable=AsyncMock)
     def test_prorate_kwarg_passed_to_change_plan(
         self, mock_change, authed_client, subscription, plan_price
     ):
@@ -1204,7 +1353,7 @@ class TestQuantityValidationOnCheckout:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert mock_create.call_args.kwargs["quantity"] == 1
 
     @patch("apps.billing.views.create_checkout_session", new_callable=AsyncMock)
@@ -1232,7 +1381,7 @@ class TestQuantityValidationOnCheckout:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert mock_create.call_args.kwargs["quantity"] == 2
 
 
@@ -1255,31 +1404,30 @@ class TestUpdateSubscriptionQuantityValidation:
 class TestCurrencyConversion:
     """Display-currency conversion on plan/product/subscription endpoints."""
 
-    def test_currency_query_param_converts_amount(self, plan, plan_price):
-        ExchangeRate.objects.create(
+    def test_currency_query_param_returns_localized_amount(self, plan, plan_price):
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="eur",
-            rate="0.91",
-            fetched_at=datetime.now(UTC),
+            amount_minor=899,
+            synced_at=datetime.now(UTC),
         )
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/?currency=eur")
         price = resp.data["results"][0]["price"]
         assert price["currency"] == "eur"
-        # 999 cents * 0.91 = 909.09 → round → 909 minor units → 9.09 → friendly → 8.99
-        # (nearest of {8.99, 9.49, 9.99}; 8.99 is 0.10 away)
         assert price["display_amount"] == 8.99
-        assert price["approximate"] is True
-        # Original USD cents still present
+        # Source-of-truth USD cents still present (Stripe always charges this).
         assert price["amount"] == 999
 
-    def test_falls_back_to_usd_when_rate_missing(self, plan, plan_price):
+    def test_falls_back_to_usd_when_localized_row_missing(self, plan, plan_price):
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/?currency=eur")
         price = resp.data["results"][0]["price"]
-        # No ExchangeRate for EUR → fallback to USD
+        # No LocalizedPrice row for EUR → display falls back to the USD catalog
+        # amount, so currency must also report "usd" to stay consistent with
+        # what display_amount is actually denominated in.
         assert price["currency"] == "usd"
         assert price["display_amount"] == 9.99
-        assert price["approximate"] is False
 
     def test_invalid_currency_returns_400(self, plan, plan_price):
         client = APIClient()
@@ -1287,45 +1435,49 @@ class TestCurrencyConversion:
         assert resp.status_code == 400
 
     def test_authenticated_user_preferred_currency(self, authed_client, user, plan, plan_price):
-        ExchangeRate.objects.create(
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="gbp",
-            rate="0.79",
-            fetched_at=datetime.now(UTC),
+            amount_minor=799,
+            synced_at=datetime.now(UTC),
         )
         user.preferred_currency = "gbp"
         user.save()
         resp = authed_client.get("/api/v1/billing/plans/")
         assert resp.data["results"][0]["price"]["currency"] == "gbp"
+        assert resp.data["results"][0]["price"]["display_amount"] == 7.99
 
     def test_query_param_overrides_user_preference(self, authed_client, user, plan, plan_price):
-        ExchangeRate.objects.create(
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="eur",
-            rate="0.91",
-            fetched_at=datetime.now(UTC),
+            amount_minor=899,
+            synced_at=datetime.now(UTC),
         )
-        ExchangeRate.objects.create(
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="gbp",
-            rate="0.79",
-            fetched_at=datetime.now(UTC),
+            amount_minor=799,
+            synced_at=datetime.now(UTC),
         )
         user.preferred_currency = "gbp"
         user.save()
         resp = authed_client.get("/api/v1/billing/plans/?currency=eur")
         assert resp.data["results"][0]["price"]["currency"] == "eur"
+        assert resp.data["results"][0]["price"]["display_amount"] == 8.99
 
-    def test_zero_decimal_currency_conversion(self, plan, plan_price):
-        ExchangeRate.objects.create(
+    def test_zero_decimal_currency_renders_whole_units(self, plan, plan_price):
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
             currency="jpy",
-            rate="149.5",
-            fetched_at=datetime.now(UTC),
+            amount_minor=1500,
+            synced_at=datetime.now(UTC),
         )
         client = APIClient()
         resp = client.get("/api/v1/billing/plans/?currency=jpy")
         price = resp.data["results"][0]["price"]
         assert price["currency"] == "jpy"
-        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → friendly → 149400.0
-        assert price["display_amount"] == 149400.0
-        assert price["approximate"] is True
+        assert price["display_amount"] == 1500.0
 
     def test_subscription_includes_currency(self, authed_client, subscription):
         resp = authed_client.get("/api/v1/billing/subscriptions/me/")
@@ -1333,23 +1485,57 @@ class TestCurrencyConversion:
         assert "currency" in price
         assert "display_amount" in price
 
-    def test_product_endpoint_currency_conversion(self, authed_client):
-        """Products endpoint also respects ?currency= param."""
+    def test_subscription_endpoint_returns_localized_plan_price(
+        self, authed_client, subscription, plan_price
+    ):
+        """GET /subscriptions/me/?currency=eur reads LocalizedPrice rows for
+        the nested plan price and returns the precomputed display amount."""
+        LocalizedPrice.objects.create(
+            plan_price=plan_price,
+            currency="eur",
+            amount_minor=899,
+            synced_at=datetime.now(UTC),
+        )
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/?currency=eur")
+        assert resp.status_code == 200
+        price = resp.data["results"][0]["plan"]["price"]
+        assert price["currency"] == "eur"
+        assert price["display_amount"] == 8.99
+        # USD cents (source of truth for Stripe charges) unchanged.
+        assert price["amount"] == 999
+
+    def test_subscription_endpoint_falls_back_to_usd_when_no_localized_row(
+        self, authed_client, subscription
+    ):
+        """No LocalizedPrice row for the requested currency → effective
+        currency is 'usd' and display_amount mirrors the catalog USD amount."""
+        resp = authed_client.get("/api/v1/billing/subscriptions/me/?currency=eur")
+        assert resp.status_code == 200
+        price = resp.data["results"][0]["plan"]["price"]
+        assert price["currency"] == "usd"
+        assert price["display_amount"] == 9.99
+
+    def test_product_endpoint_localized_amount(self, authed_client):
+        """Products endpoint also reads LocalizedPrice rows for ?currency=."""
         product = Product.objects.create(
             name="50 Credits", type="one_time", credits=50, is_active=True
         )
-        ProductPrice.objects.create(product=product, stripe_price_id="price_prod_cur", amount=500)
-        ExchangeRate.objects.create(currency="eur", rate="0.91", fetched_at=datetime.now(UTC))
+        product_price = ProductPrice.objects.create(
+            product=product, stripe_price_id="price_prod_cur", amount=500
+        )
+        LocalizedPrice.objects.create(
+            product_price=product_price,
+            currency="eur",
+            amount_minor=449,
+            synced_at=datetime.now(UTC),
+        )
         resp = authed_client.get("/api/v1/billing/products/?currency=eur")
         price = resp.data["results"][0]["price"]
         assert price["currency"] == "eur"
-        # 500 * 0.91 = 455 → /100 → 4.55 → friendly → 4.49
-        # (nearest of {3.99, 4.49, 4.99}; 4.49 is 0.06 away)
         assert price["display_amount"] == 4.49
-        assert price["approximate"] is True
 
     def test_user_default_currency_returns_usd(self, authed_client, user, plan, plan_price):
-        """User with default preferred_currency='usd' gets USD without exchange rate lookup."""
+        """User with default preferred_currency='usd' gets the catalog amount directly."""
         assert user.preferred_currency == "usd"
         resp = authed_client.get("/api/v1/billing/plans/")
         assert resp.data["results"][0]["price"]["currency"] == "usd"
@@ -1518,7 +1704,7 @@ class TestConcurrentSubscriptions:
         client.force_authenticate(user=user)
 
         resp = client.delete("/api/v1/billing/subscriptions/me/?context=personal")
-        assert resp.status_code == 202
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
         passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
         assert passed_customer_id == personal_sub.stripe_customer_id
@@ -1535,7 +1721,7 @@ class TestConcurrentSubscriptions:
         client.force_authenticate(user=user)
 
         resp = client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 202
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
         passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
         assert passed_customer_id == team_sub.stripe_customer_id
@@ -1585,7 +1771,7 @@ class TestConcurrentSubscriptions:
         client.force_authenticate(user=user)
 
         resp = client.delete("/api/v1/billing/subscriptions/me/?context=")
-        assert resp.status_code == 202
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
         passed_customer_id = mock_cancel.call_args.kwargs["stripe_customer_id"]
         assert passed_customer_id == team_sub.stripe_customer_id
@@ -1652,7 +1838,60 @@ class TestConcurrentSubscriptions:
             patch("apps.billing.views.send_subscription_cancel_notice_task"),
         ):
             resp_personal = client.delete("/api/v1/billing/subscriptions/me/?context=personal")
-        assert resp_personal.status_code == 202
+        assert resp_personal.status_code == 204
+
+    def test_two_distinct_personal_subs_picks_latest(self, plan, plan_price):
+        """Defensive: two ACTIVE personal subscriptions for the same user
+        should never coexist in production (Stripe enforces single-active-sub
+        per customer), but if they do — e.g. a webhook race upserted both
+        before one was canceled — ``_get_active_subscriptions_for_user`` must
+        deterministically pick the latest by ``created_at``. Pins the
+        ``order_by('-created_at').first()`` ordering against future regressions
+        that swap to e.g. id-based ordering."""
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.users.models import User
+
+        user = User.objects.create_user(email="two-personal@example.com", full_name="TwoPersonal")
+        customer = StripeCustomer.objects.create(
+            stripe_id="cus_two_personal", user=user, livemode=False
+        )
+        old_sub = Subscription.objects.create(
+            stripe_id="sub_two_personal_old",
+            stripe_customer=customer,
+            user=user,
+            status="active",
+            plan=plan,
+            seat_limit=1,
+            current_period_start=datetime(2025, 11, 1, tzinfo=UTC),
+            current_period_end=datetime(2025, 12, 1, tzinfo=UTC),
+        )
+        # Force a strictly older created_at so ordering is deterministic.
+        Subscription.objects.filter(id=old_sub.id).update(
+            created_at=datetime(2025, 11, 1, tzinfo=UTC)
+        )
+        newer_sub = Subscription.objects.create(
+            stripe_id="sub_two_personal_new",
+            stripe_customer=customer,
+            user=user,
+            status="active",
+            plan=plan,
+            seat_limit=1,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+        Subscription.objects.filter(id=newer_sub.id).update(
+            created_at=datetime(2026, 1, 1, tzinfo=UTC)
+        )
+
+        client = APIClient()
+        client.force_authenticate(user=user)
+
+        resp = client.get("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 200
+        # Exactly one row returned (the latest), not both — the resolver
+        # picks ``.first()`` after ``-created_at`` ordering.
+        assert resp.data["count"] == 1
+        assert str(resp.data["results"][0]["id"]) == str(newer_sub.id)
 
     def test_get_orders_team_before_personal(self, plan, plan_price, team_plan, team_plan_price):
         """``GET /me/`` orders the team sub first, then the personal sub —
@@ -1829,7 +2068,7 @@ class TestBillingAuthorityOnMutations:
         self, mock_cancel, _mock_task, org_member_client, team_org_setup
     ):
         resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 202
+        assert resp.status_code == 204
         mock_cancel.assert_called_once()
 
     def test_non_billing_member_delete_returns_403(self, team_org_setup):
@@ -1860,6 +2099,23 @@ class TestBillingAuthorityOnMutations:
         assert resp.status_code == 200
         mock_change.assert_called_once()
 
+    def test_non_org_member_patch_team_context_returns_403(
+        self, authed_client, subscription, team_plan_price
+    ):
+        """A user with no org membership who explicitly passes
+        ``?context=team`` must be rejected with 403, not silently routed to
+        the team path. ``_require_billing_authority(context='team')`` runs
+        on every explicit team-context request and there's no membership row
+        to satisfy ``is_billing=True`` on, so it raises PermissionDenied
+        before the customer lookup. The user fixture has only a personal
+        ``stripe_customer`` and ``subscription`` — no org membership at all."""
+        resp = authed_client.patch(
+            "/api/v1/billing/subscriptions/me/?context=team",
+            {"plan_price_id": str(team_plan_price.id)},
+            format="json",
+        )
+        assert resp.status_code == 403
+
     def test_non_billing_member_patch_returns_403(self, team_org_setup, team_plan_price):
         from apps.orgs.models import OrgMember, OrgRole
         from apps.users.models import User
@@ -1880,6 +2136,56 @@ class TestBillingAuthorityOnMutations:
         )
         assert resp.status_code == 403
 
+    @patch("apps.billing.views.cancel_subscription", new_callable=AsyncMock)
+    def test_user_in_two_orgs_mutation_targets_authorized_org(self, mock_cancel, team_org_setup):
+        """Multi-org caller's DELETE must hit the org they're is_billing in.
+
+        Reproduces the cross-org mutation bug: a user with memberships in
+        org A (is_billing=True) and org B (is_billing=False) authenticates
+        and calls DELETE on ``/me/?context=team``. The authority check
+        correctly pins ``org_id=A``, but without forwarding ``org_id``
+        through ``_resolve_billing_customer`` the customer lookup could
+        land on org B's customer (whichever ``OrgMember.objects.first()``
+        returns). The fix passes the authorised ``org_id`` end-to-end.
+        """
+        from apps.billing.models import StripeCustomer, Subscription
+        from apps.orgs.models import Org, OrgMember, OrgRole
+        from apps.users.models import User
+
+        org_a, customer_a, sub_a = team_org_setup
+        # Build a second org B that the same user is a non-billing member of.
+        owner_b = User.objects.create_user(email="ownerb@example.com", full_name="Owner B")
+        org_b = Org.objects.create(name="Org B", slug="org-b", created_by=owner_b)
+        OrgMember.objects.create(org=org_b, user=owner_b, role=OrgRole.OWNER, is_billing=True)
+        customer_b = StripeCustomer.objects.create(
+            stripe_id="cus_team_authz_b", org=org_b, livemode=False
+        )
+        Subscription.objects.create(
+            stripe_id="sub_team_authz_b",
+            stripe_customer=customer_b,
+            status="active",
+            plan=sub_a.plan,
+            seat_limit=3,
+            current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
+            current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
+        )
+
+        # Caller — is_billing only on org_a, member-only on org_b.
+        caller = User.objects.create_user(email="multiorg@example.com", full_name="Multi")
+        OrgMember.objects.create(org=org_a, user=caller, role=OrgRole.ADMIN, is_billing=True)
+        OrgMember.objects.create(org=org_b, user=caller, role=OrgRole.MEMBER, is_billing=False)
+
+        client = APIClient()
+        client.force_authenticate(user=caller)
+
+        resp = client.delete("/api/v1/billing/subscriptions/me/?context=team")
+        assert resp.status_code == 204
+
+        # The Stripe call MUST target org_a's customer, never org_b's.
+        called_customer = mock_cancel.call_args.kwargs["stripe_customer_id"]
+        assert called_customer == customer_a.id
+        assert called_customer != customer_b.id
+
 
 @pytest.mark.django_db
 class TestCancelNoticeEmail:
@@ -1888,8 +2194,12 @@ class TestCancelNoticeEmail:
     def test_delete_sends_scheduled_notice(
         self, _mock_cancel, mock_task, authed_client, subscription
     ):
-        resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 202
+        # The .delay call is wrapped in transaction.on_commit so it only fires
+        # at commit — captureOnCommitCallbacks runs the callbacks under the
+        # rolled-back test transaction.
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            resp = authed_client.delete("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 204
         mock_task.delay.assert_called_once()
         recipients, label, action = mock_task.delay.call_args.args
         assert recipients == ["billing@example.com"]
@@ -1901,11 +2211,12 @@ class TestCancelNoticeEmail:
     def test_patch_cancel_at_period_end_true_sends_scheduled(
         self, _mock_cancel, mock_task, authed_client, subscription
     ):
-        resp = authed_client.patch(
-            "/api/v1/billing/subscriptions/me/",
-            {"cancel_at_period_end": True},
-            format="json",
-        )
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            resp = authed_client.patch(
+                "/api/v1/billing/subscriptions/me/",
+                {"cancel_at_period_end": True},
+                format="json",
+            )
         assert resp.status_code == 200
         assert mock_task.delay.call_args.args[2] == "scheduled"
 
@@ -1914,11 +2225,12 @@ class TestCancelNoticeEmail:
     def test_patch_cancel_at_period_end_false_sends_resumed(
         self, _mock_resume, mock_task, authed_client, subscription
     ):
-        resp = authed_client.patch(
-            "/api/v1/billing/subscriptions/me/",
-            {"cancel_at_period_end": False},
-            format="json",
-        )
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            resp = authed_client.patch(
+                "/api/v1/billing/subscriptions/me/",
+                {"cancel_at_period_end": False},
+                format="json",
+            )
         assert resp.status_code == 200
         assert mock_task.delay.call_args.args[2] == "resumed"
 
@@ -1955,8 +2267,9 @@ class TestCancelNoticeEmail:
         )
         OrgMember.objects.create(org=org, user=non_billing, role=OrgRole.MEMBER, is_billing=False)
 
-        resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
-        assert resp.status_code == 202
+        with TestCase.captureOnCommitCallbacks(execute=True):
+            resp = org_member_client.delete("/api/v1/billing/subscriptions/me/")
+        assert resp.status_code == 204
         recipients = mock_task.delay.call_args.args[0]
         assert set(recipients) == {"orgowner@example.com", "finance@example.com"}
 
@@ -2032,8 +2345,9 @@ class TestProductCheckoutPersonal:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert resp.data["url"] == "https://checkout.stripe.com/product"
+        assert resp["Location"] == "https://checkout.stripe.com/product"
         metadata = mock_session.call_args.kwargs["metadata"]
         assert metadata == {"product_id": str(boost_product.id)}
         assert mock_session.call_args.kwargs["price_id"] == "price_boost_50"
@@ -2076,7 +2390,7 @@ class TestProductCheckoutTeamOwnership:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         metadata = mock_session.call_args.kwargs["metadata"]
         assert metadata == {"product_id": str(boost_product.id), "org_id": str(org.id)}
         # Customer resolution must use org_id, not user_id, so credits bill to the org customer.
@@ -2143,7 +2457,7 @@ class TestProductCheckoutContextSelector:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         # No org_id in metadata — webhook will grant to the user balance.
         metadata = mock_session.call_args.kwargs["metadata"]
         assert metadata == {"product_id": str(boost_product.id)}
@@ -2173,7 +2487,7 @@ class TestProductCheckoutContextSelector:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         assert mock_customer.call_args.kwargs.get("user_id") == user.id
 
     @patch("apps.billing.views.create_product_checkout_session", new_callable=AsyncMock)
@@ -2196,7 +2510,7 @@ class TestProductCheckoutContextSelector:
             },
             format="json",
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 201
         metadata = mock_session.call_args.kwargs["metadata"]
         assert metadata == {"product_id": str(boost_product.id), "org_id": str(org.id)}
         assert mock_customer.call_args.kwargs.get("org_id") == org.id
@@ -2334,6 +2648,55 @@ class TestCreditBalanceView:
         assert resp.status_code == 200
         assert resp.data == {"balances": [{"balance": 42, "scope": "org"}]}
 
+    def test_explicit_personal_context_returns_user_balance_for_org_member(
+        self, org_member_user, team_org_setup
+    ):
+        """``?context=personal`` for an org member returns only the user-scoped
+        balance — the org scope is bypassed. This exercises the ``context ==
+        PlanContext.PERSONAL.value`` branch (line 1024 in views.py)."""
+        from apps.billing.models import CreditBalance
+
+        org, _, _ = team_org_setup
+        CreditBalance.objects.create(org=org, balance=500)
+        CreditBalance.objects.create(user=org_member_user, balance=33)
+        client = APIClient()
+        client.force_authenticate(user=org_member_user)
+
+        resp = client.get("/api/v1/billing/credits/me/?context=personal")
+        assert resp.status_code == 200
+        assert resp.data == {"balances": [{"balance": 33, "scope": "user"}]}
+
+    def test_team_context_returns_404_when_user_not_in_any_org(self, authed_client, user):
+        """``?context=team`` for a user who is not a member of any org returns
+        404 — exercises the ``org_id is None`` guard (line 1026-1028 in views.py)."""
+        resp = authed_client.get("/api/v1/billing/credits/me/?context=team")
+        assert resp.status_code == 404
+
+
+@pytest.mark.django_db
+class TestTeamQuantityValidation:
+    """``_validate_quantity_for_context`` raises for team plans with 0 seats.
+
+    The ``< MIN_TEAM_SEATS`` branch (line 326 in views.py) is only reachable
+    for team plans — the personal-plan path is already covered by existing
+    tests (quantity > 1 → 400). Sending seat_limit=0 for a team plan must
+    also return 400."""
+
+    def test_team_plan_with_zero_seats_returns_400(self, authed_client, team_plan, team_plan_price):
+        """seat_limit=0 is below MIN_TEAM_SEATS (1) and must be rejected."""
+        resp = authed_client.post(
+            "/api/v1/billing/checkout-sessions/",
+            {
+                "plan_price_id": str(team_plan_price.id),
+                "seat_limit": 0,
+                "success_url": "https://localhost/success",
+                "cancel_url": "https://localhost/cancel",
+                "org_name": "Zero Seats Org",
+            },
+            format="json",
+        )
+        assert resp.status_code == 400
+
 
 @pytest.mark.django_db
 class TestPatchSubscriptionDeferredDowngrade:
@@ -2395,9 +2758,7 @@ class TestScheduledChangeView:
     """``DELETE /billing/subscriptions/me/scheduled-change/`` releases an
     active SubscriptionSchedule so the user keeps their current plan."""
 
-    def test_delete_calls_release_for_personal_context(
-        self, authed_client, subscription
-    ):
+    def test_delete_calls_release_for_personal_context(self, authed_client, subscription):
         """Default routing: a non-org-member user hits the personal path,
         and the view delegates to ``release_pending_schedule_for_customer``."""
         # Patch the bound name in views.py — the view imports it at module
@@ -2406,18 +2767,41 @@ class TestScheduledChangeView:
             "apps.billing.views.release_pending_schedule_for_customer",
             new_callable=AsyncMock,
         ) as mock_release:
-            resp = authed_client.delete(
-                "/api/v1/billing/subscriptions/me/scheduled-change/"
-            )
-        assert resp.status_code == 200
+            resp = authed_client.delete("/api/v1/billing/subscriptions/me/scheduled-change/")
+        assert resp.status_code == 204
         mock_release.assert_called_once()
 
     def test_delete_404_when_no_active_subscription(self, authed_client):
         """No customer / no sub → 404, no Stripe call attempted."""
-        resp = authed_client.delete(
-            "/api/v1/billing/subscriptions/me/scheduled-change/"
-        )
+        resp = authed_client.delete("/api/v1/billing/subscriptions/me/scheduled-change/")
         assert resp.status_code == 404
+
+    def test_delete_returns_unchanged_sub_when_no_schedule_attached(
+        self, authed_client, subscription
+    ):
+        """Calling DELETE on a sub with no SubscriptionSchedule attached is a
+        no-op: the Stripe ``SubscriptionSchedule.release`` call is skipped
+        (sub.schedule is None, so ``_release_pending_schedule`` short-circuits
+        after the retrieve), and the returned subscription is unchanged. The
+        endpoint is documented as idempotent and safe to call after the
+        schedule has already cleared — this test pins that contract."""
+        sub_no_schedule = MagicMock()
+        sub_no_schedule.schedule = None  # no schedule attached
+        with (
+            patch("stripe.Subscription.retrieve", return_value=sub_no_schedule),
+            patch("stripe.SubscriptionSchedule.release") as mock_release,
+        ):
+            resp = authed_client.delete("/api/v1/billing/subscriptions/me/scheduled-change/")
+        # Idempotent — 204 No Content whether or not a schedule existed.
+        assert resp.status_code == 204
+        # No release call ever issued — Stripe is left untouched.
+        mock_release.assert_not_called()
+        # Local mirror unchanged: a follow-up GET still sees no scheduled change.
+        from apps.billing.models import Subscription
+
+        sub_after = Subscription.objects.get(id=subscription.id)
+        assert sub_after.scheduled_plan is None
+        assert sub_after.scheduled_change_at is None
 
     def test_delete_team_context_403_for_non_billing_member(self, team_plan_price):
         """Same is_billing gate as the other team-context mutations: a
@@ -2426,16 +2810,10 @@ class TestScheduledChangeView:
         from apps.orgs.models import Org, OrgMember, OrgRole
         from apps.users.models import User
 
-        member = User.objects.create_user(
-            email="member-rel@example.com", full_name="Plain Member"
-        )
+        member = User.objects.create_user(email="member-rel@example.com", full_name="Plain Member")
         org = Org.objects.create(name="RelOrg", slug="rel-org", created_by=member)
-        OrgMember.objects.create(
-            org=org, user=member, role=OrgRole.MEMBER, is_billing=False
-        )
-        customer = StripeCustomer.objects.create(
-            stripe_id="cus_rel_team", org=org, livemode=False
-        )
+        OrgMember.objects.create(org=org, user=member, role=OrgRole.MEMBER, is_billing=False)
+        customer = StripeCustomer.objects.create(stripe_id="cus_rel_team", org=org, livemode=False)
         Subscription.objects.create(
             stripe_id="sub_rel_team",
             stripe_customer=customer,
@@ -2448,7 +2826,5 @@ class TestScheduledChangeView:
         client = APIClient()
         client.force_authenticate(user=member)
 
-        resp = client.delete(
-            "/api/v1/billing/subscriptions/me/scheduled-change/?context=team"
-        )
+        resp = client.delete("/api/v1/billing/subscriptions/me/scheduled-change/?context=team")
         assert resp.status_code == 403

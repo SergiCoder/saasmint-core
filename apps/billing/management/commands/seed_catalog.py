@@ -128,16 +128,24 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f"  + Plan: {plan.name}")
 
-            price_id = f"price_placeholder_{spec['context']}_{spec['tier']}_{spec['interval']}"
+            placeholder_price_id = (
+                f"price_placeholder_{spec['context']}_{spec['tier']}_{spec['interval']}"
+            )
             existing = PlanPrice.objects.filter(plan=plan).first()
             if existing is None:
-                PlanPrice.objects.create(plan=plan, amount=spec["amount"], stripe_price_id=price_id)
+                PlanPrice.objects.create(
+                    plan=plan,
+                    amount=spec["amount"],
+                    stripe_price_id=placeholder_price_id,
+                )
                 self.stdout.write(f"  + PlanPrice: {plan.name} = {spec['amount']}c")
             elif existing.amount != spec["amount"]:
-                old = existing.amount
+                # Amount drift: refresh the amount but preserve any real
+                # stripe_price_id minted by ``sync_stripe_catalog`` — only
+                # restore the placeholder if no real ID was ever stamped.
                 existing.amount = spec["amount"]
                 existing.save(update_fields=["amount"])
-                self.stdout.write(f"  ✓ PlanPrice: {plan.name} {old}c → {spec['amount']}c")
+                self.stdout.write(f"  ✓ PlanPrice: {plan.name} updated to {spec['amount']}c")
 
     def _seed_products(self) -> None:
         for name, credit_count, amount in BOOST_PRODUCTS:
@@ -152,15 +160,18 @@ class Command(BaseCommand):
             if created:
                 self.stdout.write(f"  + Product: {name}")
 
-            price_id = f"price_placeholder_boost_{credit_count}"
+            placeholder_price_id = f"price_placeholder_boost_{credit_count}"
             existing = ProductPrice.objects.filter(product=product).first()
             if existing is None:
                 ProductPrice.objects.create(
-                    product=product, amount=amount, stripe_price_id=price_id
+                    product=product,
+                    amount=amount,
+                    stripe_price_id=placeholder_price_id,
                 )
                 self.stdout.write(f"  + ProductPrice: {name} = {amount}c")
             elif existing.amount != amount:
-                old = existing.amount
+                # Amount drift: refresh the amount but preserve any real
+                # stripe_price_id minted by ``sync_stripe_catalog``.
                 existing.amount = amount
                 existing.save(update_fields=["amount"])
-                self.stdout.write(f"  ✓ ProductPrice: {name} {old}c → {amount}c")
+                self.stdout.write(f"  ✓ ProductPrice: {name} updated to {amount}c")

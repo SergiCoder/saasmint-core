@@ -7,6 +7,7 @@ import logging
 
 import stripe
 from django.conf import settings
+from django.db import transaction
 from django.http import HttpRequest, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
@@ -72,7 +73,9 @@ def stripe_webhook(request: HttpRequest) -> HttpResponse:
     # Reject events whose livemode doesn't match the current Stripe key.
     # Prevents a replayed test event from being processed against the prod key
     # (and vice versa). Drop silently with 202 — the mismatch is permanent.
-    key_is_live = settings.STRIPE_SECRET_KEY.startswith("sk_live_")
+    # Accept both standard and restricted-key prefixes so a deployment using
+    # an ``rk_live_`` restricted key is still recognised as live mode.
+    key_is_live = settings.STRIPE_SECRET_KEY.startswith(("sk_live_", "rk_live_"))
     if livemode != key_is_live:
         logger.error(
             "Stripe webhook livemode mismatch for event %s (livemode=%s, key_is_live=%s) — drop.",
@@ -82,17 +85,26 @@ def stripe_webhook(request: HttpRequest) -> HttpResponse:
         )
         return HttpResponse(status=202)
 
-    event_row, created = StripeEventModel.objects.get_or_create(
-        stripe_id=stripe_id,
-        defaults={
-            "type": event_type,
-            "livemode": livemode,
-            "payload": event_dict,
-        },
-    )
-    if not created:
-        logger.info("Skipping duplicate Stripe event %s", stripe_id)
-        return HttpResponse(status=202)
+    # Wrap the get_or_create + Celery dispatch in a transaction so the
+    # ``on_commit`` hook only fires after the StripeEvent row is durably
+    # persisted. If the dispatch ran in autocommit it could enqueue a task
+    # against an event row that the surrounding request is about to roll
+    # back (e.g. via a downstream middleware), leaving Celery chasing an id
+    # that doesn't exist.
+    with transaction.atomic():
+        event_row, created = StripeEventModel.objects.get_or_create(
+            stripe_id=stripe_id,
+            defaults={
+                "type": event_type,
+                "livemode": livemode,
+                "payload": event_dict,
+            },
+        )
+        if not created:
+            logger.info("Skipping duplicate Stripe event %s", stripe_id)
+            return HttpResponse(status=202)
 
-    process_stripe_webhook.delay(str(event_row.id))
+        event_row_id = str(event_row.id)
+        transaction.on_commit(lambda: process_stripe_webhook.delay(event_row_id))
+
     return HttpResponse(status=202)

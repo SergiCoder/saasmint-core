@@ -1,4 +1,14 @@
-"""Organization lifecycle services — team checkout, member management, invitations."""
+"""Organization lifecycle services — team checkout, member management, invitations.
+
+Note on the ``apps.billing.*`` imports inside function bodies: ``apps.billing``
+imports ``apps.orgs.models.OrgMember`` at module top (e.g. for the
+billing-authority gates and credit routing in ``apps.billing.views``). A
+top-level ``from apps.billing.models import …`` here would close that loop
+at startup. The lazy function-scope imports below are deliberate — they keep
+the cycle deferred to call time, where Python has finished importing both
+modules. Don't promote any of them to module top without first auditing the
+billing → orgs side.
+"""
 
 from __future__ import annotations
 
@@ -9,12 +19,15 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 if TYPE_CHECKING:
+    from django.db.models import QuerySet
+
     from apps.billing.models import Subscription as SubscriptionModel
 
 import stripe
 from asgiref.sync import sync_to_async
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
+from saasmint_core.exceptions import DomainError
 
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
 from apps.users.models import User
@@ -30,10 +43,10 @@ def generate_unique_slug(name: str) -> str:
 
     Race semantics: this is a best-effort generator, not a guarantee. The
     scan + pick is not transactional, so two concurrent callers can land on
-    the same candidate. The unique index on `Org.slug` (`idx_orgs_slug_active`)
-    is the authoritative uniqueness enforcer — callers are expected to wrap
-    the `Org.create()` in a try/except for `IntegrityError` and retry if they
-    must survive a lost race (see `_create_org_with_owner`).
+    the same candidate. The field-level unique index on ``Org.slug`` is the
+    authoritative uniqueness enforcer — callers are expected to wrap the
+    ``Org.create()`` in a try/except for ``IntegrityError`` and retry if
+    they must survive a lost race (see ``_create_org_with_owner``).
     """
     base = slugify(name)
     # Strip any characters not in [a-z0-9-]
@@ -45,11 +58,14 @@ def generate_unique_slug(name: str) -> str:
         base = "org"
 
     # Pull candidate variants in one query (`base`, `base-2`, `base-3`, ...)
-    # using a ``startswith`` scan so the ``idx_orgs_slug_active`` partial index
-    # can seek the prefix — ``slug__regex`` was opaque to the planner and
-    # fell back to a full-table scan. Filter to exact-match or ``-<digits>``
-    # in Python; anything else (e.g. ``foo-bar`` when base=``foo``) is
-    # discarded, so the wider candidate set is harmless.
+    # using a ``startswith`` scan so the field-level unique index on
+    # ``Org.slug`` can seek the prefix — ``slug__regex`` was opaque to the
+    # planner and fell back to a full-table scan. Filter to exact-match or
+    # ``-<digits>`` in Python; anything else (e.g. ``foo-bar`` when
+    # base=``foo``) is discarded, so the wider candidate set is harmless.
+    # The pattern depends on ``base`` so the ``re`` module's internal LRU
+    # cache can't share compiles across calls — compiling per-call is
+    # intentional, and cheap relative to the DB round-trip.
     _suffix_re = re.compile(rf"^{re.escape(base)}(?:-\d+)?$")
     existing = {
         slug
@@ -253,32 +269,95 @@ async def delete_org_on_subscription_cancel(org_id: UUID) -> None:
     delete_org_on_subscription_cancel_task.delay(str(org_id))
 
 
+class SeatCapReachedAtAcceptError(DomainError):
+    """Raised by ``accept_invitation`` when the team's seat cap is reached at commit.
+
+    Re-raised by the view layer as a 409 Conflict so the invitee gets a
+    clean error rather than an opaque IntegrityError. Distinct exception
+    type so callers can distinguish it from generic IntegrityError races.
+    """
+
+
+def lock_active_team_sub(org: Org) -> SubscriptionModel | None:
+    """Return the org's active team Subscription with a row lock, or ``None``.
+
+    Must be called inside an ``atomic()`` block — the ``SELECT FOR UPDATE``
+    is held until the surrounding transaction commits, serialising any
+    concurrent invite-create / invite-accept / member-add against the same
+    org so the seat cap can't be overrun in a TOCTOU race.
+
+    Shared by ``_validate_seat_limit`` (invite create, in views) and
+    ``accept_invitation`` (invite accept, here). Each call site keeps its
+    own post-lock counting logic — invite-create counts members + pending
+    invites, invite-accept counts members + 1 — so this helper only owns
+    the lock query, not the cap math.
+    """
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+    from apps.billing.models import Subscription as SubscriptionModel
+
+    return (
+        SubscriptionModel.objects.select_for_update()
+        .filter(
+            stripe_customer__org=org,
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+        )
+        .first()
+    )
+
+
 def accept_invitation(
     invitation: Invitation,
     *,
-    password: str,
     full_name: str,
 ) -> tuple[User, Org]:
     """Create the invitee's user + membership and mark the invitation accepted.
 
     The invitation must already have been validated (not expired, org active,
-    email not registered). Runs in a single transaction so a failure midway
-    never leaves a dangling user, member, or accepted-but-unused invitation.
+    email not registered, seat cap not reached). Runs in a single transaction
+    so a failure midway never leaves a dangling user, member, or
+    accepted-but-unused invitation.
 
-    The user is created with ``is_verified=False`` — a verification email is
-    queued on commit so the invitee must prove mailbox control before they
-    can log in. This blocks a leaked/forwarded invitation token from
-    silently onboarding an attacker, since they cannot click the verify
-    link that lands in the real invitee's inbox.
+    The user is created with ``set_unusable_password()`` — the password is
+    set later by the invitee through the verification-email flow
+    (``POST /api/v1/auth/verify-email/`` with both the token and a fresh
+    password). This decouples credential setting from the invitation token:
+    a leaked/forwarded accept link cannot bind an attacker-chosen password,
+    because the only way to set the password is to consume a verification
+    token that's only ever delivered to the invitee's inbox.
+
+    The seat-limit check is re-run inside this transaction with a row-lock
+    on the team Subscription so a leaked-token race against a parallel
+    membership change cannot push the org past its seat cap at commit time.
     """
+    from django.db.models import Count
+
     from apps.users.authentication import create_email_verification_token
     from apps.users.tasks import send_verification_email_task
 
     org = invitation.org
     with transaction.atomic():
+        # Lock the active team sub row first so any concurrent invitation
+        # accept / invite create / member add against the same org serialises
+        # behind us. Mirrors the lock taken at invite-creation time in
+        # ``_validate_seat_limit``.
+        sub = lock_active_team_sub(org)
+        if sub is not None:
+            counts = Org.objects.filter(pk=org.pk).aggregate(
+                member_count=Count("members", distinct=True),
+            )
+            if counts["member_count"] + 1 > sub.seat_limit:
+                raise SeatCapReachedAtAcceptError(
+                    "This invitation cannot be accepted: the org has filled"
+                    " every seat on its current subscription. Ask an admin to"
+                    " expand the plan."
+                )
+
+        # ``UserManager.create_user`` calls ``set_unusable_password()`` when
+        # ``password`` is None — the invitee binds a real password later via
+        # the verify-email flow.
         user = User.objects.create_user(
             email=invitation.email,
-            password=password,
+            password=None,
             full_name=full_name,
             is_verified=False,
         )
@@ -294,6 +373,25 @@ def accept_invitation(
             lambda: send_verification_email_task.delay(user.email, verification_token)
         )
     return user, org
+
+
+def _personal_subs_outer_ref_qs() -> QuerySet[SubscriptionModel]:
+    """Subquery: rows in ``Subscription`` representing an active personal sub for
+    the current outer ``user_id``. Used in the cascade-delete predicates that
+    must preserve users still paying for their own plan. Lazy-imports the
+    billing model to keep ``apps.orgs`` from depending on ``apps.billing`` at
+    module load (see file-level docstring).
+    """
+    from django.db.models import OuterRef
+
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+    from apps.billing.models import Subscription as SubscriptionModel
+
+    return SubscriptionModel.objects.filter(
+        user_id=OuterRef("user_id"),
+        stripe_customer__user_id=OuterRef("user_id"),
+        status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+    )
 
 
 def _delete_org_db_only(org: Org) -> None:
@@ -320,17 +418,10 @@ def _delete_org_db_only(org: Org) -> None:
         # silently nuke a user who's still paying for their own personal plan.
         # The NOT EXISTS subqueries are evaluated in the DB so we don't need
         # to materialize thousands of UUIDs into Python for the IN clause.
-        from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
-        from apps.billing.models import Subscription as SubscriptionModel
-
         other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
             org_id=org_id
         )
-        personal_subs = SubscriptionModel.objects.filter(
-            user_id=OuterRef("user_id"),
-            stripe_customer__user_id=OuterRef("user_id"),
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        )
+        personal_subs = _personal_subs_outer_ref_qs()
         deletable_user_ids = (
             OrgMember.objects.filter(org=org)
             .annotate(
@@ -377,19 +468,74 @@ def delete_orgs_created_by_user(user_id: UUID) -> None:
     one Celery message per org. The cancel task already accepts a list, so
     the behavior is unchanged — we just avoid K broker round-trips for a user
     who created K orgs.
+
+    DB cascade for the K orgs runs as a single transaction with one DML per
+    table (Invitation UPDATE, User DELETE for users whose only memberships
+    were inside this batch and who have no active personal sub, OrgMember
+    DELETE, Org DELETE) — saves 4(K-1) round-trips compared to calling
+    :func:`_delete_org_db_only` once per org.
     """
+    from django.db.models import Exists, OuterRef, Subquery
+
+    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
+    from apps.billing.models import Subscription as SubscriptionModel
     from apps.orgs.tasks import cancel_stripe_subs_task
 
     orgs = list(Org.objects.filter(created_by_id=user_id))
     if not orgs:
         return
 
+    # One IN-query for active subs across every org, ordered so the first
+    # match per org_id is the latest. Avoids K round-trips for a user who
+    # created K orgs.
+    org_ids = [org.id for org in orgs]
+    sub_by_org: dict[UUID, SubscriptionModel] = {}
+    for sub in (
+        SubscriptionModel.objects.filter(
+            stripe_customer__org_id__in=org_ids,
+            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
+            stripe_id__isnull=False,
+        )
+        .select_related("stripe_customer")
+        .order_by("-created_at")
+    ):
+        # Filter pins ``stripe_customer__org_id`` to one of ``org_ids`` so the
+        # join row exists and ``org_id`` is non-null — mypy doesn't see that.
+        org_id = sub.stripe_customer.org_id  # type: ignore[union-attr]
+        if org_id is not None and org_id not in sub_by_org:
+            sub_by_org[org_id] = sub
+
     pending_stripe_sub_ids: list[str] = []
     for org in orgs:
-        sub = _get_active_stripe_sub(org.id)
-        if sub is not None and sub.stripe_id is not None:
-            pending_stripe_sub_ids.append(sub.stripe_id)
-        _delete_org_db_only(org)
+        org_sub = sub_by_org.get(org.id)
+        if org_sub is not None and org_sub.stripe_id is not None:
+            pending_stripe_sub_ids.append(org_sub.stripe_id)
+
+    # Batched DB cascade: one transaction, one DML per table. Survival rule
+    # mirrors :func:`_delete_org_db_only` — a user is deleted only when they
+    # have no membership outside this batch AND no active personal sub.
+    with transaction.atomic():
+        Invitation.objects.filter(org_id__in=org_ids, status=InvitationStatus.PENDING).update(
+            status=InvitationStatus.CANCELLED
+        )
+
+        other_memberships = OrgMember.objects.filter(user_id=OuterRef("user_id")).exclude(
+            org_id__in=org_ids
+        )
+        personal_subs = _personal_subs_outer_ref_qs()
+        deletable_user_ids = (
+            OrgMember.objects.filter(org_id__in=org_ids)
+            .annotate(
+                has_other=Exists(other_memberships),
+                has_personal_sub=Exists(personal_subs),
+            )
+            .filter(has_other=False, has_personal_sub=False)
+            .values("user_id")
+            .distinct()
+        )
+        User.objects.filter(id__in=Subquery(deletable_user_ids)).delete()
+        OrgMember.objects.filter(org_id__in=org_ids).delete()
+        Org.objects.filter(id__in=org_ids).delete()
 
     if pending_stripe_sub_ids:
         # No single org_id owns the batch — pass the caller's user_id instead
@@ -418,18 +564,3 @@ def _get_active_stripe_sub(org_id: UUID) -> SubscriptionModel | None:
         .order_by("-created_at")
         .first()
     )
-
-
-def _cancel_team_subscription(org: Org) -> None:
-    """Cancel the team subscription for an org via Stripe (immediate, no refund)."""
-    sub = _get_active_stripe_sub(org.id)
-    if sub is None or sub.stripe_id is None:
-        return
-    try:
-        stripe.Subscription.cancel(sub.stripe_id, prorate=False)
-    except stripe.StripeError:
-        logger.exception(
-            "Failed to cancel Stripe sub %s for org %s",
-            sub.stripe_id,
-            org.id,
-        )

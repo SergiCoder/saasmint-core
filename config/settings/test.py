@@ -7,7 +7,11 @@ import os
 _TEST_DEFAULTS = {
     "STRIPE_SECRET_KEY": "sk_test_fake",
     "STRIPE_WEBHOOK_SECRET": "whsec_test_fake",
-    "DJANGO_SECRET_KEY": "django-insecure-test-key",
+    # ≥32 bytes on purpose: HS256 JWTs are signed with this (JWT_SIGNING_KEY
+    # falls back to DJANGO_SECRET_KEY), and PyJWT ≥2.13 emits
+    # InsecureKeyLengthWarning for HMAC keys shorter than the 32-byte SHA-256
+    # output (RFC 7518 §3.2). Keep this at/above 32 bytes — don't shorten it.
+    "DJANGO_SECRET_KEY": "django-insecure-test-key-not-for-production",
 }
 
 for key, value in _TEST_DEFAULTS.items():

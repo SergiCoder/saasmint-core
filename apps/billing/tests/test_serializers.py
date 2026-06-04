@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
 
-from apps.billing.models import Product, ProductPrice
+from apps.billing.models import LocalizedPrice, Product, ProductPrice
 from apps.billing.serializers import (
     CheckoutRequestSerializer,
     PlanPriceSerializer,
     PlanSerializer,
     PortalRequestSerializer,
+    ProductCheckoutRequestSerializer,
     ProductPriceSerializer,
     ProductSerializer,
     SubscriptionSerializer,
@@ -21,6 +23,7 @@ from apps.billing.serializers import (
 # Sample valid UUID for serializer-level tests that don't need a real DB row.
 # UUIDField only validates format, not existence.
 _PLAN_PRICE_UUID = "11111111-1111-1111-1111-111111111111"
+_PRODUCT_PRICE_UUID = "22222222-2222-2222-2222-222222222222"
 
 
 @pytest.mark.django_db
@@ -33,7 +36,14 @@ class TestPlanPriceSerializer:
         assert data["currency"] == "usd"
 
     def test_model_fields_read_only(self):
-        assert set(PlanPriceSerializer.Meta.read_only_fields) == {"id", "amount"}
+        assert set(PlanPriceSerializer.Meta.read_only_fields) == {
+            "id",
+            "amount",
+            "display_amount",
+            "currency",
+            "local_display_amount",
+            "local_currency",
+        }
 
 
 @pytest.mark.django_db
@@ -70,10 +80,13 @@ class TestSubscriptionSerializer:
         data = SubscriptionSerializer(subscription).data
         assert data["seats_used"] == 1
 
-    def test_seats_used_team_subscription_counts_org_members(self, team_plan, team_plan_price):
-        """Team subs (customer has an org) return the live OrgMember count via
-        the fallback COUNT query (the annotation path is exercised via views)."""
+    def test_seats_used_team_subscription_reads_annotation(self, team_plan, team_plan_price):
+        """Team subs surface the org member count via the ``org_member_count``
+        annotation that ``_get_active_subscriptions_for_user`` attaches; the
+        serializer requires the annotation to avoid a per-row COUNT N+1."""
         from datetime import UTC, datetime
+
+        from django.db.models import Count, OuterRef, Subquery
 
         from apps.billing.models import StripeCustomer, Subscription
         from apps.orgs.models import Org, OrgMember, OrgRole
@@ -83,13 +96,11 @@ class TestSubscriptionSerializer:
         member1 = User.objects.create_user(email="ser-m1@example.com", full_name="M1")
         member2 = User.objects.create_user(email="ser-m2@example.com", full_name="M2")
         org = Org.objects.create(name="SerOrg", slug="ser-org", created_by=owner)
-        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER)
+        OrgMember.objects.create(org=org, user=owner, role=OrgRole.OWNER, is_billing=True)
         OrgMember.objects.create(org=org, user=member1, role=OrgRole.MEMBER)
         OrgMember.objects.create(org=org, user=member2, role=OrgRole.MEMBER)
-        customer = StripeCustomer.objects.create(
-            stripe_id="cus_ser_team", org=org, livemode=False
-        )
-        sub = Subscription.objects.create(
+        customer = StripeCustomer.objects.create(stripe_id="cus_ser_team", org=org, livemode=False)
+        Subscription.objects.create(
             stripe_id="sub_ser_team",
             stripe_customer=customer,
             status="active",
@@ -98,8 +109,21 @@ class TestSubscriptionSerializer:
             current_period_start=datetime(2026, 1, 1, tzinfo=UTC),
             current_period_end=datetime(2026, 2, 1, tzinfo=UTC),
         )
-        # Fetch fresh so stripe_customer is available via select_related.
-        sub = Subscription.objects.select_related("stripe_customer").get(id=sub.id)
+        # Mirror the production annotation from
+        # _get_active_subscriptions_for_user so seats_used reads from the
+        # annotated value instead of raising.
+        org_member_sq = (
+            OrgMember.objects.filter(org_id=OuterRef("stripe_customer__org_id"))
+            .order_by()
+            .values("org_id")
+            .annotate(n=Count("id"))
+            .values("n")
+        )
+        sub = (
+            Subscription.objects.select_related("stripe_customer")
+            .annotate(org_member_count=Subquery(org_member_sq))
+            .get(stripe_id="sub_ser_team")
+        )
         data = SubscriptionSerializer(sub).data
         # 3 members in the org.
         assert data["seats_used"] == 3
@@ -240,6 +264,51 @@ class TestPortalRequestSerializer:
         assert not ser.is_valid()
 
 
+class TestProductCheckoutRequestSerializer:
+    def test_valid_data(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = ProductCheckoutRequestSerializer(
+            data={
+                "product_price_id": _PRODUCT_PRICE_UUID,
+                "success_url": "https://example.com/success",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert ser.is_valid(), ser.errors
+
+    def test_missing_required_fields(self):
+        ser = ProductCheckoutRequestSerializer(data={})
+        assert not ser.is_valid()
+        assert "product_price_id" in ser.errors
+        assert "success_url" in ser.errors
+        assert "cancel_url" in ser.errors
+
+    def test_invalid_success_url_rejected(self, settings):
+        settings.CORS_ALLOW_ALL_ORIGINS = False
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        settings.ALLOWED_HOSTS = ["example.com"]
+        ser = ProductCheckoutRequestSerializer(
+            data={
+                "product_price_id": _PRODUCT_PRICE_UUID,
+                "success_url": "https://evil.com/phish",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert not ser.is_valid()
+        assert "success_url" in ser.errors
+
+    def test_non_http_scheme_rejected(self, settings):
+        settings.CORS_ALLOWED_ORIGINS = ["https://example.com"]
+        ser = ProductCheckoutRequestSerializer(
+            data={
+                "product_price_id": _PRODUCT_PRICE_UUID,
+                "success_url": "javascript://example.com/xss",
+                "cancel_url": "https://example.com/cancel",
+            }
+        )
+        assert not ser.is_valid()
+
+
 class TestUpdateSubscriptionSerializer:
     def test_valid_plan_change(self):
         ser = UpdateSubscriptionSerializer(data={"plan_price_id": _PLAN_PRICE_UUID})
@@ -328,25 +397,78 @@ class TestUpdateSubscriptionSerializer:
 
 @pytest.mark.django_db
 class TestPlanPriceSerializerCurrency:
-    """PlanPriceSerializer with non-USD currency context."""
+    """PlanPriceSerializer reads precomputed LocalizedPrice rows.
 
-    def test_converts_amount_with_eur_context(self, plan_price):
-        ctx = {"currency": "eur", "rate": 0.91}
-        data = PlanPriceSerializer(plan_price, context=ctx).data
+    The catalog ``amount`` is USD cents (the source of truth Stripe charges).
+    ``display_amount`` comes from a ``LocalizedPrice`` row keyed on
+    ``(plan_price, currency)`` written by the ``sync_localized_prices`` task —
+    serializers never multiply by an FX rate at request time.
+    """
+
+    def test_reads_eur_localized_amount(self, plan_price):
+        LocalizedPrice.objects.create(
+            plan_price=plan_price, currency="eur", amount_minor=899, synced_at=datetime.now(UTC)
+        )
+        data = PlanPriceSerializer(plan_price, context={"currency": "eur"}).data
         assert data["currency"] == "eur"
-        # 999 * 0.91 = 909.09 → round → 909 → /100 → 9.09 → friendly → 8.99
-        # (nearest of {8.99, 9.49, 9.99}; 8.99 is 0.10 away)
         assert data["display_amount"] == 8.99
-        assert data["approximate"] is True
-        assert data["amount"] == 999  # original unchanged
+        assert data["amount"] == 999  # source of truth (USD cents) unchanged
 
-    def test_converts_amount_with_jpy_zero_decimal(self, plan_price):
-        ctx = {"currency": "jpy", "rate": 149.5}
-        data = PlanPriceSerializer(plan_price, context=ctx).data
+    def test_zero_decimal_currency_renders_whole_units(self, plan_price):
+        LocalizedPrice.objects.create(
+            plan_price=plan_price, currency="jpy", amount_minor=1500, synced_at=datetime.now(UTC)
+        )
+        data = PlanPriceSerializer(plan_price, context={"currency": "jpy"}).data
         assert data["currency"] == "jpy"
-        # 999 * 149.5 = 149350.5 → round → 149350 → zero-decimal → friendly → 149400.0
-        assert data["display_amount"] == 149400.0
-        assert data["approximate"] is True
+        assert data["display_amount"] == 1500.0
+
+    def test_falls_back_to_usd_when_localized_row_missing(self, plan_price):
+        """No LocalizedPrice row → display_amount mirrors the USD catalog
+        amount. Guards against catalog-newer-than-last-sync and FX-feed-down
+        windows where the serializer would otherwise have nothing to render.
+        """
+        data = PlanPriceSerializer(plan_price, context={"currency": "eur"}).data
+        assert data["display_amount"] == 9.99
+
+    def test_local_display_amount_populated_for_preferred_currency(self, plan_price):
+        """When ``preferred_currency`` is in the context (display-only currency
+        whose charge falls back to USD), the serializer populates
+        ``local_display_amount`` and ``local_currency`` from the matching
+        ``LocalizedPrice`` row so the FE can show a dual-currency card.
+        """
+        LocalizedPrice.objects.create(
+            plan_price=plan_price, currency="eur", amount_minor=899, synced_at=datetime.now(UTC)
+        )
+        # The view passes ``currency="usd"`` (billable) and
+        # ``preferred_currency="eur"`` (display-only) at the same time.
+        data = PlanPriceSerializer(
+            plan_price,
+            context={"currency": "usd", "preferred_currency": "eur"},
+        ).data
+        assert data["display_amount"] == 9.99  # USD billable charge
+        assert data["currency"] == "usd"
+        assert data["local_display_amount"] == 8.99  # EUR display approximation
+        assert data["local_currency"] == "eur"
+
+    def test_local_display_amount_is_none_when_preferred_currency_not_in_context(self, plan_price):
+        """No ``preferred_currency`` key in context → both local fields are None.
+        This is the normal single-currency path (billable preferred currency).
+        """
+        data = PlanPriceSerializer(plan_price, context={"currency": "usd"}).data
+        assert data["local_display_amount"] is None
+        assert data["local_currency"] is None
+
+    def test_local_display_amount_is_none_when_localized_row_missing(self, plan_price):
+        """``_local_display`` does NOT fall back to USD — if the row is missing
+        the primary ``display_amount`` already covers the actual charge and no
+        local approximation is shown to the user."""
+        # No LocalizedPrice row for "eur".
+        data = PlanPriceSerializer(
+            plan_price,
+            context={"currency": "usd", "preferred_currency": "eur"},
+        ).data
+        assert data["local_display_amount"] is None
+        assert data["local_currency"] is None
 
 
 @pytest.mark.django_db
@@ -363,21 +485,28 @@ class TestProductPriceSerializer:
         assert data["amount"] == 999
 
     def test_model_fields_read_only(self):
-        assert set(ProductPriceSerializer.Meta.read_only_fields) == {"id", "amount"}
+        assert set(ProductPriceSerializer.Meta.read_only_fields) == {
+            "id",
+            "amount",
+            "display_amount",
+            "currency",
+            "local_display_amount",
+            "local_currency",
+        }
 
-    def test_converts_amount_with_currency_context(self):
+    def test_reads_localized_amount_for_currency(self):
         product = Product.objects.create(
             name="Credits", type="one_time", credits=50, is_active=True
         )
         price = ProductPrice.objects.create(
             product=product, stripe_price_id="price_pp_ctx", amount=500
         )
-        ctx = {"currency": "gbp", "rate": 0.79}
-        data = ProductPriceSerializer(price, context=ctx).data
+        LocalizedPrice.objects.create(
+            product_price=price, currency="gbp", amount_minor=399, synced_at=datetime.now(UTC)
+        )
+        data = ProductPriceSerializer(price, context={"currency": "gbp"}).data
         assert data["currency"] == "gbp"
-        # 500 * 0.79 = 395 → round → 395 → /100 → 3.95 → friendly → 3.99 (rounds up)
         assert data["display_amount"] == 3.99
-        assert data["approximate"] is True
 
 
 @pytest.mark.django_db

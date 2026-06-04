@@ -43,6 +43,7 @@ def _existing_price(
     product_name: str = "Existing",
     product_description: str | None = None,
     product_metadata: dict[str, str] | None = None,
+    lookup_key: str | None = None,
 ) -> MagicMock:
     """Build a fake stripe.Price object exposing the attributes the command reads."""
     price = MagicMock(spec=stripe.Price)
@@ -50,6 +51,7 @@ def _existing_price(
     price.unit_amount = unit_amount
     price.currency = currency
     price.recurring = SimpleNamespace(interval=interval) if interval is not None else None
+    price.lookup_key = lookup_key
 
     product = MagicMock(spec=stripe.Product)
     product.id = product_id
@@ -88,7 +90,7 @@ class TestLookupKeys:
         assert _slug("Pack — Plus") == "pack_plus"
         assert _slug("ABC___xyz") == "abc_xyz"
 
-    def test_plan_lookup_key(self):
+    def test_plan_lookup_key_usd_unsuffixed(self):
         plan = Plan.objects.create(
             name="Personal Pro Monthly",
             context="personal",
@@ -96,13 +98,31 @@ class TestLookupKeys:
             interval="month",
             is_active=True,
         )
-        assert _plan_lookup_key(plan) == "plan_personal_pro_month"
+        # USD stays unsuffixed for backwards-compat with already-minted Stripe Prices.
+        assert _plan_lookup_key(plan, "usd") == "plan_personal_pro_month"
 
-    def test_product_lookup_key(self):
+    def test_plan_lookup_key_non_usd_suffixed(self):
+        plan = Plan.objects.create(
+            name="Personal Pro Monthly",
+            context="personal",
+            tier=PlanTier.PRO,
+            interval="month",
+            is_active=True,
+        )
+        assert _plan_lookup_key(plan, "eur") == "plan_personal_pro_month_eur"
+        assert _plan_lookup_key(plan, "jpy") == "plan_personal_pro_month_jpy"
+
+    def test_product_lookup_key_usd_unsuffixed(self):
         product = Product.objects.create(
             name="100 Credits", type="one_time", credits=100, is_active=True
         )
-        assert _product_lookup_key(product) == "product_100_credits"
+        assert _product_lookup_key(product, "usd") == "product_100_credits"
+
+    def test_product_lookup_key_non_usd_suffixed(self):
+        product = Product.objects.create(
+            name="100 Credits", type="one_time", credits=100, is_active=True
+        )
+        assert _product_lookup_key(product, "cny") == "product_100_credits_cny"
 
 
 # ── early-exit when stripe key is missing ─────────────────────────────────────
@@ -136,6 +156,14 @@ def paid_plan_with_price():
 
 
 class TestSyncPlans:
+    """Single-currency upsert mechanics. Multi-currency behavior is in
+    :class:`TestMultiCurrencySync` below — keeping this class scoped to USD
+    lets the existing call-count assertions stay simple."""
+
+    @pytest.fixture(autouse=True)
+    def _usd_only(self, settings):
+        settings.BILLING_CURRENCIES = ["usd"]
+
     def test_creates_new_stripe_product_and_price_when_none_exists(self, paid_plan_with_price):
         plan, price = paid_plan_with_price
 
@@ -152,7 +180,7 @@ class TestSyncPlans:
             _run()
 
         mock_list.assert_called_once()
-        assert mock_list.call_args.kwargs["lookup_keys"] == [_plan_lookup_key(plan)]
+        assert mock_list.call_args.kwargs["lookup_keys"] == [_plan_lookup_key(plan, "usd")]
         mock_pcreate.assert_called_once()
         # Created Product carries plan name, description, kind metadata
         kwargs = mock_pcreate.call_args.kwargs
@@ -168,7 +196,7 @@ class TestSyncPlans:
         assert price_kwargs["unit_amount"] == 1900
         assert price_kwargs["currency"] == "usd"
         assert price_kwargs["recurring"] == {"interval": "month"}
-        assert price_kwargs["lookup_key"] == _plan_lookup_key(plan)
+        assert price_kwargs["lookup_key"] == _plan_lookup_key(plan, "usd")
         assert price_kwargs["transfer_lookup_key"] is True
 
         mock_pmodify.assert_not_called()
@@ -186,6 +214,7 @@ class TestSyncPlans:
             product_name=plan.name,
             product_description="Basic monthly",
             product_metadata={"local_plan_id": str(plan.id), "kind": "plan"},
+            lookup_key=_plan_lookup_key(plan, "usd"),
         )
         # Mark the local row as already pointing at the existing Stripe price
         price.stripe_price_id = "price_already_synced"
@@ -218,6 +247,7 @@ class TestSyncPlans:
             interval="month",
             product_id="prod_keep",
             product_metadata={"local_plan_id": str(plan.id), "kind": "plan"},
+            lookup_key=_plan_lookup_key(plan, "usd"),
         )
         list_resp = MagicMock(data=[existing])
         new_price = MagicMock(id="price_new_after_drift")
@@ -248,6 +278,7 @@ class TestSyncPlans:
             unit_amount=1900,
             interval="month",
             product_metadata={},  # missing local_plan_id, kind
+            lookup_key=_plan_lookup_key(plan, "usd"),
         )
         list_resp = MagicMock(data=[existing])
         with (
@@ -274,12 +305,13 @@ class TestSyncPlans:
             is_active=True,
         )
         with (
-            patch("stripe.Price.list") as mock_list,
+            patch("stripe.Price.list", return_value=_empty_price_list()),
             patch("stripe.Price.create") as mock_create,
             patch("stripe.Product.create") as mock_pcreate,
         ):
             out = _run()
-        mock_list.assert_not_called()
+        # Price.list runs for the bulk pre-fetch even when no PlanPrice exists,
+        # but the per-plan upsert is skipped — no Price/Product create.
         mock_create.assert_not_called()
         mock_pcreate.assert_not_called()
         assert "no PlanPrice row" in out
@@ -317,6 +349,12 @@ def product_with_price():
 
 
 class TestSyncProducts:
+    """USD-scoped product sync tests; multi-currency coverage in TestMultiCurrencySync."""
+
+    @pytest.fixture(autouse=True)
+    def _usd_only(self, settings):
+        settings.BILLING_CURRENCIES = ["usd"]
+
     def test_creates_new_one_time_price(self, product_with_price):
         product, price = product_with_price
         new_price = MagicMock(id="price_new_credits")
@@ -334,17 +372,18 @@ class TestSyncProducts:
         # Product (one-time) prices have no recurring
         assert "recurring" not in kwargs
         assert kwargs["unit_amount"] == 999
-        assert kwargs["lookup_key"] == _product_lookup_key(product)
+        assert kwargs["lookup_key"] == _product_lookup_key(product, "usd")
         price.refresh_from_db()
         assert price.stripe_price_id == "price_new_credits"
 
     def test_recurring_drift_from_one_time_to_recurring_archives(self, product_with_price):
         """Existing price has recurring set, but local product is one-time → mismatch."""
-        _, price = product_with_price
+        product, price = product_with_price
         existing = _existing_price(
             price_id="price_was_recurring",
             unit_amount=999,
             interval="month",  # local is None → mismatch
+            lookup_key=_product_lookup_key(product, "usd"),
         )
         list_resp = MagicMock(data=[existing])
         new_price = MagicMock(id="price_now_one_time")
@@ -361,12 +400,13 @@ class TestSyncProducts:
         assert price.stripe_price_id == "price_now_one_time"
 
     def test_currency_drift_archives_and_recreates(self, product_with_price):
-        _, _price = product_with_price
+        product, _price = product_with_price
         existing = _existing_price(
             price_id="price_eur",
             unit_amount=999,
             currency="eur",  # local hardcodes usd → mismatch
             interval=None,
+            lookup_key=_product_lookup_key(product, "usd"),
         )
         list_resp = MagicMock(data=[existing])
         new_price = MagicMock(id="price_usd")
@@ -396,10 +436,57 @@ class TestSyncProducts:
     def test_skips_product_without_price_row(self):
         Product.objects.create(name="No Price Yet", type="one_time", credits=50, is_active=True)
         with (
-            patch("stripe.Price.list") as mock_list,
+            patch("stripe.Price.list", return_value=_empty_price_list()),
             patch("stripe.Price.create") as mock_create,
         ):
             out = _run()
-        mock_list.assert_not_called()
+        # Price.list runs for the bulk pre-fetch even when no ProductPrice
+        # exists, but the per-product upsert is skipped — no Price create.
         mock_create.assert_not_called()
         assert "no ProductPrice row" in out
+
+
+# ── multi-currency bootstrap branch ───────────────────────────────────────────
+
+
+class TestMultiCurrencySync:
+    """Coverage for the bootstrap branch of ``_unit_amount_for``: when a
+    non-USD ``LocalizedPrice`` row is missing the command runs
+    ``sync_localized_prices`` inline. If FX is unreachable the row stays
+    absent and the currency is skipped — USD must still process.
+    """
+
+    def test_skips_non_usd_currency_when_localized_row_missing_and_fx_feed_unreachable(
+        self, settings
+    ):
+        settings.BILLING_CURRENCIES = ["usd", "eur"]
+        plan = Plan.objects.create(
+            name="Personal Basic Monthly",
+            description="Basic monthly",
+            context="personal",
+            tier=PlanTier.BASIC,
+            interval="month",
+            is_active=True,
+        )
+        PlanPrice.objects.create(plan=plan, stripe_price_id="price_old_local", amount=1900)
+        # No LocalizedPrice exists; the bootstrap call to sync_localized_prices
+        # returns 0 (FX feed unreachable) and the row stays absent.
+
+        new_price = MagicMock(id="price_usd_only")
+        new_product = MagicMock(id="prod_only")
+
+        with (
+            patch("stripe.Price.list", return_value=_empty_price_list()),
+            patch("stripe.Product.create", return_value=new_product),
+            patch("stripe.Price.create", return_value=new_price) as mock_pricecreate,
+            patch("stripe.Price.modify"),
+            patch("stripe.Product.modify"),
+            patch("apps.billing.tasks.sync_localized_prices", return_value=0),
+        ):
+            out = _run()
+
+        # USD price was created, EUR was skipped — exactly one Price.create call.
+        assert mock_pricecreate.call_count == 1
+        created_currencies = [call.kwargs["currency"] for call in mock_pricecreate.call_args_list]
+        assert created_currencies == ["usd"]
+        assert "no LocalizedPrice row" in out

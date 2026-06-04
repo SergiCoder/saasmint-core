@@ -13,26 +13,23 @@ from stripe.params._subscription_modify_params import (
 from saasmint_core.domain.subscription import Subscription
 from saasmint_core.repositories.subscription import SubscriptionRepository
 
-# Returned by ``change_plan`` to tell the caller whether the switch happened
-# now (immediate Subscription.modify) or was deferred to period end via a
-# SubscriptionSchedule. The caller uses this to decide whether to skip the
-# refetch (the scheduled mirror lands via webhook, not immediately) and
-# what notice copy to surface.
-ChangePlanResult = Literal["applied_now", "scheduled_for_period_end"]
-
 
 def _safe_get(obj: object, key: str) -> object:
     """Return ``obj[key]`` or ``None`` if missing.
 
-    ``stripe.StripeObject`` instances support ``__getitem__`` but not ``.get``
-    — calling ``.get`` triggers ``__getattr__`` which raises ``AttributeError``
-    instead of returning a default. Plain dicts also work via this helper.
+    Works on both ``dict`` and ``stripe.StripeObject``. The latter supports
+    ``__getitem__`` but its ``__getattr__`` raises ``AttributeError`` for
+    unknown keys, which surfaces here on some SDK paths — catch it alongside
+    ``KeyError`` so the helper returns ``None`` for any missing key
+    regardless of dispatch route. ``TypeError`` is not caught: the
+    ``obj is None`` guard above eliminates the only case where ``obj[key]``
+    would raise it.
     """
     if obj is None:
         return None
     try:
         return obj[key]  # type: ignore[index]
-    except (KeyError, TypeError):
+    except (KeyError, AttributeError):
         return None
 
 
@@ -43,7 +40,7 @@ async def change_plan(
     new_price_amount: int | None = None,
     prorate: bool = True,
     quantity: int | None = None,
-) -> ChangePlanResult:
+) -> None:
     """
     Upgrade or downgrade to a new plan price, optionally updating quantity.
 
@@ -67,11 +64,6 @@ async def change_plan(
     ``customer.subscription.updated``; for the deferred path the
     ``subscription_schedule.created`` webhook mirrors the pending change
     onto the local row.
-
-    Returns:
-        ``"applied_now"`` for immediate ``Subscription.modify`` calls,
-        ``"scheduled_for_period_end"`` when a SubscriptionSchedule was
-        created.
     """
     sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
     first_item = sub["items"]["data"][0]
@@ -86,9 +78,7 @@ async def change_plan(
     if new_price_amount is not None:
         price_obj = _safe_get(first_item, "price")
         current_amount = _safe_get(price_obj, "unit_amount") if price_obj is not None else None
-        is_downgrade = (
-            isinstance(current_amount, int) and new_price_amount < current_amount
-        )
+        is_downgrade = isinstance(current_amount, int) and new_price_amount < current_amount
 
     if is_downgrade:
         # Subscription Schedules don't mix with subscriptions that already
@@ -102,41 +92,58 @@ async def change_plan(
             new_stripe_price_id=new_stripe_price_id,
             quantity=quantity if quantity is not None else current_quantity,
         )
-        return "scheduled_for_period_end"
+        return
 
-    # Immediate path (upgrade or same-amount switch). Stripe rejects
-    # ``Subscription.modify`` when a SubscriptionSchedule owns the sub — the
-    # schedule must be released first. This covers the case where the user had
-    # previously scheduled a downgrade and now wants to upgrade instead.
+    await _apply_immediate_plan_change(
+        sub=sub,
+        stripe_subscription_id=stripe_subscription_id,
+        item_id=item_id,
+        new_stripe_price_id=new_stripe_price_id,
+        prorate=prorate,
+        quantity=quantity if quantity is not None else current_quantity,
+    )
+
+
+async def _apply_immediate_plan_change(
+    *,
+    sub: stripe.Subscription,
+    stripe_subscription_id: str,
+    item_id: str,
+    new_stripe_price_id: str,
+    prorate: bool,
+    quantity: int,
+) -> None:
+    """Apply an immediate plan switch via ``Subscription.modify``.
+
+    Releases any existing pinning ``SubscriptionSchedule`` first — Stripe
+    rejects ``modify`` on a sub whose lifecycle is owned by a schedule, so
+    a previously-scheduled downgrade must be released before we can
+    upgrade now. After release, the items/item_id are re-read from the
+    refreshed sub so the modify call hits the current state.
+
+    The seat count is always carried forward: Stripe treats a missing
+    ``quantity`` on an item update as 1, silently wiping seats on a plan
+    switch when the caller didn't pass one explicitly.
+    """
     existing_schedule_id = _safe_get(sub, "schedule")
     if existing_schedule_id:
-        await asyncio.to_thread(
-            stripe.SubscriptionSchedule.release, str(existing_schedule_id)
-        )
-        # Re-fetch the sub so the items/item_id reflect the released state.
+        await asyncio.to_thread(stripe.SubscriptionSchedule.release, str(existing_schedule_id))
         sub = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
         first_item = sub["items"]["data"][0]
         item_id = str(first_item["id"])
 
     proration: Literal["create_prorations", "none"] = "create_prorations" if prorate else "none"
-
-    # Always carry the current seat count forward. Stripe's Subscription.modify
-    # treats a missing ``quantity`` on an item update as 1 — silently wiping
-    # the seats on a plan switch when the caller didn't pass one explicitly.
-    effective_quantity = quantity if quantity is not None else current_quantity
     item: SubscriptionModifyParamsItem = {
         "id": item_id,
         "price": new_stripe_price_id,
-        "quantity": effective_quantity,
+        "quantity": quantity,
     }
-
     await asyncio.to_thread(
         stripe.Subscription.modify,
         stripe_subscription_id,
         items=[item],
         proration_behavior=proration,
     )
-    return "applied_now"
 
 
 def _read_period_field(
@@ -192,6 +199,20 @@ async def _schedule_downgrade_at_period_end(
     period_start = _read_period_field(sub, first_item, "current_period_start")
 
     current_price_id = str(first_item["price"]["id"])
+
+    # Defensive: Stripe rejects a SubscriptionSchedule whose phases mix
+    # currencies. The view-layer guard in apps/billing/views.py
+    # (_resolve_plan_change_price) already prevents this, but assert here
+    # so a future caller can't accidentally bypass it.
+    current_currency = str(first_item["price"].get("currency") or "").lower()
+    new_price = await asyncio.to_thread(stripe.Price.retrieve, new_stripe_price_id)
+    new_currency = str(new_price.currency or "").lower()
+    if current_currency and new_currency and current_currency != new_currency:
+        raise ValueError(
+            f"Cannot schedule downgrade: subscription is in {current_currency.upper()} "
+            f"but new price is in {new_currency.upper()}. "
+            "Stripe pins subscription currency for life."
+        )
 
     existing_schedule_id = _safe_get(sub, "schedule")
     if existing_schedule_id:

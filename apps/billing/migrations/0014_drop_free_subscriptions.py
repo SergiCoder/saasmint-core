@@ -51,6 +51,10 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        # Reverse is intentionally a no-op: free Subscription/Plan rows cannot
+        # be reconstructed from the post-migration state. A backwards migrate
+        # rolls the schema back but leaves the data deleted; restore from
+        # backup if a real rollback is needed.
         migrations.RunPython(_delete_free_rows, reverse_code=migrations.RunPython.noop),
         migrations.RemoveConstraint(
             model_name="subscription",

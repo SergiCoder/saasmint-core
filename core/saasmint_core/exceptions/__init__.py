@@ -17,36 +17,12 @@ class SubscriptionNotFoundError(DomainError):
     """No subscription found for this customer."""
 
 
-class SubscriptionAlreadyActiveError(DomainError):
-    """User already has an active subscription."""
-
-
-class NoActiveSubscriptionError(DomainError):
-    """No active subscription exists in the resolved billing context."""
-
-
-class PlanContextMismatchError(DomainError):
-    """Target plan's context does not match the resolved subscription's context."""
-
-
-class AlreadyOnPlanError(DomainError):
-    """The active subscription is already on the requested plan price."""
-
-
 class SeatsBelowMemberCountError(DomainError):
     """Requested seat count is below the org's current member count."""
 
 
 class InsufficientPermissionError(DomainError):
     """User does not have the required org role to perform this action."""
-
-
-class OrgMemberNotFoundError(DomainError):
-    """User is not a member of this org."""
-
-
-class WebhookVerificationError(DomainError):
-    """Stripe webhook signature verification failed."""
 
 
 class WebhookDataError(DomainError):

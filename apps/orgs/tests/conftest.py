@@ -48,6 +48,7 @@ def owner_membership(org, user):
         org=org,
         user=user,
         role=OrgRole.OWNER,
+        is_billing=True,
     )
 
 

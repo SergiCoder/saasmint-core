@@ -26,6 +26,18 @@ class TestUserSerializer:
         assert "is_active" not in data
         assert "is_staff" not in data
 
+    def test_has_stripe_customer_not_in_output(self):
+        """``has_stripe_customer`` was removed from ``UserSerializer`` — the
+        field must not appear in the serialized output regardless of whether
+        a personal ``StripeCustomer`` row exists (frontend no longer needs it
+        to gate the currency-locked notice)."""
+        user = User.objects.create_user(
+            email="noscs@example.com",
+            full_name="No SCS",
+        )
+        data = UserSerializer(user).data
+        assert "has_stripe_customer" not in data
+
     def test_all_fields_are_read_only(self):
         """UserSerializer should not allow writes via its fields."""
         assert set(UserSerializer.Meta.read_only_fields) == set(UserSerializer.Meta.fields)

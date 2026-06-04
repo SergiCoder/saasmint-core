@@ -11,12 +11,18 @@ from django.core.cache import cache
 from django.core.validators import MinLengthValidator
 from django.db import models
 from django.db.models import Index
+from django.db.models.functions import Lower
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 from apps.users.managers import UserManager
 
 AUTH_USER_CACHE_KEY = "auth_user:{}"
+
+# Single source of truth for the ``full_name`` minimum length. The
+# ``MinLengthValidator`` enforces it at the model layer; serializers import
+# this constant so the DRF-level ``min_length`` matches without drift.
+FULL_NAME_MIN_LENGTH = 3
 
 
 class RegistrationMethod(models.TextChoices):
@@ -28,8 +34,20 @@ class RegistrationMethod(models.TextChoices):
 
 class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # email column-level unique=True is kept for `auth.E003` (USERNAME_FIELD
+    # must be unique) and as defense-in-depth alongside the functional
+    # Lower("email") unique constraint. It enforces *exact*-string uniqueness
+    # — but every email lookup in the codebase uses ``email__iexact`` (OAuth
+    # resolver, login, email_is_registered), and plain btree on a
+    # CITEXT-less EmailField cannot serve those without a sequential scan.
+    # The functional unique index on Lower("email") in Meta below carries
+    # both the case-insensitive uniqueness invariant AND the per-lookup
+    # index seek.
     email = models.EmailField(unique=True)
-    full_name = models.CharField(max_length=255, validators=[MinLengthValidator(3)])
+    full_name = models.CharField(
+        max_length=255,
+        validators=[MinLengthValidator(FULL_NAME_MIN_LENGTH)],
+    )
     avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable TextField intentional: NULL means no avatar set (distinguishable from empty string)
     preferred_locale = models.CharField(max_length=10, default="en")
     preferred_currency = models.CharField(max_length=3, default="usd")
@@ -47,6 +65,20 @@ class User(AbstractBaseUser, PermissionsMixin):
     )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+    # Stamped on every password reset/change. ``JWTAuthentication`` rejects
+    # access tokens whose ``pwd_iat`` claim is older than this timestamp, so a
+    # password change immediately invalidates outstanding access tokens (the
+    # refresh-token revocation already handled long-lived sessions). NULL =
+    # password never changed since the column was introduced; tokens with
+    # ``pwd_iat=0`` pass against NULL so the rollout doesn't log everyone out.
+    password_changed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Last password reset/change. Access tokens minted before this "
+            "moment are rejected by JWTAuthentication."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -57,6 +89,13 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     class Meta:
         db_table = "users"
+        constraints: ClassVar[list[models.BaseConstraint]] = [
+            # Functional unique index: every email__iexact lookup
+            # (email_is_registered, OAuth resolver, login authenticate)
+            # lands on this index instead of degrading to a sequential
+            # scan against a case-sensitive column-level unique.
+            models.UniqueConstraint(Lower("email"), name="uniq_users_lower_email"),
+        ]
 
     def __str__(self) -> str:
         return self.email
@@ -95,6 +134,10 @@ class RefreshToken(models.Model):
                 name="idx_refresh_user_active",
                 condition=models.Q(revoked_at__isnull=True),
             ),
+            # cleanup_expired_refresh_tokens scans expires_at__lt=now on every
+            # daily run — without this the batch-ID subquery falls back to a
+            # sequential scan.
+            models.Index(fields=["expires_at"], name="idx_refresh_expires_at"),
         ]
 
     def __str__(self) -> str:
@@ -130,6 +173,11 @@ class EmailVerificationToken(_OneTimeToken):
 
     class Meta(_OneTimeToken.Meta):
         db_table = "email_verification_tokens"
+        indexes: ClassVar[list[Index]] = [
+            # Cleanup task filters expires_at__lt=now; without this index the
+            # batch-ID subquery does a sequential scan.
+            models.Index(fields=["expires_at"], name="idx_email_verif_expires_at"),
+        ]
 
 
 class SocialAccount(models.Model):
@@ -165,3 +213,41 @@ class PasswordResetToken(_OneTimeToken):
 
     class Meta(_OneTimeToken.Meta):
         db_table = "password_reset_tokens"
+        indexes: ClassVar[list[Index]] = [
+            # Cleanup task filters expires_at__lt=now; without this index the
+            # batch-ID subquery does a sequential scan.
+            models.Index(fields=["expires_at"], name="idx_pwd_reset_expires_at"),
+        ]
+
+
+class SocialLinkRequest(_OneTimeToken):
+    """Pending request to link a new OAuth provider to an existing User.
+
+    Minted on the OAuth callback when the provider's email matches an
+    existing account but cannot be auto-linked — either ``email_verified``
+    is false, or the provider is not on ``TRUSTED_FOR_AUTO_LINK``. The user
+    proves mailbox control by clicking the confirmation link sent to that
+    email; the click then attaches the SocialAccount and signs the user in.
+    """
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="social_link_requests")
+    provider = models.CharField(max_length=20)
+    provider_user_id = models.CharField(max_length=255)
+    full_name = models.CharField(max_length=255, blank=True)
+    avatar_url = models.TextField(blank=True, null=True)  # noqa: DJ001  # nullable: NULL means provider gave no avatar
+
+    class Meta(_OneTimeToken.Meta):
+        db_table = "social_link_requests"
+        indexes: ClassVar[list[Index]] = [
+            # Cleanup task filters expires_at__lt=now on every daily run;
+            # without this index the batch-ID-subquery does a sequential scan.
+            models.Index(fields=["expires_at"], name="idx_social_link_expires_at"),
+            # OAuth callback invalidates prior pending requests with
+            # filter(user=..., used_at__isnull=True) on every collision —
+            # partial index keeps the tree tiny since used rows accumulate.
+            models.Index(
+                fields=["user"],
+                name="idx_social_link_user_active",
+                condition=models.Q(used_at__isnull=True),
+            ),
+        ]

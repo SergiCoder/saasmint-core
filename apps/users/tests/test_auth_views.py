@@ -5,8 +5,9 @@ forgot-password, reset-password, change-password, and OAuth authorize views.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 from rest_framework.test import APIClient
 
@@ -27,8 +28,17 @@ _TEST_DRF = {
         "rest_framework.permissions.AllowAny",
     ],
     "DEFAULT_THROTTLE_CLASSES": [],
-    "DEFAULT_THROTTLE_RATES": {"auth": "1000/hour"},
+    "DEFAULT_THROTTLE_RATES": {
+        "auth": "1000/hour",
+        "auth_login": "1000/hour",
+        "auth_register": "1000/hour",
+        "auth_refresh": "1000/hour",
+    },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    # Domain exception handler attaches ``code`` to ``{"detail": ...}``
+    # envelopes from APIException subclasses. Mirrors the production
+    # config in ``config/settings/base.py``.
+    "EXCEPTION_HANDLER": "middleware.exceptions.domain_exception_handler",
 }
 
 
@@ -77,9 +87,12 @@ class TestRegisterView:
             format="json",
         )
         assert resp.status_code == 201
+        # 201 Created points the client at the freshly-minted account resource.
+        assert resp["Location"] == "/api/v1/account/"
         assert "access_token" in resp.data
         assert "refresh_token" in resp.data
         assert resp.data["token_type"] == "Bearer"
+        assert resp.data["expires_in"] == 15 * 60
 
         user = User.objects.get(email="new@example.com")
         assert user.full_name == "New User"
@@ -157,6 +170,29 @@ class TestRegisterView:
         user = User.objects.get(email="personalnoplan@example.com")
         assert not Subscription.objects.filter(user=user).exists()
 
+    def test_integrity_error_race_returns_409(self, api):
+        """Simulate the rare TOCTOU race where the email uniqueness check
+        passes but a concurrent INSERT from another process fires between the
+        ``email_is_registered`` guard and ``create_user``.
+
+        ``_register_user`` catches the ``IntegrityError`` and re-raises it as
+        ``EmailAlreadyExists`` (409) — the user gets an actionable error rather
+        than an unhandled 500. Lines 147-148 in auth_views.py."""
+        from django.db import IntegrityError
+
+        with patch(
+            "apps.users.auth_views.User.objects.create_user",
+            side_effect=IntegrityError("duplicate key value"),
+        ):
+            resp = api.post(
+                self.URL,
+                {"email": "race@example.com", "password": "securepass1", "full_name": "Racer"},
+                format="json",
+            )
+
+        assert resp.status_code == 409
+        assert resp.data["code"] == "email_exists"
+
 
 # ---------------------------------------------------------------------------
 # LoginView
@@ -211,7 +247,15 @@ class TestLoginView:
         # Django's authenticate returns None for inactive users
         assert resp.status_code == 401
 
-    def test_login_unverified_user(self, api):
+    def test_login_unverified_user_returns_invalid_credentials(self, api):
+        """Unverified accounts collapse into the generic 401 invalid_credentials.
+
+        A distinct ``email_not_verified`` 403 leaks the fact that an
+        attacker's password guess was correct, even when verification is
+        pending — useful signal for credential-stuffing campaigns. The
+        flow recovers via ``POST /auth/resend-verification`` (which is
+        itself enumeration-safe).
+        """
         User.objects.create_user(
             email="unverified@example.com",
             password="testpass123",  # noqa: S106
@@ -223,8 +267,8 @@ class TestLoginView:
             {"email": "unverified@example.com", "password": "testpass123"},
             format="json",
         )
-        assert resp.status_code == 403
-        assert resp.data["code"] == "email_not_verified"
+        assert resp.status_code == 401
+        assert resp.data["code"] == "invalid_credentials"
 
 
 # ---------------------------------------------------------------------------
@@ -237,8 +281,13 @@ class TestVerifyEmailView:
     URL = "/api/v1/auth/verify-email/"
 
     def test_verify_email_success(self, api):
+        # Normal-registration user starts with a usable password — verify
+        # alone is enough to flip is_verified and issue tokens.
         user = User.objects.create_user(
-            email="toverify@example.com", full_name="To Verify", is_verified=False
+            email="toverify@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="To Verify",
+            is_verified=False,
         )
         token = create_email_verification_token(user)
 
@@ -260,6 +309,73 @@ class TestVerifyEmailView:
     def test_verify_email_invalid_token(self, api):
         resp = api.post(self.URL, {"token": "invalid-token"}, format="json")
         assert resp.status_code == 401  # AuthenticationFailed
+
+    def test_verify_requires_password_for_invitee_account(self, api):
+        """Invitee accounts (unusable password) MUST supply ``password`` here.
+
+        Decouples credential-binding from the invitation token: the
+        invitation accept endpoint only takes ``full_name`` and the
+        password is set on this verify call, so an attacker who
+        intercepted the invitation link cannot bind a password they
+        chose.
+        """
+        user = User.objects.create_user(
+            email="invitee@example.com",
+            password=None,  # set_unusable_password
+            full_name="Invitee",
+            is_verified=False,
+        )
+        assert not user.has_usable_password()
+        token = create_email_verification_token(user)
+
+        resp = api.post(self.URL, {"token": token}, format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "password_required"
+        user.refresh_from_db()
+        assert user.is_verified is False
+        assert not user.has_usable_password()
+
+    def test_verify_sets_password_for_invitee_account(self, api):
+        user = User.objects.create_user(
+            email="invitee2@example.com",
+            password=None,
+            full_name="Invitee2",
+            is_verified=False,
+        )
+        token = create_email_verification_token(user)
+
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "testpass123"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert "access_token" in resp.data
+        user.refresh_from_db()
+        assert user.is_verified is True
+        assert user.check_password("testpass123")
+
+    def test_verify_ignores_password_for_existing_password_account(self, api):
+        """A normal-registration user already has a password; ``password`` is ignored."""
+        user = User.objects.create_user(
+            email="existing@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Existing",
+            is_verified=False,
+        )
+        token = create_email_verification_token(user)
+
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "testpass456"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        user.refresh_from_db()
+        assert user.is_verified is True
+        # Original password is preserved; the supplied one is silently dropped.
+        assert user.check_password("testpass123")
+        assert not user.check_password("testpass456")
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +465,134 @@ class TestForgotPasswordView:
         assert resp.status_code == 200
         mock_delay.assert_called_once()
 
+    @patch("apps.users.tasks.send_password_reset_email_task.delay")
+    def test_forgot_password_case_insensitive_email_lookup(self, mock_delay, api, verified_user):
+        """``email__iexact`` lands on the functional lower-email index.
+
+        The PR switched the lookup from ``email=`` to ``email__iexact`` so a
+        mixed-case variant of the registered address (e.g. sent by a mobile
+        client that auto-capitalises) still triggers the reset email.
+        """
+        # verified_user's email is "verified@example.com" — submit it with
+        # a capital letter to exercise the iexact path.
+        resp = api.post(self.URL, {"email": "Verified@Example.com"}, format="json")
+        assert resp.status_code == 200
+        mock_delay.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# ResendVerificationView
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestResendVerificationView:
+    URL = "/api/v1/auth/resend-verification/"
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_for_unverified_user_sends_email(self, mock_delay, api, db):
+        from apps.users.models import EmailVerificationToken
+
+        user = User.objects.create_user(
+            email="unverified@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Unverified",
+            is_verified=False,
+        )
+
+        resp = api.post(self.URL, {"email": user.email}, format="json")
+
+        assert resp.status_code == 200
+        mock_delay.assert_called_once()
+        assert EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_invalidates_prior_unused_tokens(self, mock_delay, api, db):
+        from apps.users.authentication import create_email_verification_token
+        from apps.users.models import EmailVerificationToken
+
+        user = User.objects.create_user(
+            email="unverified@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Unverified",
+            is_verified=False,
+        )
+        old_token = create_email_verification_token(user)
+        old_hash = _hash_token(old_token)
+
+        resp = api.post(self.URL, {"email": user.email}, format="json")
+
+        assert resp.status_code == 200
+        mock_delay.assert_called_once()
+
+        old_row = EmailVerificationToken.objects.get(token_hash=old_hash)
+        assert old_row.used_at is not None
+        # exactly one fresh, unused token now exists
+        assert EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_double_invocation_only_freshest_works(self, mock_delay, api, db):
+        """Two consecutive resend calls invalidate any prior unused token —
+        only the freshest verification link still verifies. Pins the
+        anti-stockpile guarantee against future regressions in the
+        ``EmailVerificationToken.objects.filter(...).update(used_at=...)``
+        invalidation step."""
+        from apps.users.models import EmailVerificationToken
+
+        user = User.objects.create_user(
+            email="double-resend@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Double Resend",
+            is_verified=False,
+        )
+
+        # First resend issues a token (and exposes its raw value via the
+        # mocked send-email call).
+        resp1 = api.post(self.URL, {"email": user.email}, format="json")
+        assert resp1.status_code == 200
+        first_raw_token = mock_delay.call_args.args[1]
+        first_hash = _hash_token(first_raw_token)
+
+        # Second resend invalidates the first token and issues a fresh one.
+        resp2 = api.post(self.URL, {"email": user.email}, format="json")
+        assert resp2.status_code == 200
+        second_raw_token = mock_delay.call_args.args[1]
+        second_hash = _hash_token(second_raw_token)
+        assert first_raw_token != second_raw_token
+
+        # The first token's row is marked used; the second is still unused.
+        first_row = EmailVerificationToken.objects.get(token_hash=first_hash)
+        second_row = EmailVerificationToken.objects.get(token_hash=second_hash)
+        assert first_row.used_at is not None
+        assert second_row.used_at is None
+        # Exactly one unused token (the freshest) survives.
+        assert EmailVerificationToken.objects.filter(user=user, used_at__isnull=True).count() == 1
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_for_already_verified_user_is_noop(self, mock_delay, api, verified_user):
+        resp = api.post(self.URL, {"email": verified_user.email}, format="json")
+        assert resp.status_code == 200
+        mock_delay.assert_not_called()
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_for_nonexistent_email_returns_200(self, mock_delay, api):
+        resp = api.post(self.URL, {"email": "nobody@example.com"}, format="json")
+        assert resp.status_code == 200
+        mock_delay.assert_not_called()
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_resend_for_inactive_user_is_noop(self, mock_delay, api, db):
+        User.objects.create_user(
+            email="inactive@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Inactive",
+            is_verified=False,
+            is_active=False,
+        )
+        resp = api.post(self.URL, {"email": "inactive@example.com"}, format="json")
+        assert resp.status_code == 200
+        mock_delay.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # ResetPasswordView
@@ -389,6 +633,33 @@ class TestResetPasswordView:
             == 1  # only the new one issued after reset
         )
 
+    def test_reset_password_works_for_oauth_only_account(self, api, db):
+        """An OAuth-only account (no usable password) can still consume a
+        reset token to bind a password. This is the recovery path when an
+        OAuth user wants to add password login or has lost OAuth provider
+        access — ``set_password`` does not require a prior usable password."""
+        oauth_user = User.objects.create_user(
+            email="oauth-only@example.com",
+            password=None,  # set_unusable_password
+            full_name="OAuth Only",
+            is_verified=True,
+        )
+        assert not oauth_user.has_usable_password()
+
+        token = create_password_reset_token(oauth_user)
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "newpassword1"},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert "access_token" in resp.data
+
+        oauth_user.refresh_from_db()
+        # Now has a usable password matching what we set.
+        assert oauth_user.has_usable_password()
+        assert oauth_user.check_password("newpassword1")
+
     def test_reset_password_invalid_token(self, api):
         resp = api.post(
             self.URL,
@@ -405,6 +676,55 @@ class TestResetPasswordView:
             format="json",
         )
         assert resp.status_code == 400
+
+    def test_reset_password_marks_unverified_user_verified(self, api, db):
+        unverified = User.objects.create_user(
+            email="unverified-reset@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Unverified",
+            is_verified=False,
+        )
+        token = create_password_reset_token(unverified)
+
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "newpassword1"},
+            format="json",
+        )
+        assert resp.status_code == 200
+
+        unverified.refresh_from_db()
+        assert unverified.is_verified is True
+
+    def test_reset_password_keeps_verified_flag_for_already_verified(self, api, verified_user):
+        token = create_password_reset_token(verified_user)
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "newpassword1"},
+            format="json",
+        )
+        assert resp.status_code == 200
+
+        verified_user.refresh_from_db()
+        assert verified_user.is_verified is True
+
+    def test_reset_password_stamps_password_changed_at(self, api, verified_user):
+        """``password_changed_at`` must be set on a successful reset so that
+        access tokens minted before this moment are rejected by
+        JWTAuthentication's ``pwd_iat`` check.
+        """
+        assert verified_user.password_changed_at is None
+
+        token = create_password_reset_token(verified_user)
+        resp = api.post(
+            self.URL,
+            {"token": token, "password": "newpassword1"},
+            format="json",
+        )
+        assert resp.status_code == 200
+
+        verified_user.refresh_from_db()
+        assert verified_user.password_changed_at is not None
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +786,22 @@ class TestChangePasswordView:
         )
         assert resp.status_code == 400
 
+    def test_change_password_stamps_password_changed_at(self, authed_client, verified_user):
+        """``password_changed_at`` must be set on a successful change so that
+        access tokens minted before this moment are rejected by
+        JWTAuthentication's ``pwd_iat`` check.
+        """
+        assert verified_user.password_changed_at is None
+
+        authed_client.post(
+            self.URL,
+            {"current_password": "testpass123", "new_password": "newpassword1"},
+            format="json",
+        )
+
+        verified_user.refresh_from_db()
+        assert verified_user.password_changed_at is not None
+
 
 # ---------------------------------------------------------------------------
 # OAuthAuthorizeView
@@ -482,10 +818,13 @@ class TestOAuthAuthorizeView:
         assert "accounts.google.com" in resp["Location"]
         assert "test-client-id" in resp["Location"]
 
-    def test_authorize_invalid_provider_returns_400(self, api):
+    def test_authorize_invalid_provider_redirects_to_frontend_error(self, api, settings):
+        settings.FRONTEND_URL = "https://localhost:3000"
         resp = api.get("/api/v1/auth/oauth/invalid_provider/")
-        assert resp.status_code == 400
-        assert resp.data["code"] == "invalid_provider"
+        assert resp.status_code == 302
+        # Funneled through the same frontend error page as callback failures
+        # — no JSON body in a browser flow.
+        assert resp["Location"] == ("https://localhost:3000/auth/error?error=invalid_provider")
 
     def test_authorize_github_redirects(self, api, settings):
         settings.OAUTH_GITHUB_CLIENT_ID = "gh-client-id"
@@ -512,8 +851,14 @@ class TestVerifyEmailTokenSecurity:
     URL = "/api/v1/auth/verify-email/"
 
     def test_token_cannot_be_replayed(self, api):
+        # Use a normal-registration user (usable password) so verify alone
+        # is enough — no need to also exercise the password-required branch
+        # in this replay-targeted test.
         user = User.objects.create_user(
-            email="replay-verify@example.com", full_name="Replay", is_verified=False
+            email="replay-verify@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="Replay",
+            is_verified=False,
         )
         token = create_email_verification_token(user)
 
@@ -561,8 +906,11 @@ class TestVerifyEmailTokenSecurity:
         Can't simulate true concurrency without threads, but this documents
         that the token is atomically single-use within the request lifecycle.
         """
+        # Normal-registration user — already has a usable password, so verify
+        # alone is enough to flip is_verified and issue tokens.
         user = User.objects.create_user(
             email="concurrent-verify@example.com",
+            password="testpass123",  # noqa: S106
             full_name="Concurrent",
             is_verified=False,
         )
@@ -774,6 +1122,37 @@ class TestOAuthExchangeCacheHelpers:
         data = _consume_oauth_exchange(code)
         assert data == {"access_token": "access-4", "refresh_token": "refresh-4"}
 
+    def test_consume_oauth_exchange_atomic_under_concurrent_redemption(self, clear_cache):
+        """Pre-seeding the consumed-sentinel must block redemption.
+
+        ``_consume_oauth_exchange`` uses ``cache.add`` on a sentinel key
+        as the atomic gate so two concurrent redeem attempts cannot both
+        succeed. We simulate the race deterministically: write the
+        sentinel ourselves (modelling the "other thread won the race"
+        state) and assert the subsequent consume returns None even
+        though the underlying token pair is still cached.
+        """
+        from django.core.cache import cache
+
+        from apps.users.auth_views import (
+            _OAUTH_EXCHANGE_PREFIX,
+            _OAUTH_EXCHANGE_TTL,
+            _consume_oauth_exchange,
+            _store_oauth_exchange,
+        )
+
+        code = _store_oauth_exchange("access-race", "refresh-race")
+        # Simulate the winning concurrent caller: their cache.add() landed
+        # the sentinel first, so any subsequent caller must get None even
+        # if the original token pair is still in the cache.
+        cache.set(
+            f"{_OAUTH_EXCHANGE_PREFIX}{code}:consumed",
+            1,
+            timeout=_OAUTH_EXCHANGE_TTL,
+        )
+
+        assert _consume_oauth_exchange(code) is None
+
 
 @pytest.mark.django_db
 class TestOAuthExchangeView:
@@ -847,3 +1226,328 @@ class TestOAuthExchangeView:
         assert {r1.status_code, r2.status_code} == {200, 400}
         loser = r1 if r1.status_code == 400 else r2
         assert loser.data["code"] == "invalid_code"
+
+
+# ---------------------------------------------------------------------------
+# reCAPTCHA v3 verification (CaptchaProtectedSerializer / verify_recaptcha)
+# ---------------------------------------------------------------------------
+
+
+# Stand-in v3 token. A variable (not an inline literal) so the keyword-arg
+# hardcoded-secret heuristic (S106) stays quiet without a per-call noqa.
+_GOOD_CAPTCHA = "tok"
+
+
+def _siteverify_ok(*, success: bool = True, action: str = "register", score: float = 0.9) -> Mock:
+    """Stand-in for the httpx.Response returned by Google's siteverify."""
+    resp = Mock()
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = {"success": success, "action": action, "score": score}
+    return resp
+
+
+@pytest.mark.django_db
+class TestRegisterCaptcha:
+    URL = "/api/v1/auth/register/"
+
+    def _body(self, **over: object) -> dict[str, object]:
+        body: dict[str, object] = {
+            "email": "captcha@example.com",
+            "password": "securepass1",
+            "full_name": "Captcha User",
+        }
+        body.update(over)
+        return body
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_disabled_secret_allows_request_without_token(self, _email, api, settings):
+        """Empty RECAPTCHA_SECRET_KEY ⇒ verification is a no-op; register works
+        with no captcha_token (guards existing-suite compatibility)."""
+        settings.RECAPTCHA_SECRET_KEY = ""
+        resp = api.post(self.URL, self._body(), format="json")
+        assert resp.status_code == 201
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_valid_token_passes(self, mock_post, _email, api, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        settings.RECAPTCHA_MIN_SCORE = 0.5
+        mock_post.return_value = _siteverify_ok(action="register", score=0.9)
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 201
+        # The submitted token is forwarded to Google's siteverify.
+        assert mock_post.call_args.kwargs["data"]["response"] == "tok"
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_low_score_rejected(self, mock_post, api, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        settings.RECAPTCHA_MIN_SCORE = 0.5
+        mock_post.return_value = _siteverify_ok(score=0.1)
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+        assert not User.objects.filter(email="captcha@example.com").exists()
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_success_false_rejected(self, mock_post, api, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.return_value = _siteverify_ok(success=False, score=0.0)
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_action_mismatch_rejected(self, mock_post, api, settings):
+        """A token minted for a different v3 action (e.g. a replayed login
+        token) must not satisfy the register endpoint."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.return_value = _siteverify_ok(action="login", score=0.9)
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_missing_token_rejected_when_enabled(self, mock_post, api, settings):
+        """A missing token routes through verification (required=False) and is
+        rejected before any network call."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+
+        resp = api.post(self.URL, self._body(), format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+        mock_post.assert_not_called()
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_fail_open_on_network_error(self, mock_post, _email, api, settings):
+        """Google unreachable (timeout/connection error) ⇒ allow the request."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.side_effect = httpx.ConnectError("boom")
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 201
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_fail_open_on_5xx(self, mock_post, _email, api, settings):
+        """A 5xx is surfaced via raise_for_status and fails open — the plan's
+        original spec only caught httpx errors from the call itself, which would
+        have 500'd here instead."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        resp_mock = Mock()
+        resp_mock.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "503", request=Mock(), response=Mock()
+        )
+        mock_post.return_value = resp_mock
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 201
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_fail_open_on_malformed_json(self, mock_post, _email, api, settings):
+        """A non-JSON body (e.g. an HTML error page with 200) fails open rather
+        than 500."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        resp_mock = Mock()
+        resp_mock.raise_for_status.return_value = None
+        resp_mock.json.side_effect = ValueError("not json")
+        mock_post.return_value = resp_mock
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+        assert resp.status_code == 201
+
+
+@pytest.mark.django_db
+class TestRegisterCaptchaEdgeCases:
+    """Boundary and edge cases for the register captcha path not covered above."""
+
+    URL = "/api/v1/auth/register/"
+
+    def _body(self, **over: object) -> dict[str, object]:
+        body: dict[str, object] = {
+            "email": "captcha-edge@example.com",
+            "password": "securepass1",
+            "full_name": "Captcha Edge",
+        }
+        body.update(over)
+        return body
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_disabled_secret_makes_no_network_call(self, mock_post, api, settings):
+        """When the secret key is unset, verify_recaptcha returns immediately —
+        no HTTP call to siteverify should ever be made, regardless of whether
+        captcha_token is present."""
+        settings.RECAPTCHA_SECRET_KEY = ""
+
+        with patch("apps.users.tasks.send_verification_email_task.delay"):
+            resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+
+        assert resp.status_code == 201
+        mock_post.assert_not_called()
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_empty_string_token_rejected_when_enabled(self, mock_post, api, settings):
+        """Explicit captcha_token="" (empty string) should be rejected with
+        captcha_failed — it hits the ``if not token`` branch in verify_recaptcha
+        before any network call, distinct from the field-omitted path."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+
+        resp = api.post(self.URL, self._body(captcha_token=""), format="json")
+
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+        mock_post.assert_not_called()
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_score_exactly_at_threshold_passes(self, mock_post, _email, api, settings):
+        """score == RECAPTCHA_MIN_SCORE must pass: the rejection condition is
+        ``score < threshold`` (strict less-than), so the boundary value itself
+        is valid."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        settings.RECAPTCHA_MIN_SCORE = 0.5
+        mock_post.return_value = _siteverify_ok(action="register", score=0.5)
+
+        resp = api.post(self.URL, self._body(captcha_token=_GOOD_CAPTCHA), format="json")
+
+        assert resp.status_code == 201
+
+
+@pytest.mark.django_db
+class TestResendVerificationCaptcha:
+    """Captcha enforcement on POST /auth/resend-verification/ (action='resend_verification')."""
+
+    URL = "/api/v1/auth/resend-verification/"
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    def test_disabled_secret_allows_request_without_token(self, _delay, api, settings, db):
+        """Empty RECAPTCHA_SECRET_KEY ⇒ no-op; endpoint works without a token."""
+        settings.RECAPTCHA_SECRET_KEY = ""
+        user = User.objects.create_user(
+            email="rv-captcha-disabled@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="RV Disabled",
+            is_verified=False,
+        )
+        resp = api.post(self.URL, {"email": user.email}, format="json")
+        assert resp.status_code == 200
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_missing_token_rejected_when_enabled(self, mock_post, api, settings, db):
+        """Missing captcha_token rejects with captcha_failed before any network call."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        user = User.objects.create_user(
+            email="rv-captcha-missing@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="RV Missing",
+            is_verified=False,
+        )
+        resp = api.post(self.URL, {"email": user.email}, format="json")
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+        mock_post.assert_not_called()
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_low_score_rejected(self, mock_post, api, settings, db):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        settings.RECAPTCHA_MIN_SCORE = 0.5
+        mock_post.return_value = _siteverify_ok(action="resend_verification", score=0.1)
+
+        resp = api.post(
+            self.URL,
+            {"email": "rv-captcha-low@example.com", "captcha_token": _GOOD_CAPTCHA},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_action_mismatch_rejected(self, mock_post, api, settings, db):
+        """A token minted for a different action (e.g. 'register') must not
+        satisfy the resend_verification endpoint."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.return_value = _siteverify_ok(action="register", score=0.9)
+
+        resp = api.post(
+            self.URL,
+            {"email": "rv-captcha-mismatch@example.com", "captcha_token": _GOOD_CAPTCHA},
+            format="json",
+        )
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_valid_token_passes(self, mock_post, _delay, api, settings, db):
+        """Correct action 'resend_verification' with a passing score ⇒ 200."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        settings.RECAPTCHA_MIN_SCORE = 0.5
+        mock_post.return_value = _siteverify_ok(action="resend_verification", score=0.9)
+
+        user = User.objects.create_user(
+            email="rv-captcha-ok@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="RV OK",
+            is_verified=False,
+        )
+        resp = api.post(
+            self.URL,
+            {"email": user.email, "captcha_token": _GOOD_CAPTCHA},
+            format="json",
+        )
+        assert resp.status_code == 200
+        assert mock_post.call_args.kwargs["data"]["response"] == _GOOD_CAPTCHA
+
+    @patch("apps.users.tasks.send_verification_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_fail_open_on_network_error(self, mock_post, _delay, api, settings, db):
+        """Google unreachable ⇒ fail open; resend still returns 200."""
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.side_effect = httpx.ConnectError("boom")
+
+        user = User.objects.create_user(
+            email="rv-captcha-network@example.com",
+            password="testpass123",  # noqa: S106
+            full_name="RV Network",
+            is_verified=False,
+        )
+        resp = api.post(
+            self.URL,
+            {"email": user.email, "captcha_token": _GOOD_CAPTCHA},
+            format="json",
+        )
+        assert resp.status_code == 200
+
+
+@pytest.mark.django_db
+class TestForgotPasswordCaptcha:
+    """Proves the mixin is wired onto a second endpoint with its own action."""
+
+    URL = "/api/v1/auth/forgot-password/"
+
+    @patch("apps.users.captcha.httpx.post")
+    def test_low_score_rejected(self, mock_post, api, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.return_value = _siteverify_ok(action="forgot_password", score=0.1)
+
+        resp = api.post(
+            self.URL, {"email": "x@example.com", "captcha_token": _GOOD_CAPTCHA}, format="json"
+        )
+        assert resp.status_code == 400
+        assert resp.data["code"] == "captcha_failed"
+
+    @patch("apps.users.tasks.send_password_reset_email_task.delay")
+    @patch("apps.users.captcha.httpx.post")
+    def test_valid_action_passes(self, mock_post, _delay, api, verified_user, settings):
+        settings.RECAPTCHA_SECRET_KEY = "test-secret"
+        mock_post.return_value = _siteverify_ok(action="forgot_password", score=0.9)
+
+        resp = api.post(
+            self.URL, {"email": verified_user.email, "captcha_token": _GOOD_CAPTCHA}, format="json"
+        )
+        assert resp.status_code == 200

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import timedelta
-from typing import Any, ClassVar
+from typing import ClassVar
 from uuid import UUID
 
 from django.db import transaction
@@ -25,11 +25,12 @@ from rest_framework.pagination import LimitOffsetPagination
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import BaseThrottle
 from saasmint_core.domain.org import OrgRole as CoreOrgRole
 from saasmint_core.exceptions import InsufficientPermissionError, OrgNotFoundError
 from saasmint_core.services.orgs import check_can_manage_member
 
-from apps.base_views import OrgsScopedView
+from apps.base_views import OrgsScopedView, paginated_response_schema
 from apps.orgs.models import Invitation, InvitationStatus, Org, OrgMember, OrgRole
 from apps.orgs.serializers import (
     CreateInvitationSerializer,
@@ -37,10 +38,12 @@ from apps.orgs.serializers import (
     InvitationSerializer,
     OrgMemberSerializer,
     OrgSerializer,
+    PublicInvitationSerializer,
     TransferOwnershipSerializer,
     UpdateMemberSerializer,
     UpdateOrgSerializer,
 )
+from apps.orgs.services import lock_active_team_sub
 from apps.users.services import email_is_registered
 from helpers import get_user
 
@@ -101,25 +104,6 @@ def _default_paginator() -> LimitOffsetPagination:
     return paginator
 
 
-def _paginated_response_schema(
-    name: str, child: drf_serializers.BaseSerializer[Any]
-) -> drf_serializers.Serializer[object]:
-    """Build an inline serializer for the DRF paginated envelope.
-
-    Document the real wire shape of ``LimitOffsetPagination`` responses —
-    a bare ``child(many=True)`` hides ``count``/``next``/``previous``.
-    """
-    return inline_serializer(
-        name,
-        {
-            "count": drf_serializers.IntegerField(),
-            "next": drf_serializers.URLField(allow_null=True),
-            "previous": drf_serializers.URLField(allow_null=True),
-            "results": child,
-        },
-    )
-
-
 def _get_org_and_member(
     user_id: UUID,
     org_id: UUID,
@@ -149,7 +133,7 @@ class OrgListView(OrgsScopedView):
     """GET /api/v1/orgs/ — list user's orgs."""
 
     @extend_schema(
-        responses=_paginated_response_schema("OrgListResponse", OrgSerializer(many=True)),
+        responses=paginated_response_schema("OrgListResponse", OrgSerializer(many=True)),
         parameters=[
             OpenApiParameter("limit", int, description="Page size (max 100)"),
             OpenApiParameter("offset", int, description="Number of items to skip"),
@@ -158,9 +142,10 @@ class OrgListView(OrgsScopedView):
     )
     def get(self, request: Request) -> Response:
         user = get_user(request)
-        orgs = Org.objects.filter(
-            id__in=OrgMember.objects.filter(user=user).values("org_id"),
-        ).order_by("name")
+        # JOIN form lets the planner use the org_members.user_id index directly.
+        # The (org_id, user_id) unique constraint guarantees no duplicates so
+        # ``.distinct()`` is defensive — bounded result regardless.
+        orgs = Org.objects.filter(members__user=user).order_by("name").distinct()
         paginator = _default_paginator()
         page = paginator.paginate_queryset(orgs, request)
         return paginator.get_paginated_response(OrgSerializer(page, many=True).data)
@@ -222,7 +207,7 @@ class OrgMemberListView(OrgsScopedView):
     """GET /api/v1/orgs/{org_id}/members/ — list members."""
 
     @extend_schema(
-        responses=_paginated_response_schema(
+        responses=paginated_response_schema(
             "OrgMemberListResponse", OrgMemberSerializer(many=True)
         ),
         parameters=[
@@ -241,7 +226,17 @@ class OrgMemberListView(OrgsScopedView):
 
 
 class OrgMemberDetailView(OrgsScopedView):
-    """PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/."""
+    """PATCH/DELETE /api/v1/orgs/{org_id}/members/{user_id}/.
+
+    DELETE switches to the tighter ``orgs_member_delete`` throttle scope
+    because it hard-deletes the target user account — a compromised admin
+    token shouldn't get the full ``orgs`` budget for cascading deletes.
+    """
+
+    def get_throttles(self) -> list[BaseThrottle]:
+        if self.request.method == "DELETE":
+            self.throttle_scope = "orgs_member_delete"
+        return super().get_throttles()
 
     @extend_schema(request=UpdateMemberSerializer, responses=OrgMemberSerializer, tags=["orgs"])
     def patch(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
@@ -278,14 +273,23 @@ class OrgMemberDetailView(OrgsScopedView):
         responses={204: None},
         description=(
             "Remove a member from the org. **Destructive:** this hard-deletes the"
-            " member's user account in addition to their membership row, and"
-            " decrements the org's Stripe seat count. The target cannot be the"
-            " org owner — transfer ownership first."
+            " member's user account in addition to their membership row. The"
+            " target cannot be the org owner — transfer ownership first."
+            " The org's Stripe seat count is **not** auto-decremented; the"
+            " freed seat opens up for a new invite. To stop paying for it,"
+            " call ``PATCH /api/v1/billing/subscriptions/me/`` with a lower"
+            " ``seat_limit`` separately."
         ),
         tags=["orgs"],
     )
     def delete(self, request: Request, org_id: UUID, member_user_id: UUID) -> Response:
-        """Remove a member — decrements Stripe seats and hard-deletes their account."""
+        """Remove a member and hard-delete their account.
+
+        Does not change the org's Stripe seat count — billing stays on the
+        previously paid quota and the freed seat is available for a new
+        invite. To downsize, call ``PATCH /billing/subscriptions/me/`` with
+        a lower ``seat_limit`` after removal.
+        """
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_ADMIN_OR_ABOVE)
         target = get_object_or_404(
@@ -305,9 +309,9 @@ class OrgMemberDetailView(OrgsScopedView):
         )
 
         target_user = target.user
-        with transaction.atomic():
-            target.delete()
-            target_user.delete()
+        # ``OrgMember.user`` is ``on_delete=CASCADE``, so deleting the user
+        # cascades the membership row — one DELETE round-trip instead of two.
+        target_user.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -318,14 +322,21 @@ class OrgMemberDetailView(OrgsScopedView):
 
 
 class OrgOwnerView(OrgsScopedView):
-    """PUT /api/v1/orgs/{org_id}/owner/ — transfer ownership to another admin."""
+    """POST /api/v1/orgs/{org_id}/owner-transfers/ — transfer ownership to another admin.
+
+    Modeled as creating an ownership-transfer event rather than ``PUT
+    /owner`` so the operation is naturally idempotent: replaying the same
+    request after a network blip is a no-op once the target is already the
+    owner. ``201 Created`` returns the new owner-member resource with a
+    ``Location`` header pointing at it.
+    """
 
     @extend_schema(
         request=TransferOwnershipSerializer,
-        responses={200: OrgMemberSerializer},
+        responses={201: OrgMemberSerializer},
         tags=["orgs"],
     )
-    def put(self, request: Request, org_id: UUID) -> Response:
+    def post(self, request: Request, org_id: UUID) -> Response:
         user = get_user(request)
         _, caller = _get_org_and_member(user.id, org_id, allowed_roles=_OWNER_ONLY)
 
@@ -356,7 +367,11 @@ class OrgOwnerView(OrgsScopedView):
                 kwargs={"org_id": org_id, "member_user_id": target.user_id},
             )
         )
-        return Response(OrgMemberSerializer(target).data, headers={"Location": location})
+        return Response(
+            OrgMemberSerializer(target).data,
+            status=status.HTTP_201_CREATED,
+            headers={"Location": location},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +383,7 @@ class InvitationListCreateView(OrgsScopedView):
     """GET/POST /api/v1/orgs/{org_id}/invitations/ — list or create invitations."""
 
     @extend_schema(
-        responses=_paginated_response_schema(
+        responses=paginated_response_schema(
             "InvitationListResponse", InvitationSerializer(many=True)
         ),
         parameters=[
@@ -459,29 +474,20 @@ def _validate_seat_limit(org: Org) -> None:
     commits — otherwise two concurrent invites can both pass the check and
     overrun the quota.
     """
-    from apps.billing.models import ACTIVE_SUBSCRIPTION_STATUSES
-    from apps.billing.models import Subscription as SubscriptionModel
-
-    # Lock the active team sub row. We can't use the shared read-only helper
-    # here because this one must take a row lock.
-    sub = (
-        SubscriptionModel.objects.select_for_update()
-        .select_related("stripe_customer")
-        .filter(
-            stripe_customer__org=org,
-            status__in=ACTIVE_SUBSCRIPTION_STATUSES,
-        )
-        .first()
-    )
+    # Lock the active team sub row. Shared with ``accept_invitation`` so the
+    # invite-create and invite-accept paths serialise on the same row.
+    sub = lock_active_team_sub(org)
     if sub is None:
         return  # No active subscription — can't validate seats
 
-    current_members = OrgMember.objects.filter(org=org).count()
-    pending_invitations = Invitation.objects.filter(
+    # Two index-direct counts. Each lands on its own index (org_members.org_id,
+    # idx_invitation_pending_org) without the join+GROUP BY needed by a single
+    # aggregate over the org-and-reverse relations.
+    member_count = OrgMember.objects.filter(org=org).count()
+    pending_count = Invitation.objects.filter(
         org=org, status=InvitationStatus.PENDING
     ).count()
-
-    if current_members + pending_invitations >= sub.seat_limit:
+    if member_count + pending_count >= sub.seat_limit:
         raise _SeatLimitReached
 
 
@@ -516,27 +522,29 @@ class InvitationDetailView(OrgsScopedView):
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
     throttle_scope = "auth"
 
-    @extend_schema(responses={200: InvitationSerializer}, tags=["orgs"])
+    @extend_schema(responses={200: PublicInvitationSerializer}, tags=["orgs"])
     def get(self, request: Request, token: str) -> Response:
         invitation = get_object_or_404(
             Invitation.objects.select_related("org", "invited_by"),
             token=token,
             status=InvitationStatus.PENDING,
         )
-        return Response(InvitationSerializer(invitation).data)
+        return Response(PublicInvitationSerializer(invitation).data)
 
 
 class InvitationAcceptView(OrgsScopedView):
     """POST /api/v1/invitations/{token}/accept/ — register and join an org.
 
-    Unauthenticated endpoint. The invitee provides registration data
-    (full_name, password) and is created as an org_member user.
+    Unauthenticated endpoint. The invitee provides only ``full_name``;
+    the password is set later through the verification-email flow
+    (``POST /api/v1/auth/verify-email/`` with both the email-verification
+    token and a fresh password).
 
-    No session tokens are issued here — the invite token alone does not prove
-    mailbox control, so a leaked/forwarded link would otherwise onboard an
-    attacker with live credentials. Instead the account is created unverified
-    and a verification email is sent; the invitee must click the link to
-    activate and sign in (``POST /api/v1/auth/verify-email/`` returns tokens).
+    Decoupling credential-setting from this endpoint blocks an
+    invitation-token interception → account-takeover path: a leaked accept
+    link can no longer bind an attacker-chosen password, because the only
+    way to set the password is to click a verification link delivered
+    server-side to the invitee's mailbox.
     """
 
     permission_classes: ClassVar[list[type[AllowAny]]] = [AllowAny]  # type: ignore[misc]
@@ -574,21 +582,24 @@ class InvitationAcceptView(OrgsScopedView):
         ser = InvitationAcceptSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
-        from apps.orgs.services import accept_invitation
+        from apps.orgs.services import SeatCapReachedAtAcceptError, accept_invitation
 
-        _user, org = accept_invitation(
-            invitation,
-            password=ser.validated_data["password"],
-            full_name=ser.validated_data["full_name"],
-        )
+        try:
+            _user, org = accept_invitation(
+                invitation,
+                full_name=ser.validated_data["full_name"],
+            )
+        except SeatCapReachedAtAcceptError as exc:
+            raise _SeatLimitReached from exc
 
         return Response(
             {
                 "org": OrgSerializer(org).data,
-                "detail": "Account created. Check your email to verify and sign in.",
+                "detail": "Account created. Check your email to verify and set your password.",
                 "code": "verification_email_sent",
             },
             status=status.HTTP_201_CREATED,
+            headers={"Location": f"/api/v1/orgs/{org.id}/"},
         )
 
 

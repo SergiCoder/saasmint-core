@@ -207,6 +207,7 @@ async def test_create_checkout_session_without_promo() -> None:
             stripe_customer_id="cus_abc",
             client_reference_id="user_123",
             price_id="price_abc",
+            billing_currency="usd",
             success_url="https://example.com/success",
             cancel_url="https://example.com/cancel",
         )
@@ -229,6 +230,7 @@ async def test_create_checkout_session_with_trial_and_metadata() -> None:
             stripe_customer_id="cus_abc",
             client_reference_id="user_123",
             price_id="price_abc",
+            billing_currency="usd",
             trial_period_days=14,
             metadata={"plan": "pro"},
             success_url="https://example.com/success",
@@ -252,6 +254,7 @@ async def test_create_checkout_session_custom_quantity_and_locale() -> None:
             stripe_customer_id="cus_abc",
             client_reference_id="user_123",
             price_id="price_abc",
+            billing_currency="usd",
             quantity=5,
             locale="es",
             success_url="https://example.com/success",
@@ -273,6 +276,7 @@ async def test_create_checkout_session_with_trial_only() -> None:
             stripe_customer_id="cus_abc",
             client_reference_id="user_123",
             price_id="price_abc",
+            billing_currency="usd",
             trial_period_days=7,
             success_url="https://example.com/success",
             cancel_url="https://example.com/cancel",
@@ -294,6 +298,7 @@ async def test_create_checkout_session_with_metadata_only() -> None:
             stripe_customer_id="cus_abc",
             client_reference_id="user_123",
             price_id="price_abc",
+            billing_currency="usd",
             metadata={"plan": "pro"},
             success_url="https://example.com/success",
             cancel_url="https://example.com/cancel",
@@ -320,6 +325,7 @@ async def test_create_product_checkout_session_uses_payment_mode() -> None:
             stripe_customer_id="cus_abc",
             client_reference_id="user_123",
             price_id="price_boost_50",
+            billing_currency="usd",
             success_url="https://example.com/ok",
             cancel_url="https://example.com/no",
         )
@@ -346,6 +352,7 @@ async def test_create_product_checkout_session_forwards_metadata() -> None:
             stripe_customer_id="cus_abc",
             client_reference_id="user_123",
             price_id="price_boost_50",
+            billing_currency="usd",
             success_url="https://example.com/ok",
             cancel_url="https://example.com/no",
             metadata={"product_id": "p_123", "org_id": "o_456"},
@@ -365,6 +372,7 @@ async def test_create_product_checkout_session_forwards_locale() -> None:
             stripe_customer_id="cus_abc",
             client_reference_id="user_123",
             price_id="price_boost_50",
+            billing_currency="usd",
             locale="es",
             success_url="https://example.com/ok",
             cancel_url="https://example.com/no",
@@ -752,3 +760,45 @@ async def test_release_pending_schedule_for_customer_no_active_sub_raises() -> N
             stripe_customer_id=uuid4(),
             subscription_repo=repo,
         )
+
+
+# ── _mirror_cancel_state_from_stripe ──────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_mirror_cancel_state_preserves_existing_status_for_unknown_stripe_status() -> None:
+    """When Stripe returns a status string that doesn't map to our local
+    ``SubscriptionStatus`` enum (e.g. a future Stripe-only state), the
+    mirror leaves ``status`` untouched and only writes the timestamp fields.
+    The webhook will reconcile when the canonical event arrives.
+    """
+    from saasmint_core.domain.subscription import SubscriptionStatus
+    from saasmint_core.services.billing import _mirror_cancel_state_from_stripe
+
+    repo = InMemorySubscriptionRepository()
+    customer_id = uuid4()
+    sub = make_subscription(
+        stripe_customer_id=customer_id,
+        stripe_id="sub_unknown_status",
+        status=SubscriptionStatus.ACTIVE,
+    )
+    await repo.save(sub)
+
+    stripe_sub = _stripe_subscription_response(
+        id="sub_unknown_status",
+        status="some_future_value_not_in_enum",
+        cancel_at=1_780_000_000,
+        canceled_at=1_780_000_500,
+    )
+
+    await _mirror_cancel_state_from_stripe(sub, stripe_sub, repo)
+
+    saved = await repo.get_by_stripe_id("sub_unknown_status")
+    assert saved is not None
+    # Status preserved: unknown Stripe value didn't overwrite the local enum.
+    assert saved.status == SubscriptionStatus.ACTIVE
+    # Timestamps still mirrored.
+    assert saved.cancel_at is not None
+    assert int(saved.cancel_at.timestamp()) == 1_780_000_000
+    assert saved.canceled_at is not None
+    assert int(saved.canceled_at.timestamp()) == 1_780_000_500

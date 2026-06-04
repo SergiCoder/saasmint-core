@@ -17,6 +17,7 @@ from saasmint_core.repositories.customer import StripeCustomerRepository
 from saasmint_core.repositories.plan import PlanRepository
 from saasmint_core.repositories.stripe_event import StripeEventRepository
 from saasmint_core.repositories.subscription import SubscriptionRepository
+from saasmint_core.services._stripe_time import ts_to_dt
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,16 @@ async def process_stored_event(
         await repos.events.mark_failed(stripe_id, str(exc))
         raise
     except Exception as exc:
-        await repos.events.mark_failed(stripe_id, str(exc))
+        # Catch-all so any unexpected error (malformed payload, programmer
+        # bug, future-handler regression) leaves the row in a definitively
+        # "failed" state with an error message — otherwise both error and
+        # processed_at remain NULL, indistinguishable from a fresh row and
+        # invisible to monitoring. Includes the exception class so the
+        # stored message distinguishes a KeyError from a TypeError without
+        # rummaging through Sentry. ``asyncio.CancelledError`` is a
+        # ``BaseException`` in Python 3.8+ and therefore deliberately not
+        # caught here — task cancellation must propagate cleanly.
+        await repos.events.mark_failed(stripe_id, f"{type(exc).__name__}: {exc}")
         raise
 
 
@@ -87,10 +97,7 @@ async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
             await _sync_subscription(event["data"]["object"], repos)
         case "customer.subscription.deleted":
             await _on_subscription_deleted(event["data"]["object"], repos)
-        case (
-            "subscription_schedule.created"
-            | "subscription_schedule.updated"
-        ):
+        case "subscription_schedule.created" | "subscription_schedule.updated":
             await _on_subscription_schedule_upserted(event["data"]["object"], repos)
         case (
             "subscription_schedule.released"
@@ -104,11 +111,6 @@ async def _dispatch(event: dict[str, Any], repos: WebhookRepos) -> None:
             await _on_invoice_failed(event["data"]["object"])
         case _:
             logger.debug("Unhandled Stripe event type: %s", event["type"])
-
-
-def _ts_to_dt(value: int | float | None) -> datetime | None:
-    """Convert an optional Unix timestamp to a UTC datetime, or None."""
-    return datetime.fromtimestamp(int(value), tz=UTC) if value is not None else None
 
 
 async def _on_checkout_completed(session_data: dict[str, Any], repos: WebhookRepos) -> None:
@@ -216,6 +218,78 @@ async def _sync_subscription(sub_data: dict[str, Any], repos: WebhookRepos) -> N
     )
 
 
+def _extract_period_window(
+    sub_data: dict[str, Any], first_item: dict[str, Any], stripe_sub_id: str
+) -> tuple[int, int]:
+    """Return ``(current_period_start, current_period_end)`` as Unix epochs.
+
+    Stripe API 2024-06+ moved these fields from the subscription object onto
+    the line items; older API versions still place them at the top level, so
+    we read item-first and fall back to the subscription. Raises
+    :class:`WebhookDataError` (handled as a permanent failure by the caller)
+    when neither location yields integers.
+    """
+    from saasmint_core.exceptions import WebhookDataError
+
+    period_start = first_item.get("current_period_start", sub_data.get("current_period_start"))
+    period_end = first_item.get("current_period_end", sub_data.get("current_period_end"))
+    if period_start is None or period_end is None:
+        raise WebhookDataError(f"Subscription {stripe_sub_id} missing current_period_start/end")
+    if not isinstance(period_start, int) or not isinstance(period_end, int):
+        raise WebhookDataError(
+            f"Subscription {stripe_sub_id} has non-integer current_period_start/end"
+        )
+    return period_start, period_end
+
+
+def _build_subscription_row(
+    *,
+    sub_data: dict[str, Any],
+    first_item: dict[str, Any],
+    stripe_sub_id: str,
+    customer_id: UUID,
+    customer_user_id: UUID | None,
+    plan_id: UUID,
+    period_start: int,
+    period_end: int,
+    existing: Subscription | None,
+) -> Subscription:
+    """Construct the :class:`Subscription` domain model for an upsert.
+
+    Preserves ``scheduled_plan_id`` / ``scheduled_change_at`` from the existing
+    row — a ``customer.subscription.updated`` event fires alongside every
+    schedule event and would otherwise wipe them back to ``None``, breaking
+    the deferred-downgrade badge. Only ``subscription_schedule.released``
+    /``canceled`` /``aborted`` are allowed to clear them, not this sync.
+    """
+    return Subscription(
+        id=existing.id if existing else uuid4(),
+        stripe_id=stripe_sub_id,
+        stripe_customer_id=customer_id,
+        user_id=customer_user_id,  # None for org subs; mirrored so user-scoped queries work
+        status=SubscriptionStatus(str(sub_data["status"])),
+        plan_id=plan_id,
+        seat_limit=int(first_item.get("quantity") or 1),
+        trial_ends_at=ts_to_dt(sub_data.get("trial_end")),
+        current_period_start=datetime.fromtimestamp(period_start, tz=UTC),
+        current_period_end=datetime.fromtimestamp(period_end, tz=UTC),
+        canceled_at=ts_to_dt(sub_data.get("canceled_at")),
+        # Stripe API 2026-03-25.dahlia: ``cancel_at`` is the scheduled cutover
+        # timestamp (None when no cancel is queued). Cleared by the user
+        # resuming the sub or by it actually firing — Stripe re-emits an
+        # ``updated`` event in either case so the local mirror converges.
+        cancel_at=ts_to_dt(sub_data.get("cancel_at")),
+        scheduled_plan_id=existing.scheduled_plan_id if existing else None,
+        scheduled_change_at=existing.scheduled_change_at if existing else None,
+        # Mirror the Stripe-pinned currency. Read from the subscription itself
+        # if Stripe sent it, falling back to the line-item price's currency.
+        currency=str(
+            sub_data.get("currency") or first_item["price"].get("currency") or "usd"
+        ).lower(),
+        created_at=existing.created_at if existing else datetime.now(UTC),
+    )
+
+
 async def sync_subscription_from_data(
     sub_data: dict[str, Any],
     *,
@@ -246,17 +320,7 @@ async def sync_subscription_from_data(
     price_id = str(first_item["price"]["id"])
     stripe_sub_id = str(sub_data["id"])
 
-    # Stripe API 2024-06+ moved current_period_start/end from the subscription
-    # object to the subscription items. Read from the item first, fall back to
-    # the top-level for older API versions / fixtures.
-    period_start = first_item.get("current_period_start", sub_data.get("current_period_start"))
-    period_end = first_item.get("current_period_end", sub_data.get("current_period_end"))
-    if period_start is None or period_end is None:
-        raise WebhookDataError(f"Subscription {stripe_sub_id} missing current_period_start/end")
-    if not isinstance(period_start, int) or not isinstance(period_end, int):
-        raise WebhookDataError(
-            f"Subscription {stripe_sub_id} has non-integer current_period_start/end"
-        )
+    period_start, period_end = _extract_period_window(sub_data, first_item, stripe_sub_id)
 
     customer, plan_price, existing = await asyncio.gather(
         customers.get_by_stripe_id(stripe_customer_str),
@@ -271,32 +335,17 @@ async def sync_subscription_from_data(
     if plan_price is None:
         logger.warning("Received subscription event for unknown price %s", price_id)
         raise WebhookDataError(f"Unknown price {price_id}")
-    subscription = Subscription(
-        id=existing.id if existing else uuid4(),
-        stripe_id=stripe_sub_id,
-        stripe_customer_id=customer.id,
-        user_id=customer.user_id,  # None for org subs; mirrored so user-scoped queries work
-        status=SubscriptionStatus(str(sub_data["status"])),
+
+    subscription = _build_subscription_row(
+        sub_data=sub_data,
+        first_item=first_item,
+        stripe_sub_id=stripe_sub_id,
+        customer_id=customer.id,
+        customer_user_id=customer.user_id,
         plan_id=plan_price.plan_id,
-        seat_limit=int(first_item.get("quantity") or 1),
-        trial_ends_at=_ts_to_dt(sub_data.get("trial_end")),
-        current_period_start=datetime.fromtimestamp(period_start, tz=UTC),
-        current_period_end=datetime.fromtimestamp(period_end, tz=UTC),
-        canceled_at=_ts_to_dt(sub_data.get("canceled_at")),
-        # Stripe API 2026-03-25.dahlia: ``cancel_at`` is the scheduled cutover
-        # timestamp (None when no cancel is queued). Cleared by the user
-        # resuming the sub or by it actually firing — Stripe re-emits an
-        # ``updated`` event in either case so the local mirror converges.
-        cancel_at=_ts_to_dt(sub_data.get("cancel_at")),
-        # Preserve the pending-schedule mirror written by
-        # ``subscription_schedule.created/updated``. A ``customer.subscription.updated``
-        # event fires alongside every schedule event and would otherwise wipe
-        # these fields back to None, breaking the deferred-downgrade badge.
-        # ``subscription_schedule.released/canceled/aborted`` are the only
-        # events that should clear them — not a subscription sync.
-        scheduled_plan_id=existing.scheduled_plan_id if existing else None,
-        scheduled_change_at=existing.scheduled_change_at if existing else None,
-        created_at=existing.created_at if existing else datetime.now(UTC),
+        period_start=period_start,
+        period_end=period_end,
+        existing=existing,
     )
 
     await subscriptions.save(subscription)
@@ -363,19 +412,15 @@ def _parse_schedule_pending_change(
         return None
 
     next_price = next_items[0].get("price")
-    next_price_id: str | None = (
-        next_price.get("id") if isinstance(next_price, dict) else next_price
-    )
+    next_price_id: str | None = next_price.get("id") if isinstance(next_price, dict) else next_price
     if not next_price_id:
         logger.warning("subscription_schedule %s next phase missing price id", schedule_id)
         return None
 
     change_at_ts = current_phase.get("end_date") or next_phase.get("start_date")
-    change_at = _ts_to_dt(change_at_ts)
+    change_at = ts_to_dt(change_at_ts)
     if change_at is None:
-        logger.warning(
-            "subscription_schedule %s missing phase boundary timestamp", schedule_id
-        )
+        logger.warning("subscription_schedule %s missing phase boundary timestamp", schedule_id)
         return None
 
     return str(next_price_id), change_at
@@ -475,9 +520,7 @@ async def _on_subscription_schedule_cleared(
         return
 
     await repos.subscriptions.save(
-        existing.model_copy(
-            update={"scheduled_plan_id": None, "scheduled_change_at": None}
-        )
+        existing.model_copy(update={"scheduled_plan_id": None, "scheduled_change_at": None})
     )
 
 

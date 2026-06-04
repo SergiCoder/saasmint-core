@@ -5,33 +5,21 @@ from __future__ import annotations
 import pytest
 
 from saasmint_core.exceptions import (
-    AlreadyOnPlanError,
     DomainError,
     InsufficientPermissionError,
-    NoActiveSubscriptionError,
-    OrgMemberNotFoundError,
     OrgNotFoundError,
-    PlanContextMismatchError,
     SeatsBelowMemberCountError,
-    SubscriptionAlreadyActiveError,
     SubscriptionNotFoundError,
     UserNotFoundError,
     WebhookDataError,
-    WebhookVerificationError,
 )
 
 _ALL_EXCEPTIONS = [
     UserNotFoundError,
     OrgNotFoundError,
     SubscriptionNotFoundError,
-    SubscriptionAlreadyActiveError,
     InsufficientPermissionError,
-    OrgMemberNotFoundError,
-    WebhookVerificationError,
     WebhookDataError,
-    NoActiveSubscriptionError,
-    AlreadyOnPlanError,
-    PlanContextMismatchError,
     SeatsBelowMemberCountError,
 ]
 
@@ -54,8 +42,3 @@ def test_each_exception_can_be_raised_and_caught() -> None:
 def test_exception_message_preserved() -> None:
     err = UserNotFoundError("user 123 not found")
     assert str(err) == "user 123 not found"
-
-
-def test_webhook_verification_error() -> None:
-    with pytest.raises(WebhookVerificationError):
-        raise WebhookVerificationError("bad signature")

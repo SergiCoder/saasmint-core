@@ -24,11 +24,6 @@ def test_safe_get_none_obj_returns_none() -> None:
     assert _safe_get(None, "key") is None
 
 
-def test_safe_get_returns_none_for_non_subscriptable() -> None:
-    """Objects that don't support __getitem__ (e.g. plain int) must return
-    None instead of raising TypeError."""
-    assert _safe_get(42, "key") is None
-
 # ── change_plan ───────────────────────────────────────────────────────────────
 
 
@@ -184,7 +179,7 @@ async def test_update_seat_count_increase_prorates() -> None:
     )
     # Optimistic mirror: local row reflects the new seat count before the
     # webhook lands.
-    stored = await repo.get_by_id(active.id)
+    stored = await repo.get_by_stripe_id("sub_abc")
     assert stored is not None
     assert stored.seat_limit == 5
 
@@ -210,7 +205,7 @@ async def test_update_seat_count_decrease_no_proration() -> None:
         items=[{"id": "si_seat", "quantity": 3}],
         proration_behavior="none",
     )
-    stored = await repo.get_by_id(active.id)
+    stored = await repo.get_by_stripe_id("sub_abc")
     assert stored is not None
     assert stored.seat_limit == 3
 
@@ -295,6 +290,7 @@ def _stripe_sub_dict(
     price_id: str = "price_pro",
     unit_amount: int = 2000,
     quantity: int = 1,
+    currency: str = "usd",
     period_start: int = 1_700_000_000,
     period_end: int = 1_702_592_000,
 ) -> dict[str, object]:
@@ -310,7 +306,11 @@ def _stripe_sub_dict(
             "data": [
                 {
                     "id": item_id,
-                    "price": {"id": price_id, "unit_amount": unit_amount},
+                    "price": {
+                        "id": price_id,
+                        "unit_amount": unit_amount,
+                        "currency": currency,
+                    },
                     "quantity": quantity,
                     "current_period_start": period_start,
                     "current_period_end": period_end,
@@ -318,6 +318,18 @@ def _stripe_sub_dict(
             ]
         },
     }
+
+
+def _retrieved_price(*, currency: str = "usd") -> MagicMock:
+    """Build a ``stripe.Price.retrieve`` return value carrying *currency*.
+
+    ``_schedule_downgrade_at_period_end`` calls ``Price.retrieve`` for the
+    incoming new price ID to assert it matches the subscription's currency
+    before building the schedule phases — without this mock the call hits
+    the live Stripe API in tests."""
+    p = MagicMock()
+    p.currency = currency
+    return p
 
 
 @pytest.mark.anyio
@@ -333,18 +345,18 @@ async def test_change_plan_downgrade_defers_via_schedule() -> None:
     with (
         patch("stripe.Subscription.retrieve", return_value=sub),
         patch("stripe.Subscription.modify") as mock_modify,
+        patch("stripe.Price.retrieve", return_value=_retrieved_price()),
         patch(
             "stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_new"}
         ) as mock_create,
         patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_basic",
             new_price_amount=999,
         )
 
-    assert result == "scheduled_for_period_end"
     mock_modify.assert_not_called()
     mock_create.assert_called_once_with(from_subscription="sub_dg")
     args, kwargs = mock_sched_modify.call_args
@@ -373,13 +385,12 @@ async def test_change_plan_upgrade_applies_immediately() -> None:
         patch("stripe.Subscription.modify") as mock_modify,
         patch("stripe.SubscriptionSchedule.create") as mock_create,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_pro",
             new_price_amount=2000,
         )
 
-    assert result == "applied_now"
     mock_create.assert_not_called()
     mock_modify.assert_called_once()
 
@@ -395,13 +406,12 @@ async def test_change_plan_same_amount_applies_immediately() -> None:
         patch("stripe.Subscription.modify") as mock_modify,
         patch("stripe.SubscriptionSchedule.create") as mock_create,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_other",
             new_price_amount=1500,
         )
 
-    assert result == "applied_now"
     mock_create.assert_not_called()
     mock_modify.assert_called_once()
 
@@ -419,12 +429,11 @@ async def test_change_plan_without_amount_uses_legacy_immediate_path() -> None:
         patch("stripe.Subscription.modify") as mock_modify,
         patch("stripe.SubscriptionSchedule.create") as mock_create,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_basic",
         )
 
-    assert result == "applied_now"
     mock_create.assert_not_called()
     mock_modify.assert_called_once()
 
@@ -438,9 +447,8 @@ async def test_change_plan_downgrade_quantity_override_wins() -> None:
     with (
         patch("stripe.Subscription.retrieve", return_value=sub),
         patch("stripe.Subscription.modify"),
-        patch(
-            "stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_q"}
-        ),
+        patch("stripe.Price.retrieve", return_value=_retrieved_price()),
+        patch("stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_q"}),
         patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
     ):
         await change_plan(
@@ -541,16 +549,16 @@ async def test_change_plan_downgrade_reuses_existing_schedule() -> None:
     with (
         patch("stripe.Subscription.retrieve", return_value=sub),
         patch("stripe.Subscription.modify"),
+        patch("stripe.Price.retrieve", return_value=_retrieved_price()),
         patch("stripe.SubscriptionSchedule.create") as mock_create,
         patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_dg",
             new_stripe_price_id="price_basic",
             new_price_amount=999,
         )
 
-    assert result == "scheduled_for_period_end"
     # Must NOT create a new schedule — the existing one is reused.
     mock_create.assert_not_called()
     # Must modify the existing schedule id.
@@ -596,13 +604,12 @@ async def test_change_plan_upgrade_with_existing_schedule_releases_schedule_firs
         patch("stripe.Subscription.modify") as mock_modify,
         patch("stripe.SubscriptionSchedule.create") as mock_create,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_upgrade_sched",
             new_stripe_price_id="price_pro",
             new_price_amount=2000,  # upgrade
         )
 
-    assert result == "applied_now"
     # Must NOT have created a new schedule.
     mock_create.assert_not_called()
     # Must have released the pinning schedule before modifying.
@@ -639,18 +646,18 @@ async def test_change_plan_downgrade_period_fallback_from_subscription_level() -
     with (
         patch("stripe.Subscription.retrieve", return_value=sub),
         patch("stripe.Subscription.modify"),
+        patch("stripe.Price.retrieve", return_value=_retrieved_price()),
         patch(
             "stripe.SubscriptionSchedule.create", return_value={"id": "sub_sched_fb"}
         ) as mock_create,
         patch("stripe.SubscriptionSchedule.modify") as mock_sched_modify,
     ):
-        result = await change_plan(
+        await change_plan(
             stripe_subscription_id="sub_fallback",
             new_stripe_price_id="price_basic",
             new_price_amount=999,
         )
 
-    assert result == "scheduled_for_period_end"
     mock_create.assert_called_once_with(from_subscription="sub_fallback")
     phases = mock_sched_modify.call_args.kwargs["phases"]
     assert phases[0]["start_date"] == 1_700_000_000

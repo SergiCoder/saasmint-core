@@ -1,6 +1,7 @@
 """Admin registration for the orgs app."""
 
 import logging
+from typing import ClassVar
 from uuid import UUID
 
 from django.contrib import admin
@@ -20,7 +21,7 @@ class OrgAdmin(admin.ModelAdmin):  # type: ignore[type-arg]  # django-stubs gene
     search_fields = ("name", "slug")
     readonly_fields = ("id", "created_at")
     list_select_related = ("created_by",)
-    actions = ["delete_org_action"]  # noqa: RUF012
+    actions: ClassVar[list[str]] = ["delete_org_action"]  # type: ignore[misc]  # django-stubs declares as instance var
 
     def get_urls(self) -> list[URLPattern]:
         custom_urls = [

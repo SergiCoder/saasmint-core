@@ -5,14 +5,14 @@ A production-ready Django backend for building SaaS applications with Stripe bil
 ## What you get
 
 - **Stripe integration** — subscriptions, one-time payments, customer portal, and webhook handling
-- **Django backend** — native JWT auth (email/password + OAuth), user management, and admin panel
+- **Django backend** — custom JWT auth (email/password + OAuth), user management, and admin panel
 - **Admin dashboard** — extended Django admin with subscription status, Stripe event log, and user impersonation via django-hijack
 - **Webhook processing** — idempotent event handling with database-backed deduplication
 - **Async jobs** — Celery + Redis for background tasks (email delivery, exchange-rate sync, webhook processing)
 - **Organizations** — multi-tenant orgs with role-based membership (owner, admin, member), email invitations, and ownership transfer
 - **Multi-plan support** — personal and team plans (basic, pro) with seat-based team pricing, or define your own
 - **One-time products** — credit packs (Boost) for non-subscription purchases via Stripe Checkout
-- **Multi-currency display** — USD-only catalog with daily Stripe-sourced exchange rates for display-time conversion to 20+ currencies
+- **Multi-currency display** — USD-only catalog with daily exchange rates from [open.er-api.com](https://open.er-api.com) for display-time conversion to 20+ currencies
 - **Dev seed data** — one command to populate the database with realistic test users, orgs, and subscriptions
 - **CI/CD** — GitHub Actions for lint, typecheck, and tests out of the box
 
@@ -88,6 +88,7 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 | `DATABASE_URL` | PostgreSQL connection string |
 | `STRIPE_SECRET_KEY` | Stripe API secret key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
+| `BILLING_CURRENCIES` | JSON array of ISO 4217 codes Stripe charges in (e.g. `["usd","eur","gbp"]`). Defaults to `["usd","eur","gbp","jpy","cny"]`. `usd` must always be included. Add a code here to mint real Stripe Prices for it; display-only currencies do not need to be listed here |
 | `REDIS_URL` | Redis connection string (defaults to `redis://localhost:6379/0`) |
 | `DEBUG` | Set to `True` for local development |
 | `ALLOWED_HOSTS` | JSON array of allowed hosts (e.g. `["localhost","127.0.0.1"]`) |
@@ -105,7 +106,7 @@ Links to Swagger and ReDoc also appear in the Django admin header (debug only).
 | `OAUTH_GITHUB_CLIENT_SECRET` | GitHub OAuth app client secret (optional) |
 | `OAUTH_MICROSOFT_CLIENT_ID` | Microsoft OAuth app client ID (optional) |
 | `OAUTH_MICROSOFT_CLIENT_SECRET` | Microsoft OAuth app client secret (optional) |
-| `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only) |
+| `ENABLE_SESSION_AUTH` | Set to `True` to enable DRF browsable API session auth (dev only — production boot fails if this is set) |
 
 ## Project structure
 
@@ -123,6 +124,7 @@ saasmint-core/
 │   ├── admin_panel/     # Extended Django admin (subscription status column, site_url → /dashboard/)
 │   ├── billing/         # Stripe billing, subscriptions, and webhook processing
 │   ├── dashboard/       # Server-rendered dashboard, hijack impersonation landing views
+│   ├── marketing/       # Public landing-page CTA + Contact form (POST /api/v1/marketing/inquiries/)
 │   ├── orgs/            # Organization management and membership
 │   └── users/           # User auth, Django JWT authentication, and profile management
 ├── middleware/           # Django middleware — security.py (CSP / security headers), exceptions.py (DRF error-envelope normalisation)
@@ -130,7 +132,7 @@ saasmint-core/
 ├── templates/           # Shared HTML templates (admin overrides, DRF browsable API, topbar)
 ├── scripts/             # CI helper scripts (dependency parser)
 ├── .github/             # CI workflows and PR template
-├── helpers.py           # Shared Django helpers (aget_or_none, get_user)
+├── helpers.py           # Shared Django helpers (get_user, aget_or_none, aget_latest_or_none)
 └── manage.py
 ```
 
@@ -174,7 +176,7 @@ make seed
 
 1. Create a [Stripe account](https://dashboard.stripe.com/register).
 2. Get your API keys from the [Stripe Dashboard](https://dashboard.stripe.com/apikeys) and put them in the env file for your target environment — `.env.local` (default), `.env.dev`, or `.env.prod`. The active file is selected by `ENVIRONMENT` (`local` | `development` | `production`).
-3. Start the stack — `infra/entrypoint.sh` runs `migrate`, then `seed_catalog` (idempotent; creates default Plans, PlanPrices, and Boost Products with placeholder `stripe_price_id` values), then `sync_stripe_catalog` (idempotent via Stripe `lookup_key`s; creates/updates Stripe Products/Prices and writes real `stripe_price_id`s back onto the DB rows). No manual steps are needed after deploy. To customize the catalog, edit `apps/billing/management/commands/seed_catalog.py`; to push changes manually, run `make sync-stripe`.
+3. Start the stack — `infra/entrypoint.sh` runs `migrate`, then `seed_catalog` (idempotent; creates default Plans, PlanPrices, and Boost Products with placeholder `stripe_price_id` values), then `sync_localized_prices` (recomputes `LocalizedPrice` rows from the FX feed; non-fatal if the upstream is flaky — existing rows are kept), then `sync_stripe_catalog` (idempotent via Stripe `lookup_key`s; creates/updates Stripe Products/Prices and writes real `stripe_price_id`s back onto the DB rows for USD on `PlanPrice`/`ProductPrice` and onto `LocalizedPrice` for non-USD billing currencies). The `sync_localized_prices` step must run before `sync_stripe_catalog` because the latter reads `LocalizedPrice.amount_minor` when minting non-USD Stripe Prices. No manual steps are needed after deploy. To customize the catalog, edit `apps/billing/management/commands/seed_catalog.py`; to push changes manually, run `make sync-stripe`.
 4. Webhook forwarding for local development is handled automatically by the bundled `stripe-cli` service in `docker-compose.yml`. Mount your host `~/.config/stripe` read-write into the container (the CLI writes auth state back to its config) and run `stripe login` once on the host — then `make dev` starts the forwarder alongside Django. Tail it with `make stripe-logs`.
 5. In production, set up a webhook endpoint pointing to `/api/v1/webhooks/stripe/` with these events:
    - `checkout.session.completed`
@@ -183,6 +185,11 @@ make seed
    - `customer.subscription.deleted`
    - `invoice.payment_succeeded`
    - `invoice.payment_failed`
+   - `subscription_schedule.created`
+   - `subscription_schedule.updated`
+   - `subscription_schedule.released`
+   - `subscription_schedule.canceled`
+   - `subscription_schedule.aborted`
 
 ## Deploying
 

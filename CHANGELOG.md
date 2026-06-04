@@ -8,6 +8,88 @@ From `v0.7.0` onward, `saasmint-core` (root), `saasmint-core-lib` (`core/`),
 and the frontend `saasmint-app` ship in lockstep — a `v<X.Y.Z>` tag is
 only valid if all three repos already match `<X.Y.Z>` on `main`.
 
+## [0.12.0] - 2026-06-04
+
+This is a minor release: it carries new functionality **and** breaking API
+contract changes, so it bumps the minor (not the patch) per SemVer. The
+previously circulated `v0.11.1` release-candidate line is superseded by
+`v0.12.0`; those `v0.11.1-rcN` tags never satisfied lockstep (their commits
+still carried `0.11.0` in both `pyproject.toml` files) and should not be used.
+
+### Added
+
+- reCAPTCHA v3 server-side token verification on the register,
+  forgot-password, and resend-verification endpoints (`captcha_token` field;
+  `RECAPTCHA_SECRET_KEY` empty disables it for local dev/tests). (#77)
+- Multi-currency billing (USD, EUR, GBP, JPY, CNY). USD remains the catalog
+  source of truth; `?currency=` selects display via precomputed
+  `LocalizedPrice` rows (replacing the old `ExchangeRate` table), with USD
+  fallback when a row is missing.
+- OAuth cross-provider inline account-linking: untrusted links mint a
+  single-use `SocialLinkRequest` and email the existing account a confirm
+  link, completed via `POST /auth/oauth/confirm-link/`. (#67)
+- Resend-verification endpoint and verify-email-on-password-reset. (#66)
+- Daily Celery cleanup tasks for expired email-verification and
+  password-reset tokens.
+- JWT invalidation on password change (`pwd_iat` revocation) plus a
+  one-time-token consume race fix.
+
+### Changed
+
+- **Breaking**: org ownership transfer endpoint renamed from
+  `PUT /orgs/{id}/owner/` to `POST /orgs/{id}/owner-transfers/`, now
+  returning `201 Created` with a `Location` header.
+- **Breaking**: `DELETE` subscription endpoints
+  (`/billing/subscriptions/me/` and `/scheduled-change/`) now return
+  `204 No Content` instead of `200` with a body. Clients must `GET` to
+  refresh state.
+- **Breaking**: resource-creating `POST` endpoints (register,
+  checkout-session, portal-session, product-checkout) now return
+  `201 Created` with a `Location` header instead of `200`.
+- `GET /billing/subscriptions/me/` (and other list endpoints) return the
+  paginated `{count, next, previous, results}` response shape.
+- `OAuthExchangeResponseSerializer` collapsed into `TokenResponseSerializer`.
+- Pinned Stripe API version bumped to `2026-05-27.dahlia`.
+
+### Fixed
+
+- Billing: send `customer_update[address]=auto` so Stripe `automatic_tax`
+  is satisfied at checkout.
+- Security audit pass: HTML-escape user-controlled content in transactional
+  emails; remove PII from the public invitation endpoint; harden OAuth state
+  and webhook `livemode` checks; allowlist OAuth error codes; require
+  https-only `logo_url`; production-time session-auth guard; strict `is True`
+  check for Google `email_verified`.
+- Orgs: owner-must-be-billing enforced at the DB level
+  (`ck_org_owner_must_be_billing`); accept-time seat-cap check on invites.
+- Webhooks: mark the event row failed on any unhandled dispatch exception and
+  store the exception class in the failure message.
+- Config: enforce `JWT_SIGNING_KEY` ≥ 32 bytes and raise
+  `ImproperlyConfigured` when it is unset in production; explicit
+  `DEBUG=False`; order `CorsMiddleware` before `SecurityMiddleware`.
+
+### Security
+
+- Dependency CVE fixes: `pyjwt` and `idna` (incl. idna CVE-2026-45409 in the
+  `core/` lockfile); plus `markdown-it-py`, `urllib3`, and `pydantic` bumps.
+
+### Performance
+
+- Database indexes and N+1 elimination across billing, orgs, users, and auth;
+  batched Stripe lookups; async OAuth code exchange; shared httpx connection
+  pool; functional `LOWER(email)` unique index.
+
+### Infrastructure
+
+- VPS compose `restart` policy on services; explicit `redis.conf` for dev.
+
+### Maintenance
+
+- `saasmint-core` and `saasmint-core-lib` bumped to `0.12.0`; `uv.lock`
+  re-resolved to match.
+- Large dead-code removal, function decomposition, and quality/idiom cleanup
+  passes across billing, orgs, users, and core services.
+
 ## [0.11.0] - 2026-05-03
 
 ### Added

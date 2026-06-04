@@ -22,9 +22,19 @@ from rest_framework.request import Request
 from apps.users.models import AUTH_USER_CACHE_KEY, RefreshToken, User
 
 if TYPE_CHECKING:
-    from apps.users.models import EmailVerificationToken, PasswordResetToken
+    from apps.users.models import (
+        EmailVerificationToken,
+        PasswordResetToken,
+        SocialLinkRequest,
+    )
 
-    OneTimeTokenModel = type[EmailVerificationToken] | type[PasswordResetToken]
+    # Wider alias: any model class that exposes ``token_hash``/``expires_at``/
+    # ``used_at``/``user`` and is consumed by ``_create_one_time_token`` /
+    # ``_consume_one_time_token``. Keeping the alias as a single ``type[...]``
+    # union node lets mypy infer correct types without enumerating every
+    # variant in callers.
+    _OneTimeToken = EmailVerificationToken | PasswordResetToken | SocialLinkRequest
+    OneTimeTokenModel = type[_OneTimeToken]
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +44,10 @@ _AUTH_CACHE_TTL = 60  # seconds
 ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
 REFRESH_TOKEN_LIFETIME = timedelta(days=7)
 EMAIL_VERIFICATION_LIFETIME = timedelta(hours=24)
-PASSWORD_RESET_LIFETIME = timedelta(hours=1)
+PASSWORD_RESET_LIFETIME = timedelta(minutes=10)
+SOCIAL_LINK_LIFETIME = timedelta(minutes=15)
 
 _ALGORITHM = "HS256"
-
-
-def _get_signing_key() -> str:
-    return settings.JWT_SIGNING_KEY
 
 
 def _hash_token(raw: str) -> str:
@@ -51,14 +58,19 @@ def _hash_token(raw: str) -> str:
 def create_access_token(user: User) -> str:
     """Issue a short-lived access token for the given user."""
     now = datetime.now(UTC)
+    pwd_changed = getattr(user, "password_changed_at", None)
+    pwd_iat = int(pwd_changed.timestamp()) if pwd_changed else 0
     payload = {
         "sub": str(user.id),
         "email": user.email,
         "type": "access",
         "iat": now,
         "exp": now + ACCESS_TOKEN_LIFETIME,
+        # Stamp at issue time so a later password reset/change can revoke this
+        # token by comparing against User.password_changed_at on each request.
+        "pwd_iat": pwd_iat,
     }
-    return jwt.encode(payload, _get_signing_key(), algorithm=_ALGORITHM)
+    return jwt.encode(payload, settings.JWT_SIGNING_KEY, algorithm=_ALGORITHM)
 
 
 def create_refresh_token(user: User) -> str:
@@ -139,34 +151,83 @@ def _create_one_time_token(
     return raw
 
 
+def _consume_one_time_token(
+    model_class: OneTimeTokenModel,
+    raw_token: str,
+    label: str,
+) -> _OneTimeToken:
+    """Validate and consume a one-time token row. Returns the row itself.
+
+    Used by ``_verify_one_time_token`` (returns row.user) and by
+    ``verify_social_link_token`` (returns the row to read provider fields off
+    it). Raises AuthenticationFailed on invalid/expired/used tokens or when
+    the bound user is inactive.
+
+    The consume step is a single conditional UPDATE
+    (``used_at IS NULL AND expires_at > now``) so two parallel redeems can
+    never both succeed — at most one row matches the predicate, and the
+    losing UPDATE returns 0 rows.
+    """
+    token_hash = _hash_token(raw_token)
+    now = datetime.now(UTC)
+    # Fetch with the user FK joined so a successful consume does not need a
+    # second SELECT to materialise ``obj.user``. The state values read here
+    # are still verified by the conditional UPDATE below — the SELECT is
+    # for diagnostics and FK-prefetch, never the source of truth on whether
+    # the token is consumable.
+    obj = model_class.objects.select_related("user").filter(token_hash=token_hash).first()
+    if obj is None:
+        raise AuthenticationFailed({"detail": f"Invalid {label} token.", "code": "invalid_token"})
+    if obj.used_at is not None:
+        raise AuthenticationFailed(
+            {
+                "detail": f"{label.capitalize()} token has already been used.",
+                "code": "token_used",
+            }
+        )
+    if obj.expires_at <= now:
+        raise AuthenticationFailed(
+            {
+                "detail": f"{label.capitalize()} token has expired.",
+                "code": "token_expired",
+            }
+        )
+
+    # Atomic conditional UPDATE — two parallel redeems can never both win
+    # because at most one row matches the predicate. A ``0`` here means the
+    # losing side of a TOCTOU race; surface it as ``token_used``.
+    updated = model_class.objects.filter(
+        token_hash=token_hash,
+        used_at__isnull=True,
+        expires_at__gt=now,
+    ).update(used_at=now)
+    if updated == 0:
+        raise AuthenticationFailed(
+            {
+                "detail": f"{label.capitalize()} token has already been used.",
+                "code": "token_used",
+            }
+        )
+
+    if not obj.user.is_active:
+        raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
+
+    obj.used_at = now
+    return obj
+
+
 def _verify_one_time_token(
     model_class: OneTimeTokenModel,
     raw_token: str,
     label: str,
 ) -> User:
-    """Validate and consume a one-time token. Returns the user.
+    """Validate and consume a one-time token. Returns the bound user.
 
-    Raises AuthenticationFailed on invalid/expired/used tokens.
+    Thin wrapper over :func:`_consume_one_time_token` for the common case
+    where callers only need the user (email verification, password reset).
     """
-    token_hash = _hash_token(raw_token)
-    try:
-        obj = model_class.objects.select_related("user").get(token_hash=token_hash)
-    except model_class.DoesNotExist:
-        raise AuthenticationFailed(
-            {"detail": f"Invalid {label} token.", "code": "invalid_token"}
-        ) from None
-
-    if obj.used_at is not None:
-        raise AuthenticationFailed({"detail": "Token has already been used.", "code": "token_used"})
-    if obj.expires_at <= datetime.now(UTC):
-        raise AuthenticationFailed({"detail": "Token has expired.", "code": "token_expired"})
-
+    obj = _consume_one_time_token(model_class, raw_token, label)
     user: User = obj.user
-    if not user.is_active:
-        raise AuthenticationFailed({"detail": "User not found.", "code": "user_not_found"})
-
-    obj.used_at = datetime.now(UTC)
-    obj.save(update_fields=["used_at"])
     return user
 
 
@@ -198,6 +259,49 @@ def verify_password_reset_token(raw_token: str) -> User:
     return _verify_one_time_token(PasswordResetToken, raw_token, "reset")
 
 
+def create_social_link_token(
+    user: User,
+    *,
+    provider: str,
+    provider_user_id: str,
+    full_name: str,
+    avatar_url: str | None,
+) -> str:
+    """Create a SocialLinkRequest token bound to (user, provider, provider_user_id).
+
+    The triple is stored on the row — the confirm endpoint reads `provider`
+    and `provider_user_id` from there, never from the request body, so a
+    leaked token can't be redirected at a different provider account.
+    """
+    from apps.users.models import SocialLinkRequest
+
+    raw = secrets.token_urlsafe(32)
+    SocialLinkRequest.objects.create(
+        user=user,
+        token_hash=_hash_token(raw),
+        expires_at=datetime.now(UTC) + SOCIAL_LINK_LIFETIME,
+        provider=provider,
+        provider_user_id=provider_user_id,
+        full_name=full_name,
+        avatar_url=avatar_url,
+    )
+    return raw
+
+
+def verify_social_link_token(raw_token: str) -> SocialLinkRequest:
+    """Validate and consume a social-link request token. Returns the row.
+
+    Caller needs ``provider``, ``provider_user_id``, and ``user`` to mint the
+    ``SocialAccount`` row, so the helper returns the request itself rather
+    than just the user (unlike :func:`_verify_one_time_token`).
+    """
+    from apps.users.models import SocialLinkRequest
+
+    obj = _consume_one_time_token(SocialLinkRequest, raw_token, "link")
+    assert isinstance(obj, SocialLinkRequest)  # noqa: S101  helps mypy narrow the union return
+    return obj
+
+
 class JWTAuthentication(BaseAuthentication):
     """Authenticate requests using a Django-issued JWT Bearer token."""
 
@@ -211,7 +315,7 @@ class JWTAuthentication(BaseAuthentication):
         try:
             payload: dict[str, object] = jwt.decode(
                 token,
-                _get_signing_key(),
+                settings.JWT_SIGNING_KEY,
                 algorithms=[_ALGORITHM],
             )
         except jwt.ExpiredSignatureError as exc:
@@ -245,6 +349,17 @@ class JWTAuthentication(BaseAuthentication):
                     {"detail": "User not found.", "code": "user_not_found"}
                 ) from None
             cache.set(cache_key, user, timeout=_AUTH_CACHE_TTL)
+
+        # Reject access tokens minted before the user's last password change.
+        # Tokens predating the ``password_changed_at`` column carry pwd_iat=0
+        # (or no claim at all) and pass when ``password_changed_at`` is NULL,
+        # so existing sessions survive the rollout.
+        pwd_iat_raw = payload.get("pwd_iat", 0)
+        pwd_iat = pwd_iat_raw if isinstance(pwd_iat_raw, int) else 0
+        pwd_changed = getattr(user, "password_changed_at", None)
+        user_pwd_iat = int(pwd_changed.timestamp()) if pwd_changed else 0
+        if pwd_iat < user_pwd_iat:
+            raise AuthenticationFailed({"detail": "Token invalidated.", "code": "token_revoked"})
 
         return (user, token)
 
