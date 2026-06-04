@@ -1723,7 +1723,7 @@ wheels = [
 
 [[package]]
 name = "saasmint-core"
-version = "0.11.0"
+version = "0.12.0"
 source = { editable = "." }
 dependencies = [
     { name = "celery", extra = ["redis"] },
@@ -1801,7 +1801,7 @@ dev = [
 
 [[package]]
 name = "saasmint-core-lib"
-version = "0.11.0"
+version = "0.12.0"
 source = { editable = "core" }
 dependencies = [
     { name = "httpx" },
